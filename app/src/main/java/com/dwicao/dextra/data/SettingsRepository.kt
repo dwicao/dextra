@@ -31,6 +31,8 @@ data class BrowserSettings(
     val homepage: String = "https://www.google.com/",
     val desktopSites: Boolean = true,
     val tabBarWithAddressBar: Boolean = true,
+    val dnsOverHttpsEnabled: Boolean = false,
+    val dnsProvider: DnsProvider = DnsProvider.CLOUDFLARE,
     val adBlockingEnabled: Boolean = true,
     val adBlockFilters: List<AdBlockFilter> = emptyList(),
     val userScriptUrls: List<String> = emptyList(),
@@ -43,6 +45,14 @@ data class ExtensionInstallRecord(
     val allowInPrivateBrowsing: Boolean,
     val allowDataCollection: Boolean,
 )
+
+enum class DnsProvider(val label: String, val dohUri: String) {
+    CLOUDFLARE("Cloudflare", "https://cloudflare-dns.com/dns-query"),
+    GOOGLE("Google", "https://dns.google/dns-query"),
+    QUAD9("Quad9", "https://dns.quad9.net/dns-query"),
+    ADGUARD("AdGuard", "https://dns.adguard-dns.com/dns-query"),
+    MULLVAD("Mullvad", "https://doh.mullvad.net/dns-query"),
+}
 
 enum class SearchEngine(val label: String, val searchUrl: String) {
     DUCKDUCKGO("DuckDuckGo", "https://duckduckgo.com/?q=%s"),
@@ -64,6 +74,8 @@ class SettingsRepository(private val context: Context) {
         val homepage = stringPreferencesKey("homepage")
         val desktopSites = booleanPreferencesKey("desktop_sites")
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
+        val dnsOverHttpsEnabled = booleanPreferencesKey("dns_over_https_enabled")
+        val dnsProvider = stringPreferencesKey("dns_provider")
         val adBlockingEnabled = booleanPreferencesKey("ad_blocking_enabled")
         val adBlockFilters = stringPreferencesKey("ad_block_filters")
         val disabledAdBlockFilters = stringPreferencesKey("disabled_ad_block_filters")
@@ -92,6 +104,14 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setTabBarWithAddressBar(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.tabBarWithAddressBar] = enabled }
+    }
+
+    suspend fun setDnsOverHttpsEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.dnsOverHttpsEnabled] = enabled }
+    }
+
+    suspend fun setDnsProvider(provider: DnsProvider) {
+        context.settingsDataStore.edit { it[Keys.dnsProvider] = provider.name }
     }
 
     suspend fun setAdBlockingEnabled(enabled: Boolean) {
@@ -193,6 +213,10 @@ class SettingsRepository(private val context: Context) {
         homepage = get(Keys.homepage) ?: "https://www.google.com/",
         desktopSites = get(Keys.desktopSites) ?: true,
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
+        dnsOverHttpsEnabled = get(Keys.dnsOverHttpsEnabled) ?: false,
+        dnsProvider = get(Keys.dnsProvider)?.let {
+            runCatching { DnsProvider.valueOf(it) }.getOrNull()
+        } ?: DnsProvider.CLOUDFLARE,
         adBlockingEnabled = get(Keys.adBlockingEnabled) ?: true,
         adBlockFilters = filterUrls().map { url -> filterFromUrl(url, url !in disabledFilterUrls()) },
         userScriptUrls = userScripts(),

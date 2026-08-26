@@ -1,15 +1,43 @@
 (() => {
   "use strict";
 
-  // Keep the browser's native context menu available on sites that disable it.
+  const selectors = [".adbox.banner_ads.adsbox", ".textads"];
+
+  const openLinkInNewTab = (event) => {
+    const isMiddleClick = event.type === "auxclick" && event.button === 1;
+    const isModifiedClick = event.type === "click" && event.button === 0 && (event.ctrlKey || event.metaKey);
+    if (!isMiddleClick && !isModifiedClick) return;
+    const target = event.target instanceof Element ? event.target.closest("a[href]") : null;
+    const url = target?.href || "";
+    if (!/^https?:\/\//i.test(url)) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    browser.runtime.sendNativeMessage("dextra", {
+      type: "openLinkInNewTab",
+      url,
+    }).catch(() => {});
+  };
+
+  document.addEventListener("click", openLinkInNewTab, true);
+  document.addEventListener("auxclick", openLinkInNewTab, true);
+
   document.addEventListener("contextmenu", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const link = target?.closest("a[href]");
+    const media = target?.closest("img,video,audio");
+    browser.runtime.sendNativeMessage("dextra", {
+      type: "contextMenu",
+      x: Math.round(event.clientX),
+      y: Math.round(event.clientY),
+      linkUrl: link?.href || null,
+      textContent: link?.textContent?.trim() || target?.textContent?.trim() || null,
+      resourceUri: media?.currentSrc || media?.src || null,
+      resourceType: media?.tagName?.toLowerCase() || null,
+    }).catch(() => {});
+    event.preventDefault();
     event.stopImmediatePropagation();
   }, true);
-  document.addEventListener("mousedown", (event) => {
-    if (event.button === 2) event.stopImmediatePropagation();
-  }, true);
-
-  const selectors = [".adbox.banner_ads.adsbox", ".textads"];
 
   const hideAds = () => {
     if (location.hostname !== "d3ward.github.io") return;

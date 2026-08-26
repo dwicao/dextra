@@ -38,7 +38,7 @@ object GeckoRuntimeHolder {
             GeckoRuntimeSettings.Builder()
                 .javaScriptEnabled(true)
                 .fissionEnabled(true)
-                .consoleOutput(true)
+                .consoleOutput(false)
                 .extensionsProcessEnabled(true)
                 .build(),
         ).also { runtime = it }

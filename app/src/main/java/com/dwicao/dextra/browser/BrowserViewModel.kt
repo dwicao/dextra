@@ -20,6 +20,7 @@ import com.dwicao.dextra.data.BrowserDatabase
 import com.dwicao.dextra.data.BrowserSettings
 import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
+import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.ExtensionInstallRecord
 import com.dwicao.dextra.data.HistoryEntry
 import com.dwicao.dextra.data.SearchEngine
@@ -82,9 +83,15 @@ enum class ContextMenuAction {
     RELOAD,
     OPEN_LINK,
     OPEN_LINK_IN_NEW_TAB,
+    OPEN_LINK_IN_PRIVATE_TAB,
     COPY_LINK,
     COPY_TEXT,
     OPEN_MEDIA_IN_NEW_TAB,
+    COPY_MEDIA_URL,
+    SAVE_MEDIA,
+    COPY_PAGE_URL,
+    TOGGLE_BOOKMARK,
+    SAVE_PAGE,
     DISMISS,
 }
 
@@ -92,6 +99,8 @@ data class BrowserContextMenu(
     val tabId: String,
     val x: Int,
     val y: Int,
+    val pageUrl: String,
+    val isBookmarked: Boolean,
     val linkUri: String?,
     val linkText: String?,
     val textContent: String?,
@@ -185,6 +194,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
     @Volatile
     private var adBlockPort: WebExtension.Port? = null
+    @Volatile
+    private var adBlockExtension: WebExtension? = null
 
     private val adBlockMessageDelegate = object : WebExtension.MessageDelegate {
         override fun onConnect(port: WebExtension.Port) {
@@ -196,6 +207,46 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             })
             syncAdBlockSettings(_state.value.settings)
             syncUserScripts(_state.value.settings)
+        }
+    }
+
+    private val adBlockContentMessageDelegate = object : WebExtension.MessageDelegate {
+        override fun onMessage(
+            nativeApp: String,
+            message: Any,
+            sender: WebExtension.MessageSender,
+        ): GeckoResult<Any>? {
+            if (sender.environmentType != WebExtension.MessageSender.ENV_TYPE_CONTENT_SCRIPT) return null
+            val json = message as? JSONObject ?: return null
+            val tabId = _state.value.tabs.firstOrNull { it.session === sender.session }?.id
+            if (tabId == null) return null
+            when (json.optString("type")) {
+                "openLinkInNewTab" -> {
+                    val url = json.optString("url")
+                    if (url.startsWith("http://") || url.startsWith("https://")) {
+                        openContextUrl(tabId, url, inNewTab = true)
+                    }
+                }
+                "contextMenu" -> {
+                    val resourceType = when (json.optString("resourceType")) {
+                        "img" -> GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE
+                        "video" -> GeckoSession.ContentDelegate.ContextElement.TYPE_VIDEO
+                        "audio" -> GeckoSession.ContentDelegate.ContextElement.TYPE_AUDIO
+                        else -> GeckoSession.ContentDelegate.ContextElement.TYPE_NONE
+                    }
+                    showContextMenu(
+                        tabId = tabId,
+                        x = json.optInt("x"),
+                        y = json.optInt("y"),
+                        linkUri = json.optString("linkUrl").takeIf(String::isNotBlank),
+                        linkText = json.optString("textContent").takeIf(String::isNotBlank),
+                        textContent = json.optString("textContent").takeIf(String::isNotBlank),
+                        resourceUri = json.optString("resourceUri").takeIf(String::isNotBlank),
+                        resourceType = resourceType,
+                    )
+                }
+            }
+            return null
         }
     }
 
@@ -266,6 +317,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     if (adBlockingChanged && tab.hasPage) tab.session.reload()
                     if (userScriptsChanged && tab.hasPage) tab.session.reload()
                 }
+                applyDnsOverHttps(settings.dnsOverHttpsEnabled, settings.dnsProvider)
                 syncAdBlockSettings(settings)
                 syncUserScripts(settings)
             }
@@ -389,6 +441,37 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(contextMenu = null) }
     }
 
+    fun showContextMenu(
+        tabId: String,
+        x: Int,
+        y: Int,
+        linkUri: String? = null,
+        linkText: String? = null,
+        textContent: String? = null,
+        resourceUri: String? = null,
+        resourceType: Int = GeckoSession.ContentDelegate.ContextElement.TYPE_NONE,
+    ) {
+        val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        _state.update {
+            it.copy(
+                contextMenu = BrowserContextMenu(
+                    tabId = tabId,
+                    x = x,
+                    y = y,
+                    pageUrl = tab.url,
+                    isBookmarked = tab.isBookmarked,
+                    linkUri = linkUri,
+                    linkText = linkText,
+                    textContent = textContent,
+                    resourceUri = resourceUri,
+                    resourceType = resourceType,
+                    canGoBack = tab.canGoBack,
+                    canGoForward = tab.canGoForward,
+                ),
+            )
+        }
+    }
+
     fun handleContextMenuAction(action: ContextMenuAction) {
         val menu = _state.value.contextMenu ?: return
         when (action) {
@@ -397,9 +480,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.RELOAD -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
             ContextMenuAction.OPEN_LINK -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = false) }
             ContextMenuAction.OPEN_LINK_IN_NEW_TAB -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
+            ContextMenuAction.OPEN_LINK_IN_PRIVATE_TAB -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = true, privateTab = true) }
             ContextMenuAction.COPY_LINK -> menu.linkUri?.let { copyToClipboard("Link", it) }
             ContextMenuAction.COPY_TEXT -> menu.textContent?.takeIf(String::isNotBlank)?.let { copyToClipboard("Text", it) }
             ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB -> menu.resourceUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
+            ContextMenuAction.COPY_MEDIA_URL -> menu.resourceUri?.let { copyToClipboard("Media URL", it) }
+            ContextMenuAction.SAVE_MEDIA -> menu.resourceUri?.let(::downloadUrl)
+            ContextMenuAction.COPY_PAGE_URL -> menu.pageUrl.takeIf(String::isNotBlank)?.let { copyToClipboard("Page URL", it) }
+            ContextMenuAction.TOGGLE_BOOKMARK -> if (menu.tabId == _state.value.activeTabId) toggleBookmark()
+            ContextMenuAction.SAVE_PAGE -> menu.pageUrl.takeIf(String::isNotBlank)?.let(::downloadUrl)
             ContextMenuAction.DISMISS -> Unit
         }
         dismissContextMenu()
@@ -435,6 +524,46 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 showSnackbar("Saved to bookmarks")
             }
         }
+    }
+
+    private fun downloadUrl(url: String) {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: run {
+            showSnackbar("This resource cannot be downloaded")
+            return
+        }
+        if (uri.scheme?.lowercase() !in setOf("http", "https")) {
+            showSnackbar("This resource cannot be downloaded")
+            return
+        }
+        runCatching {
+            val fileName = uri.lastPathSegment
+                ?.takeIf { it.isNotBlank() }
+                ?.sanitizeFileName()
+                ?: "dextra-download"
+            val downloadId = -System.nanoTime()
+            val downloadDirectory = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: File(getApplication<Application>().filesDir, "downloads")
+            val outputPath = File(downloadDirectory, "$downloadId-$fileName").path
+            val download = DownloadEntry(
+                downloadId = downloadId,
+                fileName = fileName,
+                url = url,
+                mimeType = null,
+                status = DownloadStatus.QUEUED.label,
+                bytesDownloaded = 0,
+                totalBytes = -1,
+                localUri = null,
+                filePath = outputPath,
+                reason = null,
+                speedBytesPerSecond = 0,
+                createdAt = System.currentTimeMillis(),
+            )
+            viewModelScope.launch {
+                dao.upsertDownload(download)
+                downloadEngine.start(download)
+            }
+            showSnackbar("Download started")
+        }.onFailure { showSnackbar("Could not start download") }
     }
 
     fun openSavedPage(url: String) {
@@ -651,6 +780,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { settingsRepository.setTabBarWithAddressBar(enabled) }
     }
 
+    fun setDnsOverHttpsEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setDnsOverHttpsEnabled(enabled) }
+    }
+
+    fun setDnsProvider(provider: DnsProvider) {
+        viewModelScope.launch { settingsRepository.setDnsProvider(provider) }
+    }
+
     fun resolveContentPermission(allow: Boolean) {
         val prompt = _state.value.contentPermission ?: return
         prompt.result.complete(
@@ -756,7 +893,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         session.setProgressDelegate(ProgressDelegate(tabId))
         session.setContentDelegate(ContentDelegate(tabId))
         session.setPermissionDelegate(PermissionDelegate(tabId))
-        if (openSession) session.open(runtime)
+        if (openSession) {
+            session.open(runtime)
+            attachAdBlockContentDelegate(session)
+        }
         return session
     }
 
@@ -801,12 +941,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ?.takeIf(String::isNotBlank)
     }.getOrNull()
 
-    private fun openContextUrl(tabId: String, url: String, inNewTab: Boolean) {
+    private fun openContextUrl(tabId: String, url: String, inNewTab: Boolean, privateTab: Boolean = false) {
         val scheme = runCatching { Uri.parse(url).scheme?.lowercase() }.getOrNull()
         if (scheme !in setOf("http", "https", "about", "file", "data")) {
             launchExternal(url)
         } else if (inNewTab) {
-            createTab(initialUri = url)
+            createTab(privateMode = privateTab, initialUri = url)
         } else {
             navigate(tabId, url)
         }
@@ -858,7 +998,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runtime.webExtensionController.list().accept(
             { extensions ->
                 val staleExtensions = extensions.orEmpty().filter {
-                    it.id == "adblock@dextra" && it.metaData.version != "2.4.0"
+                    it.id == "adblock@dextra" && it.metaData.version != "2.5.0"
                 }
                 removeStaleAdBlockers(staleExtensions)
             },
@@ -902,9 +1042,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun configureAdBlockerPermissions(extension: WebExtension) {
+        adBlockExtension = extension
         extension.setMessageDelegate(adBlockMessageDelegate, "dextra")
+        _state.value.tabs.forEach { tab -> attachAdBlockContentDelegate(tab.session) }
         runtime.webExtensionController.setAllowedInPrivateBrowsing(extension, true)
             .accept({}, { error -> Log.e("Dextra", "Could not allow ad blocking in private tabs", error) })
+    }
+
+    private fun attachAdBlockContentDelegate(session: GeckoSession) {
+        if (!session.isOpen) return
+        adBlockExtension?.let { extension ->
+            session.webExtensionController.setMessageDelegate(
+                extension,
+                adBlockContentMessageDelegate,
+                "dextra",
+            )
+        }
     }
 
     private fun syncAdBlockSettings(settings: BrowserSettings) {
@@ -916,6 +1069,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 .put("type", "updateAdblock")
                 .put("enabled", settings.adBlockingEnabled)
                 .put("urls", urls),
+        )
+    }
+
+    private fun applyDnsOverHttps(enabled: Boolean, provider: DnsProvider) {
+        runtime.settings.setDohAutoselectEnabled(false)
+        runtime.settings.setTrustedRecursiveResolverUri(provider.dohUri)
+        runtime.settings.setTrustedRecursiveResolverMode(
+            if (enabled) {
+                org.mozilla.geckoview.GeckoRuntimeSettings.TRR_MODE_ONLY
+            } else {
+                org.mozilla.geckoview.GeckoRuntimeSettings.TRR_MODE_OFF
+            },
         )
     }
 
@@ -1375,6 +1540,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private inner class ProgressDelegate(private val tabId: String) : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
+            attachAdBlockContentDelegate(session)
             if (url == "about:blank") {
                 updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0, favicon = null) }
             } else {
@@ -1426,22 +1592,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             screenY: Int,
             element: GeckoSession.ContentDelegate.ContextElement,
         ) {
-            _state.update {
-                it.copy(
-                    contextMenu = BrowserContextMenu(
-                        tabId = tabId,
-                        x = screenX,
-                        y = screenY,
-                        linkUri = element.linkUri,
-                        linkText = element.textContent,
-                        textContent = element.textContent,
-                        resourceUri = element.srcUri,
-                        resourceType = element.type,
-                        canGoBack = _state.value.tabs.firstOrNull { tab -> tab.id == tabId }?.canGoBack == true,
-                        canGoForward = _state.value.tabs.firstOrNull { tab -> tab.id == tabId }?.canGoForward == true,
-                    ),
-                )
-            }
+            showContextMenu(
+                tabId = tabId,
+                x = screenX,
+                y = screenY,
+                linkUri = element.linkUri,
+                linkText = element.textContent,
+                textContent = element.textContent,
+                resourceUri = element.srcUri,
+                resourceType = element.type,
+            )
         }
 
         override fun onCrash(session: GeckoSession) {
@@ -1453,8 +1613,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         private fun markTabCrashed(message: String) {
+            val url = _state.value.tabs.firstOrNull { it.id == tabId }?.url.orEmpty()
             updateTab(tabId) { it.copy(crashed = true, isLoading = false, progress = 0) }
+            recordGeckoCrash(tabId, url, message)
             showSnackbar(message)
+        }
+    }
+
+    private fun recordGeckoCrash(tabId: String, url: String, message: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val report = buildString {
+                    appendLine("Gecko content process failure")
+                    appendLine("Tab: $tabId")
+                    appendLine("URL: $url")
+                    appendLine("Reason: $message")
+                    appendLine()
+                    appendLine(Log.getStackTraceString(IllegalStateException(message)))
+                }
+                File(getApplication<Application>().filesDir, "last-crash.txt").writeText(report)
+            }
         }
     }
 

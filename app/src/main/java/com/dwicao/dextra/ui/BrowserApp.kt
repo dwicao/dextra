@@ -1,5 +1,7 @@
 package com.dwicao.dextra.ui
 
+import android.content.Context
+import android.view.MotionEvent
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -144,6 +146,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.Image
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import org.mozilla.geckoview.GeckoSession
 import com.dwicao.dextra.browser.BrowserTabState
 import com.dwicao.dextra.browser.BrowserContextMenu
 import com.dwicao.dextra.browser.BrowserUrl
@@ -158,6 +161,7 @@ import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.HistoryEntry
 import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
+import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.ThemeMode
 import kotlinx.coroutines.launch
@@ -223,8 +227,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onDismissOverlay = viewModel::dismissOverlay,
                 onSetTheme = viewModel::setThemeMode,
                 onSetSearchEngine = viewModel::setSearchEngine,
-                onSetDesktopSites = viewModel::setDesktopSites,
+                 onSetDesktopSites = viewModel::setDesktopSites,
                  onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
+                 onSetDnsOverHttpsEnabled = viewModel::setDnsOverHttpsEnabled,
+                 onSetDnsProvider = viewModel::setDnsProvider,
                  onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
                  onSetAdBlockFilterEnabled = viewModel::setAdBlockFilterEnabled,
                  onRefreshAdBlockFilters = viewModel::refreshAdBlockFilters,
@@ -255,6 +261,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
                 onContextMenuAction = viewModel::handleContextMenuAction,
                 onDismissContextMenu = viewModel::dismissContextMenu,
+                onShowContextMenu = viewModel::showContextMenu,
             )
             state.lastCrashReport?.let { report ->
                 CrashReportDialog(
@@ -294,6 +301,8 @@ private fun BrowserScreen(
     onSetSearchEngine: (SearchEngine) -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
+    onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
+    onSetDnsProvider: (DnsProvider) -> Unit,
     onSetAdBlockingEnabled: (Boolean) -> Unit,
     onSetAdBlockFilterEnabled: (AdBlockFilter, Boolean) -> Unit,
     onRefreshAdBlockFilters: () -> Unit,
@@ -324,6 +333,7 @@ private fun BrowserScreen(
     onResolveExtensionUpdate: (Boolean) -> Unit,
     onContextMenuAction: (ContextMenuAction) -> Unit,
     onDismissContextMenu: () -> Unit,
+    onShowContextMenu: (String, Int, Int) -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
     var menuExpanded by remember { mutableStateOf(false) }
@@ -373,6 +383,10 @@ private fun BrowserScreen(
                 tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                 onSetDesktopSites = onSetDesktopSites,
                 onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
+                dnsOverHttpsEnabled = state.settings.dnsOverHttpsEnabled,
+                onSetDnsOverHttpsEnabled = onSetDnsOverHttpsEnabled,
+                dnsProvider = state.settings.dnsProvider,
+                onSetDnsProvider = onSetDnsProvider,
                 adBlockingEnabled = state.settings.adBlockingEnabled,
                 adBlockFilters = state.settings.adBlockFilters,
                 onSetAdBlockingEnabled = onSetAdBlockingEnabled,
@@ -407,6 +421,7 @@ private fun BrowserScreen(
                     onForward = onForward,
                     onReload = onReload,
                     onReloadCrashedTab = onReloadCrashedTab,
+                    onShowContextMenu = onShowContextMenu,
                     onNewTab = { onNewTab() },
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
@@ -424,6 +439,7 @@ private fun BrowserScreen(
                     onForward = onForward,
                     onReload = onReload,
                     onReloadCrashedTab = onReloadCrashedTab,
+                    onShowContextMenu = onShowContextMenu,
                     onNewTab = { onNewTab() },
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
@@ -533,6 +549,7 @@ private fun DesktopBrowserLayout(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
+    onShowContextMenu: (String, Int, Int) -> Unit,
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
@@ -566,7 +583,7 @@ private fun DesktopBrowserLayout(
                     .height(2.dp),
             )
         }
-        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab)
+        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab, onShowContextMenu)
     }
 }
 
@@ -579,6 +596,7 @@ private fun CompactBrowserLayout(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
+    onShowContextMenu: (String, Int, Int) -> Unit,
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
@@ -624,7 +642,7 @@ private fun CompactBrowserLayout(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab)
+        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab, onShowContextMenu)
         CompactBottomBar(
             tabCount = state.tabs.size,
             activeTab = activeTab,
@@ -791,16 +809,24 @@ private fun AddressBar(
     }
 
     val shape = RoundedCornerShape(18.dp)
+    val isPrivate = tab?.isPrivate == true
     BasicTextField(
         value = value,
         onValueChange = { value = it },
         modifier = modifier
             .height(44.dp)
             .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .background(
+                if (isPrivate) MaterialTheme.colorScheme.tertiaryContainer
+                else MaterialTheme.colorScheme.surfaceContainer,
+            )
             .border(
                 width = if (isFocused) 2.dp else 1.dp,
-                color = if (isFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                color = when {
+                    isFocused -> MaterialTheme.colorScheme.primary
+                    isPrivate -> MaterialTheme.colorScheme.tertiary
+                    else -> MaterialTheme.colorScheme.outlineVariant
+                },
                 shape = shape,
             )
             .focusRequester(focusRequester)
@@ -905,7 +931,15 @@ private fun TabStrip(
                     Surface(
                         onClick = { onSelectTab(tab.id) },
                         selected = tab.id == activeTabId,
-                        color = if (tab.id == activeTabId) MaterialTheme.colorScheme.surface else Color.Transparent,
+                        color = when {
+                            tab.isPrivate -> if (tab.id == activeTabId) {
+                                MaterialTheme.colorScheme.tertiaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+                            }
+                            tab.id == activeTabId -> MaterialTheme.colorScheme.surface
+                            else -> Color.Transparent
+                        },
                         shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
                         tonalElevation = if (tab.id == activeTabId) 2.dp else 0.dp,
                     ) {
@@ -960,11 +994,45 @@ private fun TabStrip(
     }
 }
 
+private class ContextMenuGeckoView(
+    context: Context,
+    private val onSecondaryClick: (Int, Int) -> Unit,
+) : GeckoView(context) {
+    private var lastSecondaryClick = 0L
+
+    private fun dispatchSecondaryClick(event: MotionEvent): Boolean {
+        val now = event.eventTime
+        if (now - lastSecondaryClick < 150L) return true
+        lastSecondaryClick = now
+        onSecondaryClick(event.x.toInt(), event.y.toInt())
+        return true
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+            event.buttonState and MotionEvent.BUTTON_SECONDARY != 0
+        ) {
+            dispatchSecondaryClick(event)
+        }
+        return super.onTouchEvent(event)
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if ((event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS) &&
+            event.buttonState and MotionEvent.BUTTON_SECONDARY != 0
+        ) {
+            dispatchSecondaryClick(event)
+        }
+        return super.onGenericMotionEvent(event)
+    }
+}
+
 @Composable
 private fun BrowserViewport(
     tab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onReloadCrashedTab: () -> Unit,
+    onShowContextMenu: (String, Int, Int) -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -978,7 +1046,11 @@ private fun BrowserViewport(
         } else {
             key(tab.id, tab.session) {
                 AndroidView(
-                    factory = { context -> GeckoView(context).apply { setSession(tab.session) } },
+                    factory = { context ->
+                        ContextMenuGeckoView(context) { x, y ->
+                            onShowContextMenu(tab.id, x, y)
+                        }.apply { setSession(tab.session) }
+                    },
                     modifier = Modifier.fillMaxSize(),
                     onRelease = { it.releaseSession() },
                 )
@@ -1020,6 +1092,7 @@ private fun BrowserContextMenuPopup(
     onDismiss: () -> Unit,
 ) {
     val offset = with(LocalDensity.current) { DpOffset(menu.x.toDp(), menu.y.toDp()) }
+    val isImage = menu.resourceType == GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE
     DropdownMenu(
         expanded = true,
         onDismissRequest = onDismiss,
@@ -1037,6 +1110,11 @@ private fun BrowserContextMenuPopup(
                 onClick = { onAction(ContextMenuAction.OPEN_LINK_IN_NEW_TAB) },
             )
             DropdownMenuItem(
+                text = { Text("Open link in private tab") },
+                leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.OPEN_LINK_IN_PRIVATE_TAB) },
+            )
+            DropdownMenuItem(
                 text = { Text("Copy link") },
                 leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.COPY_LINK) },
@@ -1044,9 +1122,19 @@ private fun BrowserContextMenuPopup(
         }
         if (!menu.resourceUri.isNullOrBlank()) {
             DropdownMenuItem(
-                text = { Text("Open media in new tab") },
+                text = { Text(if (isImage) "Open image in new tab" else "Open media in new tab") },
                 leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text(if (isImage) "Save image" else "Save media") },
+                leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.SAVE_MEDIA) },
+            )
+            DropdownMenuItem(
+                text = { Text("Copy media URL") },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.COPY_MEDIA_URL) },
             )
         }
         if (menu.linkUri.isNullOrBlank() && !menu.textContent.isNullOrBlank()) {
@@ -1056,9 +1144,7 @@ private fun BrowserContextMenuPopup(
                 onClick = { onAction(ContextMenuAction.COPY_TEXT) },
             )
         }
-        if (!menu.linkUri.isNullOrBlank() || !menu.resourceUri.isNullOrBlank() || !menu.textContent.isNullOrBlank()) {
-            Divider()
-        }
+        Divider()
         if (menu.canGoBack) {
             DropdownMenuItem(
                 text = { Text("Back") },
@@ -1077,6 +1163,21 @@ private fun BrowserContextMenuPopup(
             text = { Text("Reload") },
             leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
             onClick = { onAction(ContextMenuAction.RELOAD) },
+        )
+        DropdownMenuItem(
+            text = { Text("Copy page URL") },
+            leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
+            onClick = { onAction(ContextMenuAction.COPY_PAGE_URL) },
+        )
+        DropdownMenuItem(
+            text = { Text(if (menu.isBookmarked) "Remove bookmark" else "Bookmark page") },
+            leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+            onClick = { onAction(ContextMenuAction.TOGGLE_BOOKMARK) },
+        )
+        DropdownMenuItem(
+            text = { Text("Save page") },
+            leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+            onClick = { onAction(ContextMenuAction.SAVE_PAGE) },
         )
     }
 }
@@ -1211,7 +1312,13 @@ private fun TabsSheet(
     ) {
         items(tabs, key = { it.id }) { tab ->
             ListItem(
-                modifier = Modifier.padding(horizontal = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        if (tab.isPrivate) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+                        else Color.Transparent,
+                    )
+                    .padding(horizontal = 12.dp),
                 headlineContent = { Text(tab.title.ifBlank { "New tab" }, maxLines = 1) },
                 supportingContent = { Text(tab.url.ifBlank { "Start browsing" }, maxLines = 1) },
                 leadingContent = { Icon(if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language, contentDescription = null) },
@@ -1541,6 +1648,10 @@ private fun SettingsScreen(
     onSetSearchEngine: (SearchEngine) -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
+    dnsOverHttpsEnabled: Boolean,
+    onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
+    dnsProvider: DnsProvider,
+    onSetDnsProvider: (DnsProvider) -> Unit,
     onSetAdBlockingEnabled: (Boolean) -> Unit,
     onSetAdBlockFilterEnabled: (AdBlockFilter, Boolean) -> Unit,
     onRefreshAdBlockFilters: () -> Unit,
@@ -1631,6 +1742,33 @@ private fun SettingsScreen(
             summary = "Keep tabs visible beside the address bar on wide windows",
             checked = tabBarWithAddressBar,
             onCheckedChange = onSetTabBarWithAddressBar,
+        )
+    }
+    SettingSection("Network") {
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            DnsProvider.values().forEach { provider ->
+                FilterChip(
+                    selected = dnsProvider == provider,
+                    onClick = { onSetDnsProvider(provider) },
+                    label = { Text(provider.label) },
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        SettingToggle(
+            title = "DNS over HTTPS: ${dnsProvider.label}",
+            summary = "Use the selected provider for DNS lookups. Off by default.",
+            checked = dnsOverHttpsEnabled,
+            onCheckedChange = onSetDnsOverHttpsEnabled,
+        )
+        Text(
+            "GeckoView provides DNS over HTTPS (TRR); Oblivious HTTP is not exposed by this engine.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
         )
     }
     SettingSection("Ad blocking") {
