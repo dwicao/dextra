@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Dextra Ad Block",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "Host-based ad blocking powered by EasyList.",
   "browser_specific_settings": {
     "gecko": {

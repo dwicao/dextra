@@ -3,6 +3,7 @@
 
   const blockedRules = [];
   const allowedHosts = new Set();
+  const protectedDocumentDomains = ["youtube.com", "google.com", "duckduckgo.com"];
   let enabled = false;
 
   const addHost = (value, thirdParty, exception, rules, exceptions) => {
@@ -43,19 +44,25 @@
 
   const isBlocked = (hostname, documentUrl) => {
     if (!enabled) return false;
+    let documentHost = "";
+    if (documentUrl) {
+      try {
+        documentHost = new URL(documentUrl).hostname.toLowerCase();
+      } catch (_) {
+        return false;
+      }
+    }
+    if (!documentHost) return false;
+    if (protectedDocumentDomains.some((domain) => isSameSite(documentHost, domain))) return false;
+
     const labels = hostname.toLowerCase().split(".");
     for (let index = 0; index < labels.length - 1; index += 1) {
       const host = labels.slice(index).join(".");
       if (allowedHosts.has(host)) return false;
+      if (isSameSite(hostname, documentHost)) return false;
       const rule = blockedRules.find((candidate) => candidate.host === host);
       if (!rule) continue;
-      if (!rule.thirdParty) return true;
-      try {
-        const documentHost = new URL(documentUrl).hostname.toLowerCase();
-        if (!documentHost || !isSameSite(hostname, documentHost)) return true;
-      } catch (_) {
-        return true;
-      }
+      if (!rule.thirdParty || !isSameSite(hostname, documentHost)) return true;
     }
     return false;
   };
@@ -100,6 +107,7 @@
     (request) => {
       try {
         if (request.type === "main_frame") return {};
+        if (!["image", "media", "object", "sub_frame", "xmlhttprequest", "ping"].includes(request.type)) return {};
         return isBlocked(new URL(request.url).hostname, request.documentUrl || request.originUrl || "")
           ? { cancel: true }
           : {};

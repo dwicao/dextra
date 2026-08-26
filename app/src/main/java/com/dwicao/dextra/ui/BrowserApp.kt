@@ -108,6 +108,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -129,6 +130,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.Image
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dwicao.dextra.browser.BrowserTabState
 import com.dwicao.dextra.browser.BrowserUrl
@@ -760,11 +762,21 @@ private fun TabStrip(
                                 .padding(start = 12.dp, end = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(
-                                if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
+                            if (tab.favicon != null && !tab.isPrivate) {
+                                Image(
+                                    bitmap = tab.favicon.asImageBitmap(),
+                                    contentDescription = "Site favicon",
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                )
+                            } else {
+                                Icon(
+                                    if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
                             Text(
                                 text = tab.title.ifBlank { "New tab" },
                                 modifier = Modifier

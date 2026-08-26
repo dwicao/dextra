@@ -5,6 +5,8 @@ import android.app.Application
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
@@ -26,7 +28,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.AllowOrDeny
@@ -35,6 +39,8 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebResponse
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.UUID
 
 data class BrowserTabState(
@@ -50,6 +56,7 @@ data class BrowserTabState(
     val isPrivate: Boolean = false,
     val hasPage: Boolean = false,
     val isBookmarked: Boolean = false,
+    val favicon: Bitmap? = null,
 )
 
 enum class BrowserOverlay {
@@ -199,7 +206,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (url.isEmpty()) return
         val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
         updateTab(tabId) {
-            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0)
+            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null)
         }
         tab.session.loadUri(url)
     }
@@ -368,17 +375,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun installAdBlocker() {
         runtime.webExtensionController.list().accept(
             { extensions ->
-                val legacyUBlock = extensions.orEmpty().firstOrNull { it.id == "uBlock0@raymondhill.net" }
-                if (legacyUBlock == null) {
-                    ensureAdBlocker()
-                } else {
-                    runtime.webExtensionController.uninstall(legacyUBlock).accept(
-                        { ensureAdBlocker() },
-                        { ensureAdBlocker() },
-                    )
+                val staleBlockers = extensions.orEmpty().filter {
+                    it.id == "uBlock0@raymondhill.net" ||
+                        (it.id == "adblock@dextra" && it.metaData.version != "1.0.3")
                 }
+                removeStaleBlockers(staleBlockers)
             },
-            { ensureAdBlocker() },
+            { removeStaleBlockers(emptyList()) },
+        )
+    }
+
+    private fun removeStaleBlockers(blockers: List<WebExtension>, index: Int = 0) {
+        if (index >= blockers.size) {
+            ensureAdBlocker()
+            return
+        }
+        runtime.webExtensionController.uninstall(blockers[index]).accept(
+            { removeStaleBlockers(blockers, index + 1) },
+            { removeStaleBlockers(blockers, index + 1) },
         )
     }
 
@@ -423,6 +437,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     visitedAt = System.currentTimeMillis(),
                 ),
             )
+        }
+    }
+
+    private fun loadFavicon(tabId: String) {
+        val pageUrl = _state.value.tabs.firstOrNull { it.id == tabId }?.url ?: return
+        val pageUri = runCatching { Uri.parse(pageUrl) }.getOrNull() ?: return
+        if (pageUri.scheme !in setOf("http", "https") || pageUri.authority.isNullOrBlank()) return
+
+        val faviconUrl = Uri.Builder()
+            .scheme(pageUri.scheme)
+            .encodedAuthority(pageUri.encodedAuthority)
+            .path("favicon.ico")
+            .build()
+            .toString()
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val favicon = runCatching {
+                val connection = URL(faviconUrl).openConnection() as HttpURLConnection
+                connection.connectTimeout = 4_000
+                connection.readTimeout = 4_000
+                connection.instanceFollowRedirects = true
+                try {
+                    if (connection.responseCode !in 200..299) return@runCatching null
+                    connection.inputStream.use(BitmapFactory::decodeStream)
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrNull() ?: return@launch
+
+            withContext(Dispatchers.Main.immediate) {
+                val currentTab = _state.value.tabs.firstOrNull { it.id == tabId }
+                if (currentTab?.url == pageUrl) updateTab(tabId) { it.copy(favicon = favicon) }
+            }
         }
     }
 
@@ -504,15 +551,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private inner class ProgressDelegate(private val tabId: String) : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
             if (url == "about:blank") {
-                updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0) }
+                updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0, favicon = null) }
             } else {
-                updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0) }
+                updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0, favicon = null) }
             }
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {
             updateTab(tabId) { it.copy(isLoading = false, progress = if (success) 100 else 0) }
-            if (success) recordHistory(tabId)
+            if (success) {
+                recordHistory(tabId)
+                loadFavicon(tabId)
+            }
         }
 
         override fun onProgressChange(session: GeckoSession, progress: Int) {
