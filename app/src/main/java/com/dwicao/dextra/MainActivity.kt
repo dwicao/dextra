@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.activity.ComponentActivity
+import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.ui.DextraApp
 
@@ -20,6 +21,10 @@ class MainActivity : ComponentActivity() {
         browserViewModel.handleIncomingIntent(intent)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (browserViewModel.state.value.overlay == BrowserOverlay.SETTINGS) {
+                    browserViewModel.dismissOverlay()
+                    return
+                }
                 if (browserViewModel.goBack()) return
                 val active = browserViewModel.activeTab()
                 if (active != null && browserViewModel.state.value.tabs.size > 1) {

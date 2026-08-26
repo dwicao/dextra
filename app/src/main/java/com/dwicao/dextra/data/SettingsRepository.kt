@@ -17,6 +17,7 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
 data class AdBlockFilter(
     val name: String,
     val url: String,
+    val enabled: Boolean = true,
 )
 
 val DefaultAdBlockFilters = listOf(
@@ -33,12 +34,18 @@ data class BrowserSettings(
     val adBlockingEnabled: Boolean = true,
     val adBlockFilters: List<AdBlockFilter> = DefaultAdBlockFilters,
     val userScriptUrls: List<String> = emptyList(),
+    val disabledUserScriptUrls: Set<String> = emptySet(),
 )
 
 enum class SearchEngine(val label: String, val searchUrl: String) {
     DUCKDUCKGO("DuckDuckGo", "https://duckduckgo.com/?q=%s"),
     GOOGLE("Google", "https://www.google.com/search?q=%s"),
     BING("Bing", "https://www.bing.com/search?q=%s"),
+    BRAVE("Brave", "https://search.brave.com/search?q=%s"),
+    ECOSIA("Ecosia", "https://www.ecosia.org/search?q=%s"),
+    STARTPAGE("Startpage", "https://www.startpage.com/sp/search?query=%s"),
+    YAHOO("Yahoo", "https://search.yahoo.com/search?p=%s"),
+    QWANT("Qwant", "https://www.qwant.com/?q=%s"),
 }
 
 private val Context.settingsDataStore by preferencesDataStore(name = "settings")
@@ -52,7 +59,9 @@ class SettingsRepository(private val context: Context) {
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
         val adBlockingEnabled = booleanPreferencesKey("ad_blocking_enabled")
         val adBlockFilters = stringPreferencesKey("ad_block_filters")
+        val disabledAdBlockFilters = stringPreferencesKey("disabled_ad_block_filters")
         val userScriptUrls = stringPreferencesKey("user_script_urls")
+        val disabledUserScripts = stringPreferencesKey("disabled_user_scripts")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -85,12 +94,29 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { preferences ->
             val urls = preferences.filterUrls()
             preferences[Keys.adBlockFilters] = (urls + url).distinct().joinToString("\n")
+            preferences[Keys.disabledAdBlockFilters] = preferences.disabledFilterUrls()
+                .filterNot { it == url }
+                .joinToString("\n")
+        }
+    }
+
+    suspend fun setAdBlockFilterEnabled(url: String, enabled: Boolean) {
+        context.settingsDataStore.edit { preferences ->
+            val disabled = preferences.disabledFilterUrls()
+            preferences[Keys.disabledAdBlockFilters] = if (enabled) {
+                disabled.filterNot { it == url }
+            } else {
+                (disabled + url).distinct()
+            }.joinToString("\n")
         }
     }
 
     suspend fun removeAdBlockFilter(url: String) {
         context.settingsDataStore.edit { preferences ->
             preferences[Keys.adBlockFilters] = preferences.filterUrls()
+                .filterNot { it == url }
+                .joinToString("\n")
+            preferences[Keys.disabledAdBlockFilters] = preferences.disabledFilterUrls()
                 .filterNot { it == url }
                 .joinToString("\n")
         }
@@ -100,12 +126,29 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { preferences ->
             val urls = preferences.userScripts()
             preferences[Keys.userScriptUrls] = (urls + url).distinct().joinToString("\n")
+            preferences[Keys.disabledUserScripts] = preferences.disabledUserScripts()
+                .filterNot { it == url }
+                .joinToString("\n")
+        }
+    }
+
+    suspend fun setUserScriptEnabled(url: String, enabled: Boolean) {
+        context.settingsDataStore.edit { preferences ->
+            val disabled = preferences.disabledUserScripts()
+            preferences[Keys.disabledUserScripts] = if (enabled) {
+                disabled.filterNot { it == url }
+            } else {
+                (disabled + url).distinct()
+            }.joinToString("\n")
         }
     }
 
     suspend fun removeUserScript(url: String) {
         context.settingsDataStore.edit { preferences ->
             preferences[Keys.userScriptUrls] = preferences.userScripts()
+                .filterNot { it == url }
+                .joinToString("\n")
+            preferences[Keys.disabledUserScripts] = preferences.disabledUserScripts()
                 .filterNot { it == url }
                 .joinToString("\n")
         }
@@ -121,8 +164,9 @@ class SettingsRepository(private val context: Context) {
         desktopSites = get(Keys.desktopSites) ?: true,
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
         adBlockingEnabled = get(Keys.adBlockingEnabled) ?: true,
-        adBlockFilters = filterUrls().map(::filterFromUrl),
+        adBlockFilters = filterUrls().map { url -> filterFromUrl(url, url !in disabledFilterUrls()) },
         userScriptUrls = userScripts(),
+        disabledUserScriptUrls = disabledUserScripts().intersect(userScripts().toSet()),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -131,15 +175,27 @@ class SettingsRepository(private val context: Context) {
         ?.filter(String::isNotBlank)
         ?: DefaultAdBlockFilters.map { it.url }
 
+    private fun Preferences.disabledFilterUrls(): List<String> = get(Keys.disabledAdBlockFilters)
+        ?.split('\n')
+        ?.map(String::trim)
+        ?.filter(String::isNotBlank)
+        ?: emptyList()
+
     private fun Preferences.userScripts(): List<String> = get(Keys.userScriptUrls)
         ?.split('\n')
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
         ?: emptyList()
 
-    private fun filterFromUrl(url: String): AdBlockFilter = when (url) {
-        DefaultAdBlockFilters[0].url -> DefaultAdBlockFilters[0]
-        DefaultAdBlockFilters[1].url -> DefaultAdBlockFilters[1]
-        else -> AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url)
+    private fun Preferences.disabledUserScripts(): List<String> = get(Keys.disabledUserScripts)
+        ?.split('\n')
+        ?.map(String::trim)
+        ?.filter(String::isNotBlank)
+        ?: emptyList()
+
+    private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter = when (url) {
+        DefaultAdBlockFilters[0].url -> DefaultAdBlockFilters[0].copy(enabled = enabled)
+        DefaultAdBlockFilters[1].url -> DefaultAdBlockFilters[1].copy(enabled = enabled)
+        else -> AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url, enabled)
     }
 }

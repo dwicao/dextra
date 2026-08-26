@@ -29,4 +29,12 @@ class BrowserUrlTest {
             BrowserUrl.resolve("gecko browser", SearchEngine.DUCKDUCKGO),
         )
     }
+
+    @Test
+    fun supportsBraveSearch() {
+        assertEquals(
+            "https://search.brave.com/search?q=gecko+browser",
+            BrowserUrl.resolve("gecko browser", SearchEngine.BRAVE),
+        )
+    }
 }

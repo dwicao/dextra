@@ -84,6 +84,36 @@ data class AndroidPermissionPrompt(
     val callback: GeckoSession.PermissionDelegate.Callback,
 )
 
+data class InstalledExtension(
+    val id: String,
+    val name: String,
+    val version: String,
+    val creatorName: String?,
+    val enabled: Boolean,
+    val allowedInPrivateBrowsing: Boolean,
+    val amoListingUrl: String?,
+)
+
+data class ExtensionInstallPrompt(
+    val id: String,
+    val name: String,
+    val version: String,
+    val permissions: List<String>,
+    val origins: List<String>,
+    val dataCollectionPermissions: List<String>,
+    val result: GeckoResult<WebExtension.PermissionPromptResponse>,
+)
+
+data class ExtensionUpdatePrompt(
+    val id: String,
+    val name: String,
+    val currentVersion: String,
+    val newVersion: String,
+    val permissions: List<String>,
+    val origins: List<String>,
+    val result: GeckoResult<AllowOrDeny>,
+)
+
 data class BrowserUiState(
     val tabs: List<BrowserTabState> = emptyList(),
     val activeTabId: String? = null,
@@ -92,6 +122,10 @@ data class BrowserUiState(
     val snackbar: String? = null,
     val contentPermission: ContentPermissionPrompt? = null,
     val androidPermission: AndroidPermissionPrompt? = null,
+    val installedExtensions: List<InstalledExtension> = emptyList(),
+    val extensionInstallPrompt: ExtensionInstallPrompt? = null,
+    val extensionUpdatePrompt: ExtensionUpdatePrompt? = null,
+    val extensionInstallInProgress: Boolean = false,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -101,6 +135,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val settingsRepository = SettingsRepository(application)
     private val _state = MutableStateFlow(BrowserUiState())
     private val removedDownloadIds = ConcurrentHashMap.newKeySet<Long>()
+    private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val downloadEngine = DownloadEngine(viewModelScope) { downloadId, update ->
         viewModelScope.launch { applyDownloadUpdate(downloadId, update) }
     }
@@ -120,6 +155,45 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private val extensionPromptDelegate = object : WebExtensionController.PromptDelegate {
+        override fun onInstallPromptRequest(
+            extension: WebExtension,
+            permissions: Array<String>,
+            origins: Array<String>,
+        ): GeckoResult<WebExtension.PermissionPromptResponse> =
+            createExtensionInstallPrompt(extension, permissions, origins, emptyArray())
+
+        override fun onInstallPromptRequest(
+            extension: WebExtension,
+            permissions: Array<String>,
+            origins: Array<String>,
+            dataCollectionPermissions: Array<String>,
+        ): GeckoResult<WebExtension.PermissionPromptResponse> =
+            createExtensionInstallPrompt(extension, permissions, origins, dataCollectionPermissions)
+
+        override fun onUpdatePrompt(
+            extension: WebExtension,
+            updatedExtension: WebExtension,
+            newPermissions: Array<String>,
+            newOrigins: Array<String>,
+        ): GeckoResult<AllowOrDeny> = createExtensionUpdatePrompt(
+            extension,
+            updatedExtension,
+            newPermissions,
+            newOrigins,
+        )
+    }
+
+    private val addonManagerDelegate = object : WebExtensionController.AddonManagerDelegate {
+        override fun onInstalled(extension: WebExtension) = refreshInstalledExtensions()
+
+        override fun onUninstalled(extension: WebExtension) = refreshInstalledExtensions()
+
+        override fun onEnabled(extension: WebExtension) = refreshInstalledExtensions()
+
+        override fun onDisabled(extension: WebExtension) = refreshInstalledExtensions()
+    }
+
     val state: StateFlow<BrowserUiState> = _state.asStateFlow()
     val history: Flow<List<HistoryEntry>> = dao.observeHistory()
     val bookmarks: Flow<List<Bookmark>> = dao.observeBookmarks()
@@ -129,10 +203,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             settingsRepository.settings.collect { settings ->
                 val desktopSitesChanged = _state.value.settings.desktopSites != settings.desktopSites
+                val adBlockingChanged = _state.value.settings.adBlockingEnabled != settings.adBlockingEnabled ||
+                    _state.value.settings.adBlockFilters != settings.adBlockFilters
+                val userScriptsChanged = _state.value.settings.userScriptUrls != settings.userScriptUrls ||
+                    _state.value.settings.disabledUserScriptUrls != settings.disabledUserScriptUrls
                 _state.update { current -> current.copy(settings = settings) }
                 _state.value.tabs.forEach { tab ->
                     applyDesktopSiteSetting(tab.session, settings.desktopSites)
                     if (desktopSitesChanged && tab.hasPage) tab.session.reload()
+                    if (adBlockingChanged && tab.hasPage) tab.session.reload()
+                    if (userScriptsChanged && tab.hasPage) tab.session.reload()
                 }
                 syncAdBlockSettings(settings)
                 syncUserScripts(settings)
@@ -150,6 +230,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+        runtime.webExtensionController.setPromptDelegate(extensionPromptDelegate)
+        runtime.webExtensionController.setAddonManagerDelegate(addonManagerDelegate)
+        refreshInstalledExtensions()
         installAdBlocker()
         restoreDownloads()
         createTab()
@@ -292,6 +375,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { settingsRepository.setAdBlockingEnabled(enabled) }
     }
 
+    fun setAdBlockFilterEnabled(filter: AdBlockFilter, enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAdBlockFilterEnabled(filter.url, enabled) }
+    }
+
+    fun refreshAdBlockFilters() {
+        syncAdBlockSettings(_state.value.settings)
+        _state.value.tabs.filter { it.hasPage }.forEach { it.session.reload() }
+        showSnackbar("Adblock lists are being updated")
+    }
+
     fun addAdBlockFilter(url: String) {
         val normalized = url.trim()
         if (!normalized.startsWith("https://") && !normalized.startsWith("http://")) {
@@ -316,6 +409,107 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun removeUserScript(url: String) {
         viewModelScope.launch { settingsRepository.removeUserScript(url) }
+    }
+
+    fun setUserScriptEnabled(url: String, enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setUserScriptEnabled(url, enabled) }
+    }
+
+    fun refreshUserScripts() {
+        syncUserScripts(_state.value.settings)
+        _state.value.tabs.filter { it.hasPage }.forEach { it.session.reload() }
+        showSnackbar("Userscripts are being updated")
+    }
+
+    fun installExtension(input: String) {
+        val normalized = input.trim()
+        if (normalized.isBlank()) {
+            showSnackbar("Enter an AMO listing URL or a direct .xpi URL")
+            return
+        }
+        if (_state.value.extensionInstallInProgress) return
+
+        _state.update { it.copy(extensionInstallInProgress = true) }
+        viewModelScope.launch {
+            val packageUrl = withContext(Dispatchers.IO) { resolveExtensionPackageUrl(normalized) }
+            if (packageUrl == null) {
+                _state.update { it.copy(extensionInstallInProgress = false) }
+                showSnackbar("Could not find a signed Firefox extension package")
+                return@launch
+            }
+            installExtensionPackage(packageUrl)
+        }
+    }
+
+    fun openFirefoxAddons() {
+        dismissOverlay()
+        navigateActive("https://addons.mozilla.org/en-US/firefox/")
+    }
+
+    fun setExtensionEnabled(id: String, enabled: Boolean) {
+        val extension = installedExtensionObjects[id] ?: return
+        val operation = if (enabled) {
+            runtime.webExtensionController.enable(extension, WebExtensionController.EnableSource.USER)
+        } else {
+            runtime.webExtensionController.disable(extension, WebExtensionController.EnableSource.USER)
+        }
+        operation.accept(
+            { refreshInstalledExtensions() },
+            { showSnackbar(if (enabled) "Could not enable extension" else "Could not disable extension") },
+        )
+    }
+
+    fun updateExtension(id: String) {
+        val extension = installedExtensionObjects[id] ?: return
+        runtime.webExtensionController.update(extension).accept(
+            { updated ->
+                refreshInstalledExtensions()
+                showSnackbar(if (updated == null) "Extension is already up to date" else "Extension updated")
+            },
+            { showSnackbar("Could not update extension") },
+        )
+    }
+
+    fun setExtensionPrivateBrowsing(id: String, allowed: Boolean) {
+        val extension = installedExtensionObjects[id] ?: return
+        runtime.webExtensionController.setAllowedInPrivateBrowsing(extension, allowed).accept(
+            { refreshInstalledExtensions() },
+            { showSnackbar("Could not update private-tab access") },
+        )
+    }
+
+    fun uninstallExtension(id: String) {
+        val extension = installedExtensionObjects[id] ?: return
+        runtime.webExtensionController.uninstall(extension).accept(
+            {
+                installedExtensionObjects.remove(id)
+                refreshInstalledExtensions()
+                showSnackbar("Extension removed")
+            },
+            { showSnackbar("Could not remove extension") },
+        )
+    }
+
+    fun resolveExtensionInstall(
+        allow: Boolean,
+        allowInPrivateBrowsing: Boolean,
+        allowDataCollection: Boolean,
+    ) {
+        val prompt = _state.value.extensionInstallPrompt ?: return
+        prompt.result.complete(
+            WebExtension.PermissionPromptResponse(
+                allow,
+                allow && allowInPrivateBrowsing,
+                allow && allowDataCollection,
+            ),
+        )
+        _state.update { it.copy(extensionInstallPrompt = null) }
+    }
+
+    fun resolveExtensionUpdate(allow: Boolean) {
+        val prompt = _state.value.extensionUpdatePrompt ?: return
+        prompt.result.complete(if (allow) AllowOrDeny.ALLOW else AllowOrDeny.DENY)
+        _state.update { it.copy(extensionUpdatePrompt = null) }
     }
 
     fun setDesktopSites(enabled: Boolean) {
@@ -500,7 +694,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             { extensions ->
                 val staleExtensions = extensions.orEmpty().filter {
                     it.id == "uBlock0@raymondhill.net" ||
-                        (it.id == "adblock@dextra" && it.metaData.version != "2.2.0")
+                        (it.id == "adblock@dextra" && it.metaData.version != "2.4.0")
                 }
                 removeStaleAdBlockers(staleExtensions)
             },
@@ -549,7 +743,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun syncAdBlockSettings(settings: BrowserSettings) {
         val port = adBlockPort ?: return
         val urls = JSONArray()
-        settings.adBlockFilters.forEach { urls.put(it.url) }
+        settings.adBlockFilters.filter { it.enabled }.forEach { urls.put(it.url) }
         port.postMessage(
             JSONObject()
                 .put("type", "updateAdblock")
@@ -561,12 +755,149 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun syncUserScripts(settings: BrowserSettings) {
         val port = adBlockPort ?: return
         val urls = JSONArray()
-        settings.userScriptUrls.forEach(urls::put)
+        settings.userScriptUrls
+            .filterNot { it in settings.disabledUserScriptUrls }
+            .forEach(urls::put)
         port.postMessage(
             JSONObject()
                 .put("type", "updateUserscripts")
                 .put("urls", urls),
         )
+    }
+
+    private fun createExtensionInstallPrompt(
+        extension: WebExtension,
+        permissions: Array<String>,
+        origins: Array<String>,
+        dataCollectionPermissions: Array<String>,
+    ): GeckoResult<WebExtension.PermissionPromptResponse> {
+        _state.value.extensionInstallPrompt?.result?.complete(
+            WebExtension.PermissionPromptResponse(false, false, false),
+        )
+        val result = GeckoResult<WebExtension.PermissionPromptResponse>()
+        _state.update {
+            it.copy(
+                extensionInstallPrompt = ExtensionInstallPrompt(
+                    id = UUID.randomUUID().toString(),
+                    name = extension.metaData.name ?: extension.id,
+                    version = extension.metaData.version,
+                    permissions = permissions.toList(),
+                    origins = origins.toList(),
+                    dataCollectionPermissions = dataCollectionPermissions.toList(),
+                    result = result,
+                ),
+            )
+        }
+        return result
+    }
+
+    private fun createExtensionUpdatePrompt(
+        extension: WebExtension,
+        updatedExtension: WebExtension,
+        permissions: Array<String>,
+        origins: Array<String>,
+    ): GeckoResult<AllowOrDeny> {
+        _state.value.extensionUpdatePrompt?.result?.complete(AllowOrDeny.DENY)
+        val result = GeckoResult<AllowOrDeny>()
+        _state.update {
+            it.copy(
+                extensionUpdatePrompt = ExtensionUpdatePrompt(
+                    id = UUID.randomUUID().toString(),
+                    name = extension.metaData.name ?: extension.id,
+                    currentVersion = extension.metaData.version,
+                    newVersion = updatedExtension.metaData.version,
+                    permissions = permissions.toList(),
+                    origins = origins.toList(),
+                    result = result,
+                ),
+            )
+        }
+        return result
+    }
+
+    private fun refreshInstalledExtensions() {
+        runtime.webExtensionController.list().accept(
+            { extensions ->
+                val userExtensions = extensions.orEmpty().filterNot {
+                    it.isBuiltIn || it.id == "adblock@dextra"
+                }
+                installedExtensionObjects.clear()
+                userExtensions.forEach { installedExtensionObjects[it.id] = it }
+                _state.update {
+                    it.copy(installedExtensions = userExtensions.map(::installedExtensionState))
+                }
+            },
+            { error -> Log.e("Dextra", "Could not list Firefox extensions", error) },
+        )
+    }
+
+    private fun installedExtensionState(extension: WebExtension): InstalledExtension =
+        InstalledExtension(
+            id = extension.id,
+            name = extension.metaData.name ?: extension.id,
+            version = extension.metaData.version,
+            creatorName = extension.metaData.creatorName,
+            enabled = extension.metaData.enabled,
+            allowedInPrivateBrowsing = extension.metaData.allowedInPrivateBrowsing,
+            amoListingUrl = extension.metaData.amoListingUrl,
+        )
+
+    private fun resolveExtensionPackageUrl(input: String): String? {
+        if (FirefoxAddons.isXpiUrl(input)) return input
+        val slug = FirefoxAddons.listingSlug(input) ?: return null
+        val apiUrl = "https://addons.mozilla.org/api/v5/addons/addon/${Uri.encode(slug)}/?lang=en-US"
+        val connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8_000
+            readTimeout = 8_000
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/json")
+        }
+        return try {
+            if (connection.responseCode !in 200..299) return null
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val currentVersion = JSONObject(body).optJSONObject("current_version") ?: return null
+            val currentFileUrl = currentVersion.optJSONObject("file")?.optString("url").orEmpty()
+            if (currentFileUrl.startsWith("https://")) return currentFileUrl
+            val files = currentVersion.optJSONArray("files") ?: return null
+            for (index in 0 until files.length()) {
+                val downloadUrl = files.optJSONObject(index)?.optString("download_url").orEmpty()
+                if (downloadUrl.startsWith("https://")) return downloadUrl
+            }
+            null
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun installExtensionPackage(packageUrl: String) {
+        val alreadyPreparing = _state.value.extensionInstallInProgress
+        _state.update { it.copy(extensionInstallInProgress = true) }
+        if (!alreadyPreparing) showSnackbar("Preparing extension installation")
+        runtime.webExtensionController.install(
+            packageUrl,
+            WebExtensionController.INSTALLATION_METHOD_MANAGER,
+        ).accept(
+            { extension ->
+                _state.update { it.copy(extensionInstallInProgress = false, extensionInstallPrompt = null) }
+                refreshInstalledExtensions()
+                showSnackbar("${extension?.metaData?.name ?: "Extension"} installed")
+            },
+            { error ->
+                _state.update { it.copy(extensionInstallInProgress = false, extensionInstallPrompt = null) }
+                showSnackbar(extensionInstallError(error))
+            },
+        )
+    }
+
+    private fun extensionInstallError(error: Throwable?): String {
+        val message = error?.message.orEmpty().lowercase()
+        return when {
+            "signed" in message -> "Extension must be Mozilla-signed"
+            "incompatible" in message -> "Extension is incompatible with GeckoView"
+            "blocklist" in message -> "Extension is blocked by Mozilla"
+            "cancel" in message || "denied" in message -> "Extension installation canceled"
+            else -> "Could not install extension"
+        }
     }
 
     private fun recordHistory(tabId: String) {
@@ -771,7 +1102,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
-            download(response)
+            val contentType = response.headers["Content-Type"] ?: response.headers["content-type"]
+            if (FirefoxAddons.isAmoUrl(response.uri) && FirefoxAddons.isXpiDownload(response.uri, contentType)) {
+                installExtensionPackage(response.uri)
+            } else {
+                download(response)
+            }
         }
 
         override fun onCloseRequest(session: GeckoSession) {

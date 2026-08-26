@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Language
@@ -142,6 +144,9 @@ import com.dwicao.dextra.browser.BrowserTabState
 import com.dwicao.dextra.browser.BrowserUrl
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
+import com.dwicao.dextra.browser.ExtensionInstallPrompt
+import com.dwicao.dextra.browser.ExtensionUpdatePrompt
+import com.dwicao.dextra.browser.InstalledExtension
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.HistoryEntry
@@ -212,18 +217,34 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onSetTheme = viewModel::setThemeMode,
                 onSetSearchEngine = viewModel::setSearchEngine,
                 onSetDesktopSites = viewModel::setDesktopSites,
-                onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
-                onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
-                onAddAdBlockFilter = viewModel::addAdBlockFilter,
-                onRemoveAdBlockFilter = viewModel::removeAdBlockFilter,
-                onAddUserScript = viewModel::addUserScript,
-                onRemoveUserScript = viewModel::removeUserScript,
+                 onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
+                 onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
+                 onSetAdBlockFilterEnabled = viewModel::setAdBlockFilterEnabled,
+                 onRefreshAdBlockFilters = viewModel::refreshAdBlockFilters,
+                 onAddAdBlockFilter = viewModel::addAdBlockFilter,
+                 onRemoveAdBlockFilter = viewModel::removeAdBlockFilter,
+                 onAddUserScript = viewModel::addUserScript,
+                 onSetUserScriptEnabled = viewModel::setUserScriptEnabled,
+                 onRefreshUserScripts = viewModel::refreshUserScripts,
+                 onRemoveUserScript = viewModel::removeUserScript,
+                installedExtensions = state.installedExtensions,
+                extensionInstallInProgress = state.extensionInstallInProgress,
+                onInstallExtension = viewModel::installExtension,
+                onOpenFirefoxAddons = viewModel::openFirefoxAddons,
+                 onSetExtensionEnabled = viewModel::setExtensionEnabled,
+                 onSetExtensionPrivateBrowsing = viewModel::setExtensionPrivateBrowsing,
+                 onUpdateExtension = viewModel::updateExtension,
+                 onUninstallExtension = viewModel::uninstallExtension,
                 onOpenDownload = viewModel::openDownload,
                 onShareDownload = viewModel::shareDownload,
                 onToggleDownload = viewModel::toggleDownload,
                 onCancelDownload = viewModel::cancelDownload,
                 onRemoveDownload = viewModel::removeDownload,
                 onResolvePermission = viewModel::resolveContentPermission,
+                extensionInstallPrompt = state.extensionInstallPrompt,
+                onResolveExtensionInstall = viewModel::resolveExtensionInstall,
+                extensionUpdatePrompt = state.extensionUpdatePrompt,
+                onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
             )
         }
     }
@@ -256,16 +277,32 @@ private fun BrowserScreen(
     onSetDesktopSites: (Boolean) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
     onSetAdBlockingEnabled: (Boolean) -> Unit,
+    onSetAdBlockFilterEnabled: (AdBlockFilter, Boolean) -> Unit,
+    onRefreshAdBlockFilters: () -> Unit,
     onAddAdBlockFilter: (String) -> Unit,
     onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
     onAddUserScript: (String) -> Unit,
+    onSetUserScriptEnabled: (String, Boolean) -> Unit,
+    onRefreshUserScripts: () -> Unit,
     onRemoveUserScript: (String) -> Unit,
+    installedExtensions: List<InstalledExtension>,
+    extensionInstallInProgress: Boolean,
+    onInstallExtension: (String) -> Unit,
+    onOpenFirefoxAddons: () -> Unit,
+    onSetExtensionEnabled: (String, Boolean) -> Unit,
+    onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
+    onUpdateExtension: (String) -> Unit,
+    onUninstallExtension: (String) -> Unit,
     onOpenDownload: (DownloadEntry) -> Unit,
     onShareDownload: (DownloadEntry) -> Unit,
     onToggleDownload: (DownloadEntry) -> Unit,
     onCancelDownload: (DownloadEntry) -> Unit,
     onRemoveDownload: (DownloadEntry) -> Unit,
     onResolvePermission: (Boolean) -> Unit,
+    extensionInstallPrompt: ExtensionInstallPrompt?,
+    onResolveExtensionInstall: (Boolean, Boolean, Boolean) -> Unit,
+    extensionUpdatePrompt: ExtensionUpdatePrompt?,
+    onResolveExtensionUpdate: (Boolean) -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
     var menuExpanded by remember { mutableStateOf(false) }
@@ -304,111 +341,130 @@ private fun BrowserScreen(
         LaunchedEffect(activeTab?.id) {
             runCatching { addressFocusRequester.requestFocus() }
         }
-        val expanded = maxWidth >= 840.dp
-        if (expanded) {
-            DesktopBrowserLayout(
-                state = state,
-                activeTab = activeTab,
-                onNavigate = onNavigate,
-                onBack = onBack,
-                onForward = onForward,
-                onReload = onReload,
-                onNewTab = { onNewTab() },
-                onSelectTab = onSelectTab,
-                onCloseTab = onCloseTab,
-                onToggleBookmark = onToggleBookmark,
-                onMenu = { menuExpanded = true },
-                addressFocusRequester = addressFocusRequester,
-                showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+        if (state.overlay == BrowserOverlay.SETTINGS) {
+            SettingsScreen(
+                onBack = onDismissOverlay,
+                themeMode = state.settings.themeMode,
+                searchEngine = state.settings.searchEngine,
+                onSetTheme = onSetTheme,
+                onSetSearchEngine = onSetSearchEngine,
+                desktopSites = state.settings.desktopSites,
+                tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+                onSetDesktopSites = onSetDesktopSites,
+                onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
+                adBlockingEnabled = state.settings.adBlockingEnabled,
+                adBlockFilters = state.settings.adBlockFilters,
+                onSetAdBlockingEnabled = onSetAdBlockingEnabled,
+                onSetAdBlockFilterEnabled = onSetAdBlockFilterEnabled,
+                onRefreshAdBlockFilters = onRefreshAdBlockFilters,
+                onAddAdBlockFilter = onAddAdBlockFilter,
+                onRemoveAdBlockFilter = onRemoveAdBlockFilter,
+                userScriptUrls = state.settings.userScriptUrls,
+                disabledUserScriptUrls = state.settings.disabledUserScriptUrls,
+                onAddUserScript = onAddUserScript,
+                onSetUserScriptEnabled = onSetUserScriptEnabled,
+                onRefreshUserScripts = onRefreshUserScripts,
+                onRemoveUserScript = onRemoveUserScript,
+                installedExtensions = installedExtensions,
+                extensionInstallInProgress = extensionInstallInProgress,
+                onInstallExtension = onInstallExtension,
+                onOpenFirefoxAddons = onOpenFirefoxAddons,
+                onSetExtensionEnabled = onSetExtensionEnabled,
+                onSetExtensionPrivateBrowsing = onSetExtensionPrivateBrowsing,
+                onUpdateExtension = onUpdateExtension,
+                onUninstallExtension = onUninstallExtension,
             )
         } else {
-            CompactBrowserLayout(
-                state = state,
-                activeTab = activeTab,
-                onNavigate = onNavigate,
-                onBack = onBack,
-                onForward = onForward,
-                onReload = onReload,
-                onNewTab = { onNewTab() },
-                onSelectTab = onSelectTab,
-                onCloseTab = onCloseTab,
-                onToggleBookmark = onToggleBookmark,
-                onMenu = { menuExpanded = true },
-                addressFocusRequester = addressFocusRequester,
-                onShowTabs = { onSetOverlay(BrowserOverlay.TABS) },
-                showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+            val expanded = maxWidth >= 840.dp
+            if (expanded) {
+                DesktopBrowserLayout(
+                    state = state,
+                    activeTab = activeTab,
+                    onNavigate = onNavigate,
+                    onBack = onBack,
+                    onForward = onForward,
+                    onReload = onReload,
+                    onNewTab = { onNewTab() },
+                    onSelectTab = onSelectTab,
+                    onCloseTab = onCloseTab,
+                    onToggleBookmark = onToggleBookmark,
+                    onMenu = { menuExpanded = true },
+                    addressFocusRequester = addressFocusRequester,
+                    showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+                )
+            } else {
+                CompactBrowserLayout(
+                    state = state,
+                    activeTab = activeTab,
+                    onNavigate = onNavigate,
+                    onBack = onBack,
+                    onForward = onForward,
+                    onReload = onReload,
+                    onNewTab = { onNewTab() },
+                    onSelectTab = onSelectTab,
+                    onCloseTab = onCloseTab,
+                    onToggleBookmark = onToggleBookmark,
+                    onMenu = { menuExpanded = true },
+                    addressFocusRequester = addressFocusRequester,
+                    onShowTabs = { onSetOverlay(BrowserOverlay.TABS) },
+                    showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+                )
+            }
+
+            BrowserMenu(
+                expanded = menuExpanded,
+                onDismiss = { menuExpanded = false },
+                onNewPrivateTab = {
+                    menuExpanded = false
+                    onNewPrivateTab()
+                },
+                onShowTabs = {
+                    menuExpanded = false
+                    onSetOverlay(BrowserOverlay.TABS)
+                },
+                onShowLibrary = {
+                    menuExpanded = false
+                    onSetOverlay(BrowserOverlay.LIBRARY)
+                },
+                onShowDownloads = {
+                    menuExpanded = false
+                    onSetOverlay(BrowserOverlay.DOWNLOADS)
+                },
+                onShowSettings = {
+                    menuExpanded = false
+                    onSetOverlay(BrowserOverlay.SETTINGS)
+                },
             )
-        }
 
-        BrowserMenu(
-            expanded = menuExpanded,
-            onDismiss = { menuExpanded = false },
-            onNewPrivateTab = {
-                menuExpanded = false
-                onNewPrivateTab()
-            },
-            onShowTabs = {
-                menuExpanded = false
-                onSetOverlay(BrowserOverlay.TABS)
-            },
-            onShowLibrary = {
-                menuExpanded = false
-                onSetOverlay(BrowserOverlay.LIBRARY)
-            },
-            onShowDownloads = {
-                menuExpanded = false
-                onSetOverlay(BrowserOverlay.DOWNLOADS)
-            },
-            onShowSettings = {
-                menuExpanded = false
-                onSetOverlay(BrowserOverlay.SETTINGS)
-            },
-        )
-
-        if (state.overlay != BrowserOverlay.NONE) {
-            ModalBottomSheet(onDismissRequest = onDismissOverlay) {
-                when (state.overlay) {
-                    BrowserOverlay.TABS -> TabsSheet(
-                        tabs = state.tabs,
-                        activeTabId = state.activeTabId,
-                        onNewTab = { onDismissOverlay(); onNewTab() },
-                        onNewPrivateTab = { onDismissOverlay(); onNewPrivateTab() },
-                        onSelectTab = onSelectTab,
-                        onCloseTab = onCloseTab,
-                    )
-                    BrowserOverlay.LIBRARY -> LibrarySheet(
-                        bookmarks = bookmarks,
-                        history = history,
-                        onOpen = onOpenSavedPage,
-                        onClearHistory = onClearHistory,
-                    )
-                    BrowserOverlay.DOWNLOADS -> DownloadsSheet(
-                        downloads = downloads,
-                        onOpen = onOpenDownload,
-                        onShare = onShareDownload,
-                        onToggle = onToggleDownload,
-                        onCancel = onCancelDownload,
-                        onRemove = onRemoveDownload,
-                    )
-                    BrowserOverlay.SETTINGS -> SettingsSheet(
-                        themeMode = state.settings.themeMode,
-                        searchEngine = state.settings.searchEngine,
-                        onSetTheme = onSetTheme,
-                        onSetSearchEngine = onSetSearchEngine,
-                        desktopSites = state.settings.desktopSites,
-                        tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
-                        onSetDesktopSites = onSetDesktopSites,
-                        onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
-                        adBlockingEnabled = state.settings.adBlockingEnabled,
-                        adBlockFilters = state.settings.adBlockFilters,
-                        onSetAdBlockingEnabled = onSetAdBlockingEnabled,
-                        onAddAdBlockFilter = onAddAdBlockFilter,
-                        onRemoveAdBlockFilter = onRemoveAdBlockFilter,
-                        userScriptUrls = state.settings.userScriptUrls,
-                        onAddUserScript = onAddUserScript,
-                        onRemoveUserScript = onRemoveUserScript,
-                    )
-                    BrowserOverlay.NONE -> Unit
+            if (state.overlay != BrowserOverlay.NONE) {
+                ModalBottomSheet(onDismissRequest = onDismissOverlay) {
+                    when (state.overlay) {
+                        BrowserOverlay.TABS -> TabsSheet(
+                            tabs = state.tabs,
+                            activeTabId = state.activeTabId,
+                            onNewTab = { onDismissOverlay(); onNewTab() },
+                            onNewPrivateTab = { onDismissOverlay(); onNewPrivateTab() },
+                            onSelectTab = onSelectTab,
+                            onCloseTab = onCloseTab,
+                        )
+                        BrowserOverlay.LIBRARY -> LibrarySheet(
+                            bookmarks = bookmarks,
+                            history = history,
+                            onOpen = onOpenSavedPage,
+                            onClearHistory = onClearHistory,
+                        )
+                        BrowserOverlay.DOWNLOADS -> DownloadsSheet(
+                            downloads = downloads,
+                            onOpen = onOpenDownload,
+                            onShare = onShareDownload,
+                            onToggle = onToggleDownload,
+                            onCancel = onCancelDownload,
+                            onRemove = onRemoveDownload,
+                        )
+                        BrowserOverlay.SETTINGS,
+                        BrowserOverlay.NONE,
+                        -> Unit
+                    }
                 }
             }
         }
@@ -422,6 +478,12 @@ private fun BrowserScreen(
                 confirmButton = { TextButton(onClick = { onResolvePermission(true) }) { Text("Allow") } },
                 dismissButton = { TextButton(onClick = { onResolvePermission(false) }) { Text("Block") } },
             )
+        }
+        extensionInstallPrompt?.let { prompt ->
+            ExtensionInstallDialog(prompt, onResolveExtensionInstall)
+        }
+        extensionUpdatePrompt?.let { prompt ->
+            ExtensionUpdateDialog(prompt, onResolveExtensionUpdate)
         }
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -1226,7 +1288,96 @@ private fun EmptyLibrary(message: String, icon: androidx.compose.ui.graphics.vec
 }
 
 @Composable
-private fun SettingsSheet(
+private fun ExtensionInstallDialog(
+    prompt: ExtensionInstallPrompt,
+    onResolve: (Boolean, Boolean, Boolean) -> Unit,
+) {
+    var allowPrivateBrowsing by remember(prompt.id) { mutableStateOf(false) }
+    var allowDataCollection by remember(prompt.id) { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = { onResolve(false, false, false) },
+        icon = { Icon(Icons.Outlined.Extension, contentDescription = null) },
+        title = { Text("Install ${prompt.name}?") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text("Version ${prompt.version} requests access to run in Dextra.")
+                Spacer(Modifier.height(12.dp))
+                SettingToggle(
+                    title = "Allow in private tabs",
+                    summary = "Run this extension while private browsing is active",
+                    checked = allowPrivateBrowsing,
+                    onCheckedChange = { allowPrivateBrowsing = it },
+                )
+                if (prompt.permissions.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Extension permissions", style = MaterialTheme.typography.titleSmall)
+                    prompt.permissions.forEach { Text("- $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (prompt.origins.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Website access", style = MaterialTheme.typography.titleSmall)
+                    prompt.origins.forEach { Text("- $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (prompt.dataCollectionPermissions.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    SettingToggle(
+                        title = "Share technical data",
+                        summary = prompt.dataCollectionPermissions.joinToString(", "),
+                        checked = allowDataCollection,
+                        onCheckedChange = { allowDataCollection = it },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onResolve(true, allowPrivateBrowsing, allowDataCollection) }) {
+                Text("Install")
+            }
+        },
+        dismissButton = { TextButton(onClick = { onResolve(false, false, false) }) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ExtensionUpdateDialog(
+    prompt: ExtensionUpdatePrompt,
+    onResolve: (Boolean) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { onResolve(false) },
+        icon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+        title = { Text("Update ${prompt.name}?") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text("${prompt.currentVersion} -> ${prompt.newVersion} requests additional access.")
+                if (prompt.permissions.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("New extension permissions", style = MaterialTheme.typography.titleSmall)
+                    prompt.permissions.forEach { Text("- $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (prompt.origins.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("New website access", style = MaterialTheme.typography.titleSmall)
+                    prompt.origins.forEach { Text("- $it", style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onResolve(true) }) { Text("Update") } },
+        dismissButton = { TextButton(onClick = { onResolve(false) }) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun SettingsScreen(
+    onBack: () -> Unit,
     themeMode: ThemeMode,
     searchEngine: SearchEngine,
     desktopSites: Boolean,
@@ -1238,13 +1389,52 @@ private fun SettingsSheet(
     onSetDesktopSites: (Boolean) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
     onSetAdBlockingEnabled: (Boolean) -> Unit,
+    onSetAdBlockFilterEnabled: (AdBlockFilter, Boolean) -> Unit,
+    onRefreshAdBlockFilters: () -> Unit,
     onAddAdBlockFilter: (String) -> Unit,
     onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
     userScriptUrls: List<String>,
+    disabledUserScriptUrls: Set<String>,
     onAddUserScript: (String) -> Unit,
+    onSetUserScriptEnabled: (String, Boolean) -> Unit,
+    onRefreshUserScripts: () -> Unit,
     onRemoveUserScript: (String) -> Unit,
+    installedExtensions: List<InstalledExtension>,
+    extensionInstallInProgress: Boolean,
+    onInstallExtension: (String) -> Unit,
+    onOpenFirefoxAddons: () -> Unit,
+    onSetExtensionEnabled: (String, Boolean) -> Unit,
+    onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
+    onUpdateExtension: (String) -> Unit,
+    onUninstallExtension: (String) -> Unit,
 ) {
-    SheetHeader("Settings", "Tune Dextra for the way you work")
+    var pendingExtensionRemoval by remember { mutableStateOf<InstalledExtension?>(null) }
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Outlined.ArrowBack, contentDescription = "Back")
+                }
+                Column(Modifier.padding(start = 4.dp)) {
+                    Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Tune Dextra for the way you work",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
     SettingSection("Appearance") {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeMode.values().forEach { mode ->
@@ -1296,6 +1486,16 @@ private fun SettingsSheet(
             checked = adBlockingEnabled,
             onCheckedChange = onSetAdBlockingEnabled,
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onRefreshAdBlockFilters) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Update lists")
+            }
+        }
         Spacer(Modifier.height(12.dp))
         var filterUrl by rememberSaveable { mutableStateOf("") }
         Row(
@@ -1329,8 +1529,17 @@ private fun SettingsSheet(
                 supportingContent = { Text(filter.url, maxLines = 1) },
                 leadingContent = { Icon(Icons.Outlined.Security, contentDescription = null) },
                 trailingContent = {
-                    IconButton(onClick = { onRemoveAdBlockFilter(filter) }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Remove ${filter.name}")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = filter.enabled,
+                            onCheckedChange = { onSetAdBlockFilterEnabled(filter, it) },
+                        )
+                        IconButton(onClick = onRefreshAdBlockFilters) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = "Update ${filter.name}")
+                        }
+                        IconButton(onClick = { onRemoveAdBlockFilter(filter) }) {
+                            Icon(Icons.Outlined.Close, contentDescription = "Remove ${filter.name}")
+                        }
                     }
                 },
             )
@@ -1338,6 +1547,16 @@ private fun SettingsSheet(
     }
     SettingSection("User scripts") {
         var userScriptUrl by rememberSaveable { mutableStateOf("") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onRefreshUserScripts) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Update scripts")
+            }
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -1375,14 +1594,144 @@ private fun SettingsSheet(
                 supportingContent = { Text(url, maxLines = 1) },
                 leadingContent = { Icon(Icons.Outlined.Language, contentDescription = null) },
                 trailingContent = {
-                    IconButton(onClick = { onRemoveUserScript(url) }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Remove userscript")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = url !in disabledUserScriptUrls,
+                            onCheckedChange = { onSetUserScriptEnabled(url, it) },
+                        )
+                        IconButton(onClick = onRefreshUserScripts) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = "Update userscript")
+                        }
+                        IconButton(onClick = { onRemoveUserScript(url) }) {
+                            Icon(Icons.Outlined.Close, contentDescription = "Remove userscript")
+                        }
                     }
                 },
             )
         }
     }
+    SettingSection("Firefox extensions") {
+        var extensionUrl by rememberSaveable { mutableStateOf("") }
+        Text(
+            "Install Mozilla-signed add-ons from Firefox Add-ons or a direct .xpi URL.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = extensionUrl,
+                onValueChange = { extensionUrl = it },
+                modifier = Modifier.weight(1f),
+                label = { Text("AMO or XPI URL") },
+                placeholder = { Text("https://addons.mozilla.org/.../addon/...") },
+                singleLine = true,
+            )
+            Button(
+                onClick = {
+                    onInstallExtension(extensionUrl)
+                    extensionUrl = ""
+                },
+                enabled = extensionUrl.isNotBlank() && !extensionInstallInProgress,
+                modifier = Modifier.height(56.dp),
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = "Install extension")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onOpenFirefoxAddons,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Outlined.Extension, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Browse Firefox Add-ons")
+        }
+        if (extensionInstallInProgress) {
+            Text(
+                "Preparing extension installation...",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        if (installedExtensions.isEmpty()) {
+            Text(
+                "No user extensions installed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        } else {
+            installedExtensions.forEach { extension ->
+                Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    ListItem(
+                        headlineContent = { Text(extension.name, maxLines = 1) },
+                        supportingContent = {
+                            Text(
+                                listOfNotNull("v${extension.version}", extension.creatorName).joinToString("  •  "),
+                                maxLines = 1,
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Outlined.Extension, contentDescription = null) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Switch(
+                                    checked = extension.enabled,
+                                    onCheckedChange = { onSetExtensionEnabled(extension.id, it) },
+                                )
+                                IconButton(onClick = { onUpdateExtension(extension.id) }) {
+                                    Icon(Icons.Outlined.Refresh, contentDescription = "Update ${extension.name}")
+                                }
+                            }
+                        },
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Allow in private tabs",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Switch(
+                            checked = extension.allowedInPrivateBrowsing,
+                            onCheckedChange = { onSetExtensionPrivateBrowsing(extension.id, it) },
+                        )
+                        IconButton(onClick = { pendingExtensionRemoval = extension }) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove ${extension.name}")
+                        }
+                    }
+                    Divider(modifier = Modifier.padding(top = 8.dp, start = 20.dp, end = 20.dp))
+                }
+            }
+        }
+    }
+    pendingExtensionRemoval?.let { extension ->
+        AlertDialog(
+            onDismissRequest = { pendingExtensionRemoval = null },
+            title = { Text("Remove extension?") },
+            text = { Text("Uninstall ${extension.name} from Dextra?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingExtensionRemoval = null
+                        onUninstallExtension(extension.id)
+                    },
+                ) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { pendingExtensionRemoval = null }) { Text("Keep") } },
+        )
+    }
     Spacer(Modifier.height(28.dp))
+            }
+        }
+    }
 }
 
 @Composable

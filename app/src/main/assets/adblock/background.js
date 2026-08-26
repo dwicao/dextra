@@ -136,7 +136,7 @@
         if (key === "exclude") metadata.excludes.push(value);
         if (key === "include") metadata.includes.push(value);
         if (key === "require" && /^https?:\/\/\S+$/i.test(value)) metadata.requires.push(value);
-        if (key === "run-at" && ["document-start", "document-end", "document-idle"].includes(value)) metadata.runAt = value;
+        if (key === "run-at" && ["document-start", "document-end", "document-idle"].includes(value)) metadata.runAt = value.replace("-", "_");
         if (key === "noframes") metadata.noframes = true;
       }
     }
@@ -184,9 +184,9 @@
     try {
       const tabs = await browser.tabs.query({});
       for (const tab of tabs) {
-        const phase = tab.status === "loading" ? "document-start" : "document-end";
+        const phase = tab.status === "loading" ? "document_start" : "document_end";
         await injectUserScripts(tab.id, tab.url, phase);
-        if (tab.status !== "loading") await injectUserScripts(tab.id, tab.url, "document-idle");
+        if (tab.status !== "loading") await injectUserScripts(tab.id, tab.url, "document_idle");
       }
     } catch (_) {
       // A tab can disappear while subscriptions are being refreshed.
@@ -245,11 +245,11 @@
       for (const key of injectedScripts) {
         if (key.startsWith(`${tabId}|`)) injectedScripts.delete(key);
       }
-      injectUserScripts(tabId, url, "document-start");
+      injectUserScripts(tabId, url, "document_start");
     }
     if (changeInfo.status === "complete") {
-      injectUserScripts(tabId, url, "document-end");
-      injectUserScripts(tabId, url, "document-idle");
+      injectUserScripts(tabId, url, "document_end");
+      injectUserScripts(tabId, url, "document_idle");
     }
   });
 
