@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -39,6 +41,8 @@ import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
@@ -107,8 +111,13 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -367,50 +376,28 @@ private fun DesktopBrowserLayout(
     showTabBarWithAddressBar: Boolean,
 ) {
     Column(Modifier.fillMaxSize()) {
-        if (showTabBarWithAddressBar) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TabStrip(
-                    modifier = Modifier
-                        .weight(0.9f)
-                        .height(50.dp),
-                    tabs = state.tabs,
-                    activeTabId = state.activeTabId,
-                    onNewTab = onNewTab,
-                    onSelectTab = onSelectTab,
-                    onCloseTab = onCloseTab,
-                )
-                DesktopToolbar(
-                    modifier = Modifier.weight(1.6f),
-                    activeTab = activeTab,
-                    onNavigate = onNavigate,
-                    onBack = onBack,
-                    onForward = onForward,
-                    onReload = onReload,
-                    onToggleBookmark = onToggleBookmark,
-                    onMenu = onMenu,
-                    addressFocusRequester = addressFocusRequester,
-                )
-            }
-        } else {
-            TabStrip(
-                tabs = state.tabs,
-                activeTabId = state.activeTabId,
-                onNewTab = onNewTab,
-                onSelectTab = onSelectTab,
-                onCloseTab = onCloseTab,
-            )
-            DesktopToolbar(
-                activeTab = activeTab,
-                onNavigate = onNavigate,
-                onBack = onBack,
-                onForward = onForward,
-                onReload = onReload,
-                onToggleBookmark = onToggleBookmark,
-                onMenu = onMenu,
-                addressFocusRequester = addressFocusRequester,
+        DesktopToolbar(
+            tabs = state.tabs,
+            activeTabId = state.activeTabId,
+            onSelectTab = onSelectTab,
+            onCloseTab = onCloseTab,
+            onNewTab = onNewTab,
+            showTabBar = showTabBarWithAddressBar,
+            activeTab = activeTab,
+            onNavigate = onNavigate,
+            onBack = onBack,
+            onForward = onForward,
+            onReload = onReload,
+            onToggleBookmark = onToggleBookmark,
+            onMenu = onMenu,
+            addressFocusRequester = addressFocusRequester,
+        )
+        activeTab?.takeIf { it.isLoading }?.let {
+            LinearProgressIndicator(
+                progress = { it.progress / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp),
             )
         }
         BrowserViewport(activeTab, onNavigate)
@@ -438,13 +425,11 @@ private fun CompactBrowserLayout(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            IconButton(onClick = onMenu) {
-                Icon(Icons.Outlined.Menu, contentDescription = "Open menu")
-            }
+            BrowserNavButton(Icons.Outlined.Menu, "Open menu", enabled = true, onClick = onMenu)
             AddressBar(
                 tab = activeTab,
                 modifier = Modifier.weight(1f),
@@ -452,15 +437,13 @@ private fun CompactBrowserLayout(
                 onToggleBookmark = onToggleBookmark,
                 focusRequester = addressFocusRequester,
             )
-            IconButton(onClick = onNewTab) {
-                Icon(Icons.Outlined.Add, contentDescription = "New tab")
-            }
+            BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
         }
         if (showTabBarWithAddressBar) {
             TabStrip(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(46.dp),
+                    .height(42.dp),
                 tabs = state.tabs,
                 activeTabId = state.activeTabId,
                 onNewTab = onNewTab,
@@ -491,6 +474,12 @@ private fun CompactBrowserLayout(
 @Composable
 private fun DesktopToolbar(
     modifier: Modifier = Modifier,
+    tabs: List<BrowserTabState>,
+    activeTabId: String?,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onNewTab: () -> Unit,
+    showTabBar: Boolean,
     activeTab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onBack: () -> Boolean,
@@ -500,43 +489,56 @@ private fun DesktopToolbar(
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
 ) {
-    Row(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .height(52.dp),
     ) {
-        BrowserNavButton(Icons.Outlined.ArrowBack, "Back", enabled = activeTab?.canGoBack == true, onClick = { onBack() })
-        BrowserNavButton(Icons.Outlined.ArrowForward, "Forward", enabled = activeTab?.canGoForward == true, onClick = onForward)
-        BrowserNavButton(
-            if (activeTab?.isLoading == true) Icons.Outlined.Close else Icons.Outlined.Refresh,
-            if (activeTab?.isLoading == true) "Stop" else "Reload",
-            enabled = activeTab != null,
-            onClick = onReload,
-        )
-        AddressBar(
-            tab = activeTab,
-            modifier = Modifier.weight(1f),
-            onNavigate = onNavigate,
-            onToggleBookmark = onToggleBookmark,
-            focusRequester = addressFocusRequester,
-        )
-        BrowserNavButton(
-            if (activeTab?.isBookmarked == true) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
-            if (activeTab?.isBookmarked == true) "Remove bookmark" else "Bookmark",
-            enabled = activeTab?.hasPage == true,
-            onClick = onToggleBookmark,
-        )
-        BrowserNavButton(Icons.Outlined.MoreVert, "More", enabled = true, onClick = onMenu)
-    }
-    activeTab?.takeIf { it.isLoading }?.let {
-        LinearProgressIndicator(
-            progress = { it.progress / 100f },
+        val addressBarWidth = (maxWidth * 0.2f).coerceIn(220.dp, 420.dp)
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(2.dp),
-        )
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            BrowserNavButton(Icons.Outlined.ArrowBack, "Back", enabled = activeTab?.canGoBack == true, onClick = { onBack() })
+            BrowserNavButton(Icons.Outlined.ArrowForward, "Forward", enabled = activeTab?.canGoForward == true, onClick = onForward)
+            BrowserNavButton(
+                if (activeTab?.isLoading == true) Icons.Outlined.Close else Icons.Outlined.Refresh,
+                if (activeTab?.isLoading == true) "Stop" else "Reload",
+                enabled = activeTab != null,
+                onClick = onReload,
+            )
+            AddressBar(
+                tab = activeTab,
+                modifier = Modifier.width(addressBarWidth),
+                onNavigate = onNavigate,
+                onToggleBookmark = onToggleBookmark,
+                focusRequester = addressFocusRequester,
+            )
+            if (showTabBar) {
+                TabStrip(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(42.dp),
+                    tabs = tabs,
+                    activeTabId = activeTabId,
+                    onNewTab = onNewTab,
+                    showNewTabButton = false,
+                    onSelectTab = onSelectTab,
+                    onCloseTab = onCloseTab,
+                )
+            }
+            BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
+            BrowserNavButton(
+                if (activeTab?.isBookmarked == true) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+                if (activeTab?.isBookmarked == true) "Remove bookmark" else "Bookmark",
+                enabled = activeTab?.hasPage == true,
+                onClick = onToggleBookmark,
+            )
+            BrowserNavButton(Icons.Outlined.MoreVert, "More", enabled = true, onClick = onMenu)
+        }
     }
 }
 
@@ -589,8 +591,20 @@ private fun BrowserNavButton(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    IconButton(onClick = onClick, enabled = enabled) {
-        Icon(icon, contentDescription = label)
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+        )
     }
 }
 
@@ -612,7 +626,7 @@ private fun AddressBar(
         value = value,
         onValueChange = { value = it },
         modifier = modifier
-            .defaultMinSize(minHeight = 48.dp)
+            .height(48.dp)
             .focusRequester(focusRequester),
         singleLine = true,
         placeholder = { Text("Search or enter web address") },
@@ -624,9 +638,7 @@ private fun AddressBar(
         },
         trailingIcon = {
             if (value.isNotEmpty()) {
-                IconButton(onClick = { value = "" }) {
-                    Icon(Icons.Outlined.Close, contentDescription = "Clear")
-                }
+                BrowserNavButton(Icons.Outlined.Close, "Clear", enabled = true, onClick = { value = "" })
             }
         },
         shape = RoundedCornerShape(18.dp),
@@ -652,22 +664,47 @@ private fun TabStrip(
     tabs: List<BrowserTabState>,
     activeTabId: String?,
     onNewTab: () -> Unit,
+    showNewTabButton: Boolean = true,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
 ) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     Surface(
-        modifier = modifier,
+        modifier = modifier.pointerInput(listState) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    if (event.type == PointerEventType.Scroll) {
+                        val delta = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                        if (delta != 0f) scope.launch { listState.scrollBy(delta * 2f) }
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            }
+        },
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp),
+                .height(42.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            BrowserNavButton(
+                Icons.Outlined.ChevronLeft,
+                "Scroll tabs left",
+                enabled = listState.canScrollBackward,
+                onClick = {
+                    scope.launch {
+                        listState.animateScrollToItem((listState.firstVisibleItemIndex - 1).coerceAtLeast(0))
+                    }
+                },
+            )
             LazyRow(
+                state = listState,
                 modifier = Modifier.weight(1f),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -694,19 +731,27 @@ private fun TabStrip(
                                 text = tab.title.ifBlank { "New tab" },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .padding(horizontal = 8.dp, vertical = 14.dp),
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
                                 maxLines = 1,
                                 style = MaterialTheme.typography.labelLarge,
                             )
-                            IconButton(onClick = { onCloseTab(tab.id) }, modifier = Modifier.size(30.dp)) {
-                                Icon(Icons.Outlined.Close, contentDescription = "Close tab", modifier = Modifier.size(16.dp))
-                            }
+                            BrowserNavButton(Icons.Outlined.Close, "Close tab", enabled = true, onClick = { onCloseTab(tab.id) })
                         }
                     }
                 }
             }
-            IconButton(onClick = onNewTab, modifier = Modifier.padding(horizontal = 8.dp)) {
-                Icon(Icons.Outlined.Add, contentDescription = "New tab")
+            BrowserNavButton(
+                Icons.Outlined.ChevronRight,
+                "Scroll tabs right",
+                enabled = listState.canScrollForward,
+                onClick = {
+                    scope.launch {
+                        listState.animateScrollToItem(listState.firstVisibleItemIndex + 1)
+                    }
+                },
+            )
+            if (showNewTabButton) {
+                BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
             }
         }
     }
