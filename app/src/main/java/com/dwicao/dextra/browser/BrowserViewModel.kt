@@ -91,9 +91,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             settingsRepository.settings.collect { settings ->
+                val desktopSitesChanged = _state.value.settings.desktopSites != settings.desktopSites
                 _state.update { current -> current.copy(settings = settings) }
                 _state.value.tabs.forEach { tab ->
-                    tab.session.settings.setUseTrackingProtection(settings.trackingProtection)
+                    applySettingsToSession(tab.session, settings)
+                    if (desktopSitesChanged && tab.hasPage) tab.session.reload()
                 }
             }
         }
@@ -249,6 +251,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { settingsRepository.setTrackingProtection(enabled) }
     }
 
+    fun setDesktopSites(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setDesktopSites(enabled) }
+    }
+
+    fun setTabBarWithAddressBar(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setTabBarWithAddressBar(enabled) }
+    }
+
     fun resolveContentPermission(allow: Boolean) {
         val prompt = _state.value.contentPermission ?: return
         prompt.result.complete(
@@ -269,12 +279,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun createSession(tabId: String, privateMode: Boolean): GeckoSession {
+        val settings = _state.value.settings
         val session = GeckoSession(
             GeckoSessionSettings.Builder()
                 .usePrivateMode(privateMode)
-                .useTrackingProtection(_state.value.settings.trackingProtection)
+                .useTrackingProtection(settings.trackingProtection)
                 .allowJavascript(true)
-                .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
+                .userAgentMode(if (settings.desktopSites) {
+                    GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+                } else {
+                    GeckoSessionSettings.USER_AGENT_MODE_MOBILE
+                })
+                .viewportMode(if (settings.desktopSites) {
+                    GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+                } else {
+                    GeckoSessionSettings.VIEWPORT_MODE_MOBILE
+                })
                 .build(),
         )
         session.setNavigationDelegate(NavigationDelegate(tabId))
@@ -283,6 +303,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         session.setPermissionDelegate(PermissionDelegate(tabId))
         session.open(runtime)
         return session
+    }
+
+    private fun applySettingsToSession(session: GeckoSession, settings: BrowserSettings) {
+        session.settings.setUseTrackingProtection(settings.trackingProtection)
+        session.settings.setUserAgentMode(
+            if (settings.desktopSites) {
+                GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+            } else {
+                GeckoSessionSettings.USER_AGENT_MODE_MOBILE
+            },
+        )
+        session.settings.setViewportMode(
+            if (settings.desktopSites) {
+                GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+            } else {
+                GeckoSessionSettings.VIEWPORT_MODE_MOBILE
+            },
+        )
     }
 
     private fun updateTab(tabId: String, transform: (BrowserTabState) -> BrowserTabState) {

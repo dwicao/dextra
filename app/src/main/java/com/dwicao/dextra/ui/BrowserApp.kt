@@ -177,6 +177,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onSetTheme = viewModel::setThemeMode,
                 onSetSearchEngine = viewModel::setSearchEngine,
                 onSetTrackingProtection = viewModel::setTrackingProtection,
+                onSetDesktopSites = viewModel::setDesktopSites,
+                onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
                 onResolvePermission = viewModel::resolveContentPermission,
             )
         }
@@ -206,6 +208,8 @@ private fun BrowserScreen(
     onSetTheme: (ThemeMode) -> Unit,
     onSetSearchEngine: (SearchEngine) -> Unit,
     onSetTrackingProtection: (Boolean) -> Unit,
+    onSetDesktopSites: (Boolean) -> Unit,
+    onSetTabBarWithAddressBar: (Boolean) -> Unit,
     onResolvePermission: (Boolean) -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
@@ -257,6 +261,7 @@ private fun BrowserScreen(
                 onToggleBookmark = onToggleBookmark,
                 onMenu = { menuExpanded = true },
                 addressFocusRequester = addressFocusRequester,
+                showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
             )
         } else {
             CompactBrowserLayout(
@@ -273,6 +278,7 @@ private fun BrowserScreen(
                 onMenu = { menuExpanded = true },
                 addressFocusRequester = addressFocusRequester,
                 onShowTabs = { onSetOverlay(BrowserOverlay.TABS) },
+                showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
             )
         }
 
@@ -321,6 +327,10 @@ private fun BrowserScreen(
                         onSetTheme = onSetTheme,
                         onSetSearchEngine = onSetSearchEngine,
                         onSetTrackingProtection = onSetTrackingProtection,
+                        desktopSites = state.settings.desktopSites,
+                        tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+                        onSetDesktopSites = onSetDesktopSites,
+                        onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
                     )
                     BrowserOverlay.NONE -> Unit
                 }
@@ -354,25 +364,55 @@ private fun DesktopBrowserLayout(
     onToggleBookmark: () -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
+    showTabBarWithAddressBar: Boolean,
 ) {
     Column(Modifier.fillMaxSize()) {
-        TabStrip(
-            tabs = state.tabs,
-            activeTabId = state.activeTabId,
-            onNewTab = onNewTab,
-            onSelectTab = onSelectTab,
-            onCloseTab = onCloseTab,
-        )
-        DesktopToolbar(
-            activeTab = activeTab,
-            onNavigate = onNavigate,
-            onBack = onBack,
-            onForward = onForward,
-            onReload = onReload,
-            onToggleBookmark = onToggleBookmark,
-            onMenu = onMenu,
-            addressFocusRequester = addressFocusRequester,
-        )
+        if (showTabBarWithAddressBar) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TabStrip(
+                    modifier = Modifier
+                        .weight(0.9f)
+                        .height(50.dp),
+                    tabs = state.tabs,
+                    activeTabId = state.activeTabId,
+                    onNewTab = onNewTab,
+                    onSelectTab = onSelectTab,
+                    onCloseTab = onCloseTab,
+                )
+                DesktopToolbar(
+                    modifier = Modifier.weight(1.6f),
+                    activeTab = activeTab,
+                    onNavigate = onNavigate,
+                    onBack = onBack,
+                    onForward = onForward,
+                    onReload = onReload,
+                    onToggleBookmark = onToggleBookmark,
+                    onMenu = onMenu,
+                    addressFocusRequester = addressFocusRequester,
+                )
+            }
+        } else {
+            TabStrip(
+                tabs = state.tabs,
+                activeTabId = state.activeTabId,
+                onNewTab = onNewTab,
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+            )
+            DesktopToolbar(
+                activeTab = activeTab,
+                onNavigate = onNavigate,
+                onBack = onBack,
+                onForward = onForward,
+                onReload = onReload,
+                onToggleBookmark = onToggleBookmark,
+                onMenu = onMenu,
+                addressFocusRequester = addressFocusRequester,
+            )
+        }
         BrowserViewport(activeTab, onNavigate)
     }
 }
@@ -392,6 +432,7 @@ private fun CompactBrowserLayout(
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
     onShowTabs: () -> Unit,
+    showTabBarWithAddressBar: Boolean,
 ) {
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -415,6 +456,18 @@ private fun CompactBrowserLayout(
                 Icon(Icons.Outlined.Add, contentDescription = "New tab")
             }
         }
+        if (showTabBarWithAddressBar) {
+            TabStrip(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp),
+                tabs = state.tabs,
+                activeTabId = state.activeTabId,
+                onNewTab = onNewTab,
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+            )
+        }
         activeTab?.takeIf { it.isLoading }?.let {
             LinearProgressIndicator(
                 progress = { it.progress / 100f },
@@ -437,6 +490,7 @@ private fun CompactBrowserLayout(
 
 @Composable
 private fun DesktopToolbar(
+    modifier: Modifier = Modifier,
     activeTab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onBack: () -> Boolean,
@@ -447,7 +501,7 @@ private fun DesktopToolbar(
     addressFocusRequester: FocusRequester,
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 18.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -594,13 +648,17 @@ private fun AddressBar(
 
 @Composable
 private fun TabStrip(
+    modifier: Modifier = Modifier,
     tabs: List<BrowserTabState>,
     activeTabId: String?,
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
 ) {
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -875,9 +933,13 @@ private fun SettingsSheet(
     themeMode: ThemeMode,
     searchEngine: SearchEngine,
     trackingProtection: Boolean,
+    desktopSites: Boolean,
+    tabBarWithAddressBar: Boolean,
     onSetTheme: (ThemeMode) -> Unit,
     onSetSearchEngine: (SearchEngine) -> Unit,
     onSetTrackingProtection: (Boolean) -> Unit,
+    onSetDesktopSites: (Boolean) -> Unit,
+    onSetTabBarWithAddressBar: (Boolean) -> Unit,
 ) {
     SheetHeader("Settings", "Tune Dextra for the way you work")
     SettingSection("Appearance") {
@@ -909,20 +971,50 @@ private fun SettingsSheet(
             }
         }
     }
+    SettingSection("Browsing") {
+        SettingToggle(
+            title = "Show desktop sites",
+            summary = "Request desktop layouts by default",
+            checked = desktopSites,
+            onCheckedChange = onSetDesktopSites,
+        )
+        Spacer(Modifier.height(14.dp))
+        SettingToggle(
+            title = "Tab bar beside address bar",
+            summary = "Keep tabs visible beside the address bar on wide windows",
+            checked = tabBarWithAddressBar,
+            onCheckedChange = onSetTabBarWithAddressBar,
+        )
+    }
     SettingSection("Privacy") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Tracking protection", style = MaterialTheme.typography.titleMedium)
-                Text("Block known trackers in every tab", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Switch(checked = trackingProtection, onCheckedChange = onSetTrackingProtection)
-        }
+        SettingToggle(
+            title = "Tracking protection",
+            summary = "Block known trackers in every tab",
+            checked = trackingProtection,
+            onCheckedChange = onSetTrackingProtection,
+        )
     }
     Spacer(Modifier.height(28.dp))
+}
+
+@Composable
+private fun SettingToggle(
+    title: String,
+    summary: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
 }
 
 @Composable
