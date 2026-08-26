@@ -4,6 +4,7 @@ import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
@@ -34,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
@@ -103,7 +105,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -130,6 +134,7 @@ import com.dwicao.dextra.browser.BrowserTabState
 import com.dwicao.dextra.browser.BrowserUrl
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
+import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.HistoryEntry
 import com.dwicao.dextra.data.SearchEngine
@@ -185,9 +190,11 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onDismissOverlay = viewModel::dismissOverlay,
                 onSetTheme = viewModel::setThemeMode,
                 onSetSearchEngine = viewModel::setSearchEngine,
-                onSetTrackingProtection = viewModel::setTrackingProtection,
                 onSetDesktopSites = viewModel::setDesktopSites,
                 onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
+                onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
+                onAddAdBlockFilter = viewModel::addAdBlockFilter,
+                onRemoveAdBlockFilter = viewModel::removeAdBlockFilter,
                 onResolvePermission = viewModel::resolveContentPermission,
             )
         }
@@ -216,9 +223,11 @@ private fun BrowserScreen(
     onDismissOverlay: () -> Unit,
     onSetTheme: (ThemeMode) -> Unit,
     onSetSearchEngine: (SearchEngine) -> Unit,
-    onSetTrackingProtection: (Boolean) -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
+    onSetAdBlockingEnabled: (Boolean) -> Unit,
+    onAddAdBlockFilter: (String) -> Unit,
+    onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
     onResolvePermission: (Boolean) -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
@@ -332,14 +341,17 @@ private fun BrowserScreen(
                     BrowserOverlay.SETTINGS -> SettingsSheet(
                         themeMode = state.settings.themeMode,
                         searchEngine = state.settings.searchEngine,
-                        trackingProtection = state.settings.trackingProtection,
                         onSetTheme = onSetTheme,
                         onSetSearchEngine = onSetSearchEngine,
-                        onSetTrackingProtection = onSetTrackingProtection,
                         desktopSites = state.settings.desktopSites,
                         tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                         onSetDesktopSites = onSetDesktopSites,
                         onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
+                        adBlockingEnabled = state.settings.adBlockingEnabled,
+                        adBlockFilters = state.settings.adBlockFilters,
+                        onSetAdBlockingEnabled = onSetAdBlockingEnabled,
+                        onAddAdBlockFilter = onAddAdBlockFilter,
+                        onRemoveAdBlockFilter = onRemoveAdBlockFilter,
                     )
                     BrowserOverlay.NONE -> Unit
                 }
@@ -617,37 +629,30 @@ private fun AddressBar(
     focusRequester: FocusRequester,
 ) {
     var value by remember(tab?.id) { mutableStateOf(tab?.url?.let(BrowserUrl::displayValue).orEmpty()) }
+    var isFocused by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
     LaunchedEffect(tab?.id, tab?.url) {
         value = BrowserUrl.displayValue(tab?.url.orEmpty())
     }
 
-    OutlinedTextField(
+    val shape = RoundedCornerShape(18.dp)
+    BasicTextField(
         value = value,
         onValueChange = { value = it },
         modifier = modifier
-            .height(48.dp)
-            .focusRequester(focusRequester),
-        singleLine = true,
-        placeholder = { Text("Search or enter web address") },
-        leadingIcon = {
-            Icon(
-                if (tab?.isSecure == true) Icons.Outlined.Lock else Icons.Outlined.Search,
-                contentDescription = if (tab?.isSecure == true) "Secure connection" else "Search",
+            .height(44.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .border(
+                width = if (isFocused) 2.dp else 1.dp,
+                color = if (isFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                shape = shape,
             )
-        },
-        trailingIcon = {
-            if (value.isNotEmpty()) {
-                BrowserNavButton(Icons.Outlined.Close, "Clear", enabled = true, onClick = { value = "" })
-            }
-        },
-        shape = RoundedCornerShape(18.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-            focusedContainerColor = MaterialTheme.colorScheme.surface,
-        ),
+            .focusRequester(focusRequester)
+            .onFocusChanged { isFocused = it.isFocused },
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
         keyboardActions = KeyboardActions(
             onGo = {
@@ -655,6 +660,39 @@ private fun AddressBar(
                 keyboardController?.hide()
             },
         ),
+        decorationBox = { innerTextField ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (tab?.isSecure == true) Icons.Outlined.Lock else Icons.Outlined.Search,
+                    contentDescription = if (tab?.isSecure == true) "Secure connection" else "Search",
+                    modifier = Modifier.size(19.dp),
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    if (value.isEmpty()) {
+                        Text(
+                            "Search or enter web address",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                    innerTextField()
+                }
+                if (value.isNotEmpty()) {
+                    BrowserNavButton(Icons.Outlined.Close, "Clear", enabled = true, onClick = { value = "" })
+                }
+            }
+        },
     )
 }
 
@@ -764,7 +802,7 @@ private fun BrowserViewport(tab: BrowserTabState?, onNavigate: (String) -> Unit)
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface),
     ) {
-        if (tab == null || !tab.hasPage) {
+        if (tab == null || !tab.hasPage || tab.url.isBlank() || tab.url == "about:blank") {
             NewTabPage(onNavigate)
         } else {
             key(tab.id) {
@@ -818,7 +856,7 @@ private fun NewTabPage(onNavigate: (String) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Security, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(6.dp))
-            Text("Tracking protection is on", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Text("Filter lists are managed in Settings", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -841,27 +879,36 @@ private fun BrowserMenu(
     onShowLibrary: () -> Unit,
     onShowSettings: () -> Unit,
 ) {
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        DropdownMenuItem(
-            text = { Text("New private tab") },
-            leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
-            onClick = onNewPrivateTab,
-        )
-        DropdownMenuItem(
-            text = { Text("All tabs") },
-            leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
-            onClick = onShowTabs,
-        )
-        DropdownMenuItem(
-            text = { Text("Bookmarks & history") },
-            leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
-            onClick = onShowLibrary,
-        )
-        DropdownMenuItem(
-            text = { Text("Settings") },
-            leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
-            onClick = onShowSettings,
-        )
+    Box(Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 4.dp, end = 8.dp)
+                .size(1.dp),
+        ) {
+            DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+                DropdownMenuItem(
+                    text = { Text("New private tab") },
+                    leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
+                    onClick = onNewPrivateTab,
+                )
+                DropdownMenuItem(
+                    text = { Text("All tabs") },
+                    leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
+                    onClick = onShowTabs,
+                )
+                DropdownMenuItem(
+                    text = { Text("Bookmarks & history") },
+                    leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+                    onClick = onShowLibrary,
+                )
+                DropdownMenuItem(
+                    text = { Text("Settings") },
+                    leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+                    onClick = onShowSettings,
+                )
+            }
+        }
     }
 }
 
@@ -977,14 +1024,17 @@ private fun EmptyLibrary(message: String, icon: androidx.compose.ui.graphics.vec
 private fun SettingsSheet(
     themeMode: ThemeMode,
     searchEngine: SearchEngine,
-    trackingProtection: Boolean,
     desktopSites: Boolean,
     tabBarWithAddressBar: Boolean,
+    adBlockingEnabled: Boolean,
+    adBlockFilters: List<AdBlockFilter>,
     onSetTheme: (ThemeMode) -> Unit,
     onSetSearchEngine: (SearchEngine) -> Unit,
-    onSetTrackingProtection: (Boolean) -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
+    onSetAdBlockingEnabled: (Boolean) -> Unit,
+    onAddAdBlockFilter: (String) -> Unit,
+    onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
 ) {
     SheetHeader("Settings", "Tune Dextra for the way you work")
     SettingSection("Appearance") {
@@ -1031,13 +1081,52 @@ private fun SettingsSheet(
             onCheckedChange = onSetTabBarWithAddressBar,
         )
     }
-    SettingSection("Privacy") {
+    SettingSection("Ad blocking") {
         SettingToggle(
-            title = "Tracking protection",
-            summary = "Block known trackers in every tab",
-            checked = trackingProtection,
-            onCheckedChange = onSetTrackingProtection,
+            title = "Enable ad blocking",
+            summary = "Off by default; fetch only the filter URLs you choose",
+            checked = adBlockingEnabled,
+            onCheckedChange = onSetAdBlockingEnabled,
         )
+        Spacer(Modifier.height(12.dp))
+        var filterUrl by rememberSaveable { mutableStateOf("") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = filterUrl,
+                onValueChange = { filterUrl = it },
+                modifier = Modifier.weight(1f),
+                label = { Text("Filter URL") },
+                placeholder = { Text("https://example.com/filter.txt") },
+                singleLine = true,
+            )
+            Button(
+                onClick = {
+                    onAddAdBlockFilter(filterUrl)
+                    filterUrl = ""
+                },
+                enabled = filterUrl.isNotBlank(),
+                modifier = Modifier.height(56.dp),
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = "Add filter")
+            }
+        }
+        adBlockFilters.forEach { filter ->
+            ListItem(
+                modifier = Modifier.padding(top = 4.dp),
+                headlineContent = { Text(filter.name) },
+                supportingContent = { Text(filter.url, maxLines = 1) },
+                leadingContent = { Icon(Icons.Outlined.Security, contentDescription = null) },
+                trailingContent = {
+                    IconButton(onClick = { onRemoveAdBlockFilter(filter) }) {
+                        Icon(Icons.Outlined.Close, contentDescription = "Remove ${filter.name}")
+                    }
+                },
+            )
+        }
     }
     Spacer(Modifier.height(28.dp))
 }

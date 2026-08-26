@@ -14,13 +14,24 @@ import java.io.IOException
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+data class AdBlockFilter(
+    val name: String,
+    val url: String,
+)
+
+val DefaultAdBlockFilters = listOf(
+    AdBlockFilter("EasyList", "https://easylist.to/easylist/easylist.txt"),
+    AdBlockFilter("EasyPrivacy", "https://easylist.to/easylist/easyprivacy.txt"),
+)
+
 data class BrowserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val searchEngine: SearchEngine = SearchEngine.DUCKDUCKGO,
     val homepage: String = "https://duckduckgo.com/",
-    val trackingProtection: Boolean = true,
     val desktopSites: Boolean = true,
     val tabBarWithAddressBar: Boolean = true,
+    val adBlockingEnabled: Boolean = false,
+    val adBlockFilters: List<AdBlockFilter> = DefaultAdBlockFilters,
 )
 
 enum class SearchEngine(val label: String, val searchUrl: String) {
@@ -36,9 +47,10 @@ class SettingsRepository(private val context: Context) {
         val theme = stringPreferencesKey("theme")
         val searchEngine = stringPreferencesKey("search_engine")
         val homepage = stringPreferencesKey("homepage")
-        val trackingProtection = booleanPreferencesKey("tracking_protection")
         val desktopSites = booleanPreferencesKey("desktop_sites")
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
+        val adBlockingEnabled = booleanPreferencesKey("ad_blocking_enabled")
+        val adBlockFilters = stringPreferencesKey("ad_block_filters")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -55,16 +67,31 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { it[Keys.searchEngine] = engine.name }
     }
 
-    suspend fun setTrackingProtection(enabled: Boolean) {
-        context.settingsDataStore.edit { it[Keys.trackingProtection] = enabled }
-    }
-
     suspend fun setDesktopSites(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.desktopSites] = enabled }
     }
 
     suspend fun setTabBarWithAddressBar(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.tabBarWithAddressBar] = enabled }
+    }
+
+    suspend fun setAdBlockingEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.adBlockingEnabled] = enabled }
+    }
+
+    suspend fun addAdBlockFilter(url: String) {
+        context.settingsDataStore.edit { preferences ->
+            val urls = preferences.filterUrls()
+            preferences[Keys.adBlockFilters] = (urls + url).distinct().joinToString("\n")
+        }
+    }
+
+    suspend fun removeAdBlockFilter(url: String) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.adBlockFilters] = preferences.filterUrls()
+                .filterNot { it == url }
+                .joinToString("\n")
+        }
     }
 
     private fun Preferences.toBrowserSettings(): BrowserSettings = BrowserSettings(
@@ -74,8 +101,21 @@ class SettingsRepository(private val context: Context) {
             runCatching { SearchEngine.valueOf(it) }.getOrNull()
         } ?: SearchEngine.DUCKDUCKGO,
         homepage = get(Keys.homepage) ?: "https://duckduckgo.com/",
-        trackingProtection = get(Keys.trackingProtection) ?: true,
         desktopSites = get(Keys.desktopSites) ?: true,
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
+        adBlockingEnabled = get(Keys.adBlockingEnabled) ?: false,
+        adBlockFilters = filterUrls().map(::filterFromUrl),
     )
+
+    private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
+        ?.split('\n')
+        ?.map(String::trim)
+        ?.filter(String::isNotBlank)
+        ?: DefaultAdBlockFilters.map { it.url }
+
+    private fun filterFromUrl(url: String): AdBlockFilter = when (url) {
+        DefaultAdBlockFilters[0].url -> DefaultAdBlockFilters[0]
+        DefaultAdBlockFilters[1].url -> DefaultAdBlockFilters[1]
+        else -> AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url)
+    }
 }

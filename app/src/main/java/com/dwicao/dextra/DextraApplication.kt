@@ -16,7 +16,8 @@ object GeckoRuntimeHolder {
             context.applicationContext,
             GeckoRuntimeSettings.Builder()
                 .javaScriptEnabled(true)
-                .globalPrivacyControlEnabled(true)
+                .extensionsProcessEnabled(true)
+                .extensionsWebAPIEnabled(true)
                 .build(),
         ).also { runtime = it }
     }

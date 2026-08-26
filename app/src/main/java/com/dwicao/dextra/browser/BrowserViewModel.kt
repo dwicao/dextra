@@ -7,10 +7,12 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.dwicao.dextra.GeckoRuntimeHolder
+import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.BrowserDao
 import com.dwicao.dextra.data.BrowserDatabase
@@ -25,10 +27,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebResponse
 import java.util.UUID
 
@@ -83,6 +88,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val dao: BrowserDao = database.browserDao()
     private val settingsRepository = SettingsRepository(application)
     private val _state = MutableStateFlow(BrowserUiState())
+    @Volatile
+    private var adBlockPort: WebExtension.Port? = null
+
+    private val adBlockMessageDelegate = object : WebExtension.MessageDelegate {
+        override fun onConnect(port: WebExtension.Port) {
+            adBlockPort = port
+            port.setDelegate(object : WebExtension.PortDelegate {
+                override fun onDisconnect(port: WebExtension.Port) {
+                    if (adBlockPort === port) adBlockPort = null
+                }
+            })
+            syncAdBlockSettings(_state.value.settings)
+        }
+    }
 
     val state: StateFlow<BrowserUiState> = _state.asStateFlow()
     val history: Flow<List<HistoryEntry>> = dao.observeHistory()
@@ -94,9 +113,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val desktopSitesChanged = _state.value.settings.desktopSites != settings.desktopSites
                 _state.update { current -> current.copy(settings = settings) }
                 _state.value.tabs.forEach { tab ->
-                    applySettingsToSession(tab.session, settings)
+                    applyDesktopSiteSetting(tab.session, settings.desktopSites)
                     if (desktopSitesChanged && tab.hasPage) tab.session.reload()
                 }
+                syncAdBlockSettings(settings)
             }
         }
         viewModelScope.launch {
@@ -111,6 +131,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+        installAdBlocker()
         createTab()
     }
 
@@ -247,8 +268,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { settingsRepository.setSearchEngine(engine) }
     }
 
-    fun setTrackingProtection(enabled: Boolean) {
-        viewModelScope.launch { settingsRepository.setTrackingProtection(enabled) }
+    fun setAdBlockingEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAdBlockingEnabled(enabled) }
+    }
+
+    fun addAdBlockFilter(url: String) {
+        val normalized = url.trim()
+        if (!normalized.startsWith("https://") && !normalized.startsWith("http://")) {
+            showSnackbar("Enter a valid http(s) filter URL")
+            return
+        }
+        viewModelScope.launch { settingsRepository.addAdBlockFilter(normalized) }
+    }
+
+    fun removeAdBlockFilter(filter: AdBlockFilter) {
+        viewModelScope.launch { settingsRepository.removeAdBlockFilter(filter.url) }
     }
 
     fun setDesktopSites(enabled: Boolean) {
@@ -283,7 +317,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val session = GeckoSession(
             GeckoSessionSettings.Builder()
                 .usePrivateMode(privateMode)
-                .useTrackingProtection(settings.trackingProtection)
                 .allowJavascript(true)
                 .userAgentMode(if (settings.desktopSites) {
                     GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
@@ -305,17 +338,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         return session
     }
 
-    private fun applySettingsToSession(session: GeckoSession, settings: BrowserSettings) {
-        session.settings.setUseTrackingProtection(settings.trackingProtection)
+    private fun applyDesktopSiteSetting(session: GeckoSession, desktopSites: Boolean) {
         session.settings.setUserAgentMode(
-            if (settings.desktopSites) {
+            if (desktopSites) {
                 GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
             } else {
                 GeckoSessionSettings.USER_AGENT_MODE_MOBILE
             },
         )
         session.settings.setViewportMode(
-            if (settings.desktopSites) {
+            if (desktopSites) {
                 GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
             } else {
                 GeckoSessionSettings.VIEWPORT_MODE_MOBILE
@@ -331,6 +363,53 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun showSnackbar(message: String) {
         _state.update { it.copy(snackbar = message) }
+    }
+
+    private fun installAdBlocker() {
+        runtime.webExtensionController.list().accept(
+            { extensions ->
+                val legacyUBlock = extensions.orEmpty().firstOrNull { it.id == "uBlock0@raymondhill.net" }
+                if (legacyUBlock == null) {
+                    ensureAdBlocker()
+                } else {
+                    runtime.webExtensionController.uninstall(legacyUBlock).accept(
+                        { ensureAdBlocker() },
+                        { ensureAdBlocker() },
+                    )
+                }
+            },
+            { ensureAdBlocker() },
+        )
+    }
+
+    private fun ensureAdBlocker() {
+        runtime.webExtensionController.ensureBuiltIn(
+            "resource://android/assets/adblock/",
+            "adblock@dextra",
+        ).accept(
+            { extension ->
+                extension?.let { installedExtension ->
+                    installedExtension.setMessageDelegate(adBlockMessageDelegate, "dextra")
+                    runtime.webExtensionController.setAllowedInPrivateBrowsing(installedExtension, true)
+                        .accept({}, { error -> Log.e("Dextra", "Could not enable EasyList for private tabs", error) })
+                }
+            },
+            { error ->
+                Log.e("Dextra", "Could not start EasyList ad blocker", error)
+            },
+        )
+    }
+
+    private fun syncAdBlockSettings(settings: BrowserSettings) {
+        val port = adBlockPort ?: return
+        val urls = JSONArray()
+        settings.adBlockFilters.forEach { urls.put(it.url) }
+        port.postMessage(
+            JSONObject()
+                .put("type", "updateFilters")
+                .put("enabled", settings.adBlockingEnabled)
+                .put("urls", urls),
+        )
     }
 
     private fun recordHistory(tabId: String) {
@@ -387,7 +466,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             isSameDocument: Boolean,
         ) {
             val resolvedUrl = url.orEmpty()
-            updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://")) }
+            if (resolvedUrl == "about:blank") {
+                updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0) }
+            } else {
+                updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://")) }
+            }
         }
 
         override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
@@ -403,7 +486,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             request: GeckoSession.NavigationDelegate.LoadRequest,
         ): GeckoResult<AllowOrDeny> {
             val scheme = Uri.parse(request.uri).scheme?.lowercase()
-            if (scheme != null && scheme !in setOf("http", "https", "about", "file", "data")) {
+            if (scheme != null && scheme !in setOf("http", "https", "about", "file", "data", "moz-extension")) {
                 launchExternal(request.uri)
                 return GeckoResult.deny()
             }
@@ -420,7 +503,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private inner class ProgressDelegate(private val tabId: String) : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
-            updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0) }
+            if (url == "about:blank") {
+                updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0) }
+            } else {
+                updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0) }
+            }
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {
@@ -481,6 +568,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session: GeckoSession,
             permission: GeckoSession.PermissionDelegate.ContentPermission,
         ): GeckoResult<Int> {
+            val automaticDecision = when (permission.permission) {
+                GeckoSession.PermissionDelegate.PERMISSION_PERSISTENT_STORAGE,
+                GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE,
+                -> GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
+                GeckoSession.PermissionDelegate.PERMISSION_TRACKING,
+                GeckoSession.PermissionDelegate.PERMISSION_STORAGE_ACCESS,
+                GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE,
+                -> GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY
+                GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION,
+                GeckoSession.PermissionDelegate.PERMISSION_DESKTOP_NOTIFICATION,
+                -> null
+                else -> GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY
+            }
+            if (automaticDecision != null) return GeckoResult.fromValue(automaticDecision)
+
             val result = GeckoResult<Int>()
             _state.update {
                 it.copy(
