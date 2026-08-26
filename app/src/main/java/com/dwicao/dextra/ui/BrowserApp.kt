@@ -55,10 +55,12 @@ import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -139,6 +141,8 @@ import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.HistoryEntry
+import com.dwicao.dextra.data.DownloadEntry
+import com.dwicao.dextra.data.DownloadStatus
 import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.ThemeMode
 import kotlinx.coroutines.launch
@@ -150,6 +154,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val history by viewModel.history.collectAsStateWithLifecycle(initialValue = emptyList())
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle(initialValue = emptyList())
+    val downloads by viewModel.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
     val snackbarHostState = remember { SnackbarHostState() }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -177,6 +182,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 state = state,
                 history = history,
                 bookmarks = bookmarks,
+                downloads = downloads,
                 onNavigate = viewModel::navigateActive,
                 onBack = viewModel::goBack,
                 onForward = viewModel::goForward,
@@ -197,6 +203,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
                 onAddAdBlockFilter = viewModel::addAdBlockFilter,
                 onRemoveAdBlockFilter = viewModel::removeAdBlockFilter,
+                onOpenDownload = viewModel::openDownload,
+                onShareDownload = viewModel::shareDownload,
+                onCancelDownload = viewModel::cancelDownload,
+                onRemoveDownload = viewModel::removeDownload,
                 onResolvePermission = viewModel::resolveContentPermission,
             )
         }
@@ -210,6 +220,7 @@ private fun BrowserScreen(
     state: com.dwicao.dextra.browser.BrowserUiState,
     history: List<HistoryEntry>,
     bookmarks: List<Bookmark>,
+    downloads: List<DownloadEntry>,
     onNavigate: (String) -> Unit,
     onBack: () -> Boolean,
     onForward: () -> Unit,
@@ -230,6 +241,10 @@ private fun BrowserScreen(
     onSetAdBlockingEnabled: (Boolean) -> Unit,
     onAddAdBlockFilter: (String) -> Unit,
     onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
+    onOpenDownload: (DownloadEntry) -> Unit,
+    onShareDownload: (DownloadEntry) -> Unit,
+    onCancelDownload: (DownloadEntry) -> Unit,
+    onRemoveDownload: (DownloadEntry) -> Unit,
     onResolvePermission: (Boolean) -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
@@ -317,6 +332,10 @@ private fun BrowserScreen(
                 menuExpanded = false
                 onSetOverlay(BrowserOverlay.LIBRARY)
             },
+            onShowDownloads = {
+                menuExpanded = false
+                onSetOverlay(BrowserOverlay.DOWNLOADS)
+            },
             onShowSettings = {
                 menuExpanded = false
                 onSetOverlay(BrowserOverlay.SETTINGS)
@@ -339,6 +358,13 @@ private fun BrowserScreen(
                         history = history,
                         onOpen = onOpenSavedPage,
                         onClearHistory = onClearHistory,
+                    )
+                    BrowserOverlay.DOWNLOADS -> DownloadsSheet(
+                        downloads = downloads,
+                        onOpen = onOpenDownload,
+                        onShare = onShareDownload,
+                        onCancel = onCancelDownload,
+                        onRemove = onRemoveDownload,
                     )
                     BrowserOverlay.SETTINGS -> SettingsSheet(
                         themeMode = state.settings.themeMode,
@@ -889,6 +915,7 @@ private fun BrowserMenu(
     onNewPrivateTab: () -> Unit,
     onShowTabs: () -> Unit,
     onShowLibrary: () -> Unit,
+    onShowDownloads: () -> Unit,
     onShowSettings: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize()) {
@@ -909,11 +936,16 @@ private fun BrowserMenu(
                     leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
                     onClick = onShowTabs,
                 )
-                DropdownMenuItem(
-                    text = { Text("Bookmarks & history") },
-                    leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
-                    onClick = onShowLibrary,
-                )
+        DropdownMenuItem(
+            text = { Text("Bookmarks & history") },
+            leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+            onClick = onShowLibrary,
+        )
+        DropdownMenuItem(
+            text = { Text("Downloads") },
+            leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+            onClick = onShowDownloads,
+        )
                 DropdownMenuItem(
                     text = { Text("Settings") },
                     leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
@@ -1018,6 +1050,106 @@ private fun LibrarySheet(
         }
     }
     Spacer(Modifier.height(24.dp))
+}
+
+@Composable
+private fun DownloadsSheet(
+    downloads: List<DownloadEntry>,
+    onOpen: (DownloadEntry) -> Unit,
+    onShare: (DownloadEntry) -> Unit,
+    onCancel: (DownloadEntry) -> Unit,
+    onRemove: (DownloadEntry) -> Unit,
+) {
+    val activeCount = downloads.count { it.status in setOf(DownloadStatus.QUEUED.label, DownloadStatus.DOWNLOADING.label, DownloadStatus.PAUSED.label) }
+    SheetHeader("Downloads", if (activeCount == 0) "Files saved by Dextra" else "$activeCount active")
+    if (downloads.isEmpty()) {
+        EmptyLibrary("Files you download will appear here.", Icons.Outlined.Download)
+    } else {
+        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 500.dp)) {
+            items(downloads, key = { it.downloadId }) { download ->
+                val isComplete = download.status == DownloadStatus.COMPLETE.label
+                val isActive = download.status in setOf(
+                    DownloadStatus.QUEUED.label,
+                    DownloadStatus.DOWNLOADING.label,
+                    DownloadStatus.PAUSED.label,
+                )
+                val progress = if (download.totalBytes > 0) {
+                    (download.bytesDownloaded.toFloat() / download.totalBytes.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    null
+                }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    ListItem(
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp)
+                            .clickable(enabled = isComplete) { onOpen(download) },
+                        headlineContent = { Text(download.fileName, maxLines = 1) },
+                        supportingContent = {
+                            Text(
+                                buildDownloadSummary(download),
+                                maxLines = 2,
+                                color = if (download.status == DownloadStatus.FAILED.label) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isComplete) {
+                                    IconButton(onClick = { onOpen(download) }) {
+                                        Icon(Icons.Outlined.OpenInNew, contentDescription = "Open ${download.fileName}")
+                                    }
+                                    IconButton(onClick = { onShare(download) }) {
+                                        Icon(Icons.Outlined.Share, contentDescription = "Share ${download.fileName}")
+                                    }
+                                } else if (isActive) {
+                                    IconButton(onClick = { onCancel(download) }) {
+                                        Icon(Icons.Outlined.Close, contentDescription = "Cancel ${download.fileName}")
+                                    }
+                                }
+                                IconButton(onClick = { onRemove(download) }) {
+                                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove ${download.fileName}")
+                                }
+                            }
+                        },
+                    )
+                    if (isActive && progress != null) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 28.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+private fun buildDownloadSummary(download: DownloadEntry): String {
+    val status = download.status
+    val size = if (download.totalBytes > 0) {
+        "${formatBytes(download.bytesDownloaded)} / ${formatBytes(download.totalBytes)}"
+    } else if (download.bytesDownloaded > 0) {
+        formatBytes(download.bytesDownloaded)
+    } else {
+        ""
+    }
+    return listOf(status, size, download.reason.orEmpty())
+        .filter(String::isNotBlank)
+        .joinToString("  •  ")
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1_024 -> "$bytes B"
+    bytes < 1_024 * 1_024 -> "%.1f KB".format(bytes / 1_024f)
+    bytes < 1_024 * 1_024 * 1_024 -> "%.1f MB".format(bytes / (1_024f * 1_024f))
+    else -> "%.1f GB".format(bytes / (1_024f * 1_024f * 1_024f))
 }
 
 @Composable

@@ -10,6 +10,8 @@ import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(
@@ -34,6 +36,29 @@ data class Bookmark(
     val createdAt: Long,
 )
 
+@Entity(tableName = "downloads")
+data class DownloadEntry(
+    @PrimaryKey val downloadId: Long,
+    val fileName: String,
+    val url: String,
+    val mimeType: String?,
+    val status: String,
+    val bytesDownloaded: Long,
+    val totalBytes: Long,
+    val localUri: String?,
+    val reason: String?,
+    val createdAt: Long,
+)
+
+enum class DownloadStatus(val label: String) {
+    QUEUED("Queued"),
+    DOWNLOADING("Downloading"),
+    PAUSED("Paused"),
+    COMPLETE("Complete"),
+    FAILED("Failed"),
+    CANCELED("Canceled"),
+}
+
 @Dao
 interface BrowserDao {
     @Query("SELECT * FROM history ORDER BY visitedAt DESC LIMIT 100")
@@ -56,9 +81,21 @@ interface BrowserDao {
 
     @Query("DELETE FROM history")
     suspend fun clearHistory()
+
+    @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
+    fun observeDownloads(): Flow<List<DownloadEntry>>
+
+    @Query("SELECT * FROM downloads")
+    suspend fun getDownloads(): List<DownloadEntry>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertDownload(download: DownloadEntry)
+
+    @Query("DELETE FROM downloads WHERE downloadId = :downloadId")
+    suspend fun deleteDownload(downloadId: Long)
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class], version = 1, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class], version = 2, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -71,7 +108,29 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).fallbackToDestructiveMigration().build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2).fallbackToDestructiveMigration().build().also { instance = it }
+        }
+
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS downloads (
+                        downloadId INTEGER NOT NULL,
+                        fileName TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        mimeType TEXT,
+                        status TEXT NOT NULL,
+                        bytesDownloaded INTEGER NOT NULL,
+                        totalBytes INTEGER NOT NULL,
+                        localUri TEXT,
+                        reason TEXT,
+                        createdAt INTEGER NOT NULL,
+                        PRIMARY KEY(downloadId)
+                    )
+                    """.trimIndent(),
+                )
+            }
         }
     }
 }
