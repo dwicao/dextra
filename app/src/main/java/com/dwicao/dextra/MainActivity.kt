@@ -2,6 +2,7 @@ package com.dwicao.dextra
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -35,5 +36,26 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         browserViewModel.handleIncomingIntent(intent)
+    }
+
+    @Suppress("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.isCtrlPressed) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_T -> {
+                    browserViewModel.createTab()
+                    return true
+                }
+                KeyEvent.KEYCODE_W -> {
+                    browserViewModel.activeTab()?.let { browserViewModel.closeTab(it.id) }
+                    return true
+                }
+                KeyEvent.KEYCODE_R -> {
+                    browserViewModel.reloadOrStop()
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 }

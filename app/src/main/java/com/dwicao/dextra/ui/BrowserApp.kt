@@ -297,6 +297,9 @@ private fun BrowserScreen(
             },
     ) {
         LaunchedEffect(Unit) { rootFocusRequester.requestFocus() }
+        LaunchedEffect(activeTab?.id) {
+            runCatching { addressFocusRequester.requestFocus() }
+        }
         val expanded = maxWidth >= 840.dp
         if (expanded) {
             DesktopBrowserLayout(
@@ -1279,7 +1282,7 @@ private fun SettingsSheet(
     SettingSection("Ad blocking") {
         SettingToggle(
             title = "Enable ad blocking",
-            summary = "Off by default; fetch only the filter URLs you choose",
+            summary = "Use the filter URLs below to block ad hosts",
             checked = adBlockingEnabled,
             onCheckedChange = onSetAdBlockingEnabled,
         )

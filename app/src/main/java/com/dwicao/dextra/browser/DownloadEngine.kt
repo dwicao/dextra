@@ -138,21 +138,27 @@ class DownloadEngine(
             Part(index, start, end, File("${output.path}.part$index"))
         }
         val progressLock = Any()
-        var lastReportedBytes = 0L
+        var lastReportedBytes = existingBytes(download, totalBytes)
         var lastReportedAt = System.nanoTime()
+        var smoothedSpeed = 0L
         val reportProgress = {
             val progress = synchronized(progressLock) {
                 val bytes = parts.sumOf { part -> part.file.length().coerceAtMost(part.size) }
                 val now = System.nanoTime()
                 val elapsedNanos = now - lastReportedAt
-                val speed = if (elapsedNanos > 0) {
+                val instantSpeed = if (elapsedNanos > 0) {
                     ((bytes - lastReportedBytes) * 1_000_000_000L / elapsedNanos).coerceAtLeast(0)
                 } else {
                     0L
                 }
+                if (instantSpeed > 0) {
+                    smoothedSpeed = if (smoothedSpeed == 0L) instantSpeed else {
+                        (smoothedSpeed * 80L + instantSpeed * 20L) / 100L
+                    }
+                }
                 lastReportedBytes = bytes
                 lastReportedAt = now
-                bytes to speed
+                bytes to smoothedSpeed
             }
             onUpdate(
                 download.downloadId,
@@ -239,6 +245,7 @@ class DownloadEngine(
                     var position = startingBytes
                     var lastReport = startingBytes
                     var lastReportAt = System.nanoTime()
+                    var smoothedSpeed = 0L
                     while (true) {
                         coroutineContext.ensureActive()
                         val read = input.read(buffer)
@@ -248,10 +255,15 @@ class DownloadEngine(
                         if (position - lastReport >= REPORT_STEP) {
                             val now = System.nanoTime()
                             val elapsedNanos = now - lastReportAt
-                            val speed = if (elapsedNanos > 0) {
+                            val instantSpeed = if (elapsedNanos > 0) {
                                 ((position - lastReport) * 1_000_000_000L / elapsedNanos).coerceAtLeast(0)
                             } else {
                                 0L
+                            }
+                            if (instantSpeed > 0) {
+                                smoothedSpeed = if (smoothedSpeed == 0L) instantSpeed else {
+                                    (smoothedSpeed * 80L + instantSpeed * 20L) / 100L
+                                }
                             }
                             lastReport = position
                             lastReportAt = now
@@ -261,7 +273,7 @@ class DownloadEngine(
                                     status = DownloadStatus.DOWNLOADING.label,
                                     bytesDownloaded = position,
                                     totalBytes = totalBytes,
-                                    speedBytesPerSecond = speed,
+                                    speedBytesPerSecond = smoothedSpeed,
                                 ),
                             )
                         }

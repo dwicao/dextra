@@ -26,11 +26,11 @@ val DefaultAdBlockFilters = listOf(
 
 data class BrowserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val searchEngine: SearchEngine = SearchEngine.DUCKDUCKGO,
-    val homepage: String = "https://duckduckgo.com/",
+    val searchEngine: SearchEngine = SearchEngine.GOOGLE,
+    val homepage: String = "https://www.google.com/",
     val desktopSites: Boolean = true,
     val tabBarWithAddressBar: Boolean = true,
-    val adBlockingEnabled: Boolean = false,
+    val adBlockingEnabled: Boolean = true,
     val adBlockFilters: List<AdBlockFilter> = DefaultAdBlockFilters,
 )
 
@@ -99,11 +99,11 @@ class SettingsRepository(private val context: Context) {
             ?: ThemeMode.SYSTEM,
         searchEngine = get(Keys.searchEngine)?.let {
             runCatching { SearchEngine.valueOf(it) }.getOrNull()
-        } ?: SearchEngine.DUCKDUCKGO,
-        homepage = get(Keys.homepage) ?: "https://duckduckgo.com/",
+        } ?: SearchEngine.GOOGLE,
+        homepage = get(Keys.homepage) ?: "https://www.google.com/",
         desktopSites = get(Keys.desktopSites) ?: true,
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
-        adBlockingEnabled = get(Keys.adBlockingEnabled) ?: false,
+        adBlockingEnabled = get(Keys.adBlockingEnabled) ?: true,
         adBlockFilters = filterUrls().map(::filterFromUrl),
     )
 

@@ -224,12 +224,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun goBack(): Boolean {
         val tab = activeTab() ?: return false
         if (!tab.canGoBack) return false
-        tab.session.goBack()
+        tab.session.goBack(true)
         return true
     }
 
     fun goForward() {
-        activeTab()?.takeIf { it.canGoForward }?.session?.goForward()
+        activeTab()?.takeIf { it.canGoForward }?.session?.goForward(true)
     }
 
     fun reloadOrStop() {
@@ -402,6 +402,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 .build(),
         )
         session.setNavigationDelegate(NavigationDelegate(tabId))
+        session.setHistoryDelegate(HistoryDelegate(tabId))
         session.setProgressDelegate(ProgressDelegate(tabId))
         session.setContentDelegate(ContentDelegate(tabId))
         session.setPermissionDelegate(PermissionDelegate(tabId))
@@ -681,6 +682,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val newSession = _state.value.tabs.first { it.id == newTabId }.session
             updateTab(newTabId) { it.copy(url = uri, hasPage = true, isLoading = true) }
             return GeckoResult.fromValue(newSession)
+        }
+    }
+
+    private inner class HistoryDelegate(private val tabId: String) : GeckoSession.HistoryDelegate {
+        override fun onHistoryStateChange(
+            session: GeckoSession,
+            history: GeckoSession.HistoryDelegate.HistoryList,
+        ) {
+            val currentIndex = history.currentIndex
+            updateTab(tabId) {
+                it.copy(
+                    canGoBack = currentIndex > 0,
+                    canGoForward = currentIndex >= 0 && currentIndex < history.size - 1,
+                )
+            }
         }
     }
 
