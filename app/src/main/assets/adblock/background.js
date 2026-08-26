@@ -2,6 +2,8 @@
   "use strict";
 
   const filterRules = [];
+  const userScripts = [];
+  const injectedScripts = new Set();
   const hardBlockedHosts = new Set([
     "adservice.google.com",
     "browser.sentry-cdn.com",
@@ -108,10 +110,119 @@
     nextRules.forEach((rule) => filterRules.push(rule));
   };
 
+  const globToRegExp = (pattern) => {
+    if (pattern === "<all_urls>") return /^https?:\/\/.+/i;
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`^${escaped.replace(/\*/g, ".*")}$`, "i");
+  };
+
+  const parseUserScript = (source, sourceUrl) => {
+    const metadataMatch = source.match(/==UserScript==([\s\S]*?)==\/UserScript==/);
+    const metadata = {
+      matches: [],
+      excludes: [],
+      includes: [],
+      requires: [],
+      runAt: "document_idle",
+      noframes: false,
+    };
+    if (metadataMatch) {
+      for (const line of metadataMatch[1].split(/\r?\n/)) {
+        const match = line.match(/^\s*\/\/\s*@([\w-]+)(?:\s+(.+?))?\s*$/);
+        if (!match) continue;
+        const key = match[1].toLowerCase();
+        const value = match[2] || "";
+        if (key === "match") metadata.matches.push(value);
+        if (key === "exclude") metadata.excludes.push(value);
+        if (key === "include") metadata.includes.push(value);
+        if (key === "require" && /^https?:\/\/\S+$/i.test(value)) metadata.requires.push(value);
+        if (key === "run-at" && ["document-start", "document-end", "document-idle"].includes(value)) metadata.runAt = value;
+        if (key === "noframes") metadata.noframes = true;
+      }
+    }
+    if (metadata.matches.length === 0 && metadata.includes.length === 0) metadata.matches.push("*://*/*");
+    return {
+      sourceUrl,
+      code: source,
+      matches: metadata.matches.map(globToRegExp),
+      excludes: [...metadata.excludes, ...metadata.includes.filter((pattern) => pattern.startsWith("!")).map((pattern) => pattern.slice(1))].map(globToRegExp),
+      includes: metadata.includes.filter((pattern) => !pattern.startsWith("!")).map(globToRegExp),
+      requires: metadata.requires,
+      runAt: metadata.runAt,
+      allFrames: !metadata.noframes,
+    };
+  };
+
+  const matchesUserScript = (script, url) => {
+    const matches = script.matches.some((pattern) => pattern.test(url));
+    const includes = script.includes.length === 0 || script.includes.some((pattern) => pattern.test(url));
+    const excluded = script.excludes.some((pattern) => pattern.test(url));
+    return matches && includes && !excluded;
+  };
+
+  const injectUserScripts = async (tabId, url, phase) => {
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    for (const script of userScripts) {
+      if (script.runAt !== phase || !matchesUserScript(script, url)) continue;
+      const key = `${tabId}|${url}|${script.sourceUrl}|${phase}`;
+      if (injectedScripts.has(key)) continue;
+      injectedScripts.add(key);
+      try {
+        await browser.tabs.executeScript(tabId, {
+          code: script.code,
+          runAt: phase,
+          allFrames: script.allFrames,
+        });
+      } catch (_) {
+        injectedScripts.delete(key);
+      }
+    }
+  };
+
+  const injectIntoOpenTabs = async () => {
+    injectedScripts.clear();
+    try {
+      const tabs = await browser.tabs.query({});
+      for (const tab of tabs) {
+        const phase = tab.status === "loading" ? "document-start" : "document-end";
+        await injectUserScripts(tab.id, tab.url, phase);
+        if (tab.status !== "loading") await injectUserScripts(tab.id, tab.url, "document-idle");
+      }
+    } catch (_) {
+      // A tab can disappear while subscriptions are being refreshed.
+    }
+  };
+
+  const loadUserScripts = async (urls) => {
+    const loaded = [];
+    for (const url of urls) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) continue;
+        const source = await response.text();
+        const script = parseUserScript(source, url);
+        const dependencies = [];
+        for (const dependencyUrl of script.requires) {
+          const dependencyResponse = await fetch(dependencyUrl);
+          if (dependencyResponse.ok) dependencies.push(await dependencyResponse.text());
+        }
+        loaded.push({ ...script, code: `${dependencies.join("\n")}\n${source}` });
+      } catch (_) {
+        // Ignore unavailable scripts and keep the scripts that did load.
+      }
+    }
+    userScripts.splice(0, userScripts.length, ...loaded);
+    await injectIntoOpenTabs();
+  };
+
   const connectToDextra = () => {
     try {
       const port = browser.runtime.connectNative("dextra");
       port.onMessage.addListener((message) => {
+        if (message?.type === "updateUserscripts") {
+          loadUserScripts(Array.isArray(message.urls) ? message.urls : []);
+          return;
+        }
         if (message?.type !== "updateAdblock") return;
         enabled = message.enabled !== false;
         browser.storage.local.set({ enabled });
@@ -127,6 +238,20 @@
     enabled = stored.enabled !== false;
   });
   connectToDextra();
+
+  browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    const url = changeInfo.url || tab.url;
+    if (changeInfo.status === "loading") {
+      for (const key of injectedScripts) {
+        if (key.startsWith(`${tabId}|`)) injectedScripts.delete(key);
+      }
+      injectUserScripts(tabId, url, "document-start");
+    }
+    if (changeInfo.status === "complete") {
+      injectUserScripts(tabId, url, "document-end");
+      injectUserScripts(tabId, url, "document-idle");
+    }
+  });
 
   browser.webRequest.onBeforeRequest.addListener(
     (request) => (shouldBlock(request) ? { cancel: true } : {}),

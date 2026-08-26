@@ -32,6 +32,7 @@ data class BrowserSettings(
     val tabBarWithAddressBar: Boolean = true,
     val adBlockingEnabled: Boolean = true,
     val adBlockFilters: List<AdBlockFilter> = DefaultAdBlockFilters,
+    val userScriptUrls: List<String> = emptyList(),
 )
 
 enum class SearchEngine(val label: String, val searchUrl: String) {
@@ -51,6 +52,7 @@ class SettingsRepository(private val context: Context) {
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
         val adBlockingEnabled = booleanPreferencesKey("ad_blocking_enabled")
         val adBlockFilters = stringPreferencesKey("ad_block_filters")
+        val userScriptUrls = stringPreferencesKey("user_script_urls")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -94,6 +96,21 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun addUserScript(url: String) {
+        context.settingsDataStore.edit { preferences ->
+            val urls = preferences.userScripts()
+            preferences[Keys.userScriptUrls] = (urls + url).distinct().joinToString("\n")
+        }
+    }
+
+    suspend fun removeUserScript(url: String) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.userScriptUrls] = preferences.userScripts()
+                .filterNot { it == url }
+                .joinToString("\n")
+        }
+    }
+
     private fun Preferences.toBrowserSettings(): BrowserSettings = BrowserSettings(
         themeMode = get(Keys.theme)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
             ?: ThemeMode.SYSTEM,
@@ -105,6 +122,7 @@ class SettingsRepository(private val context: Context) {
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
         adBlockingEnabled = get(Keys.adBlockingEnabled) ?: true,
         adBlockFilters = filterUrls().map(::filterFromUrl),
+        userScriptUrls = userScripts(),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -112,6 +130,12 @@ class SettingsRepository(private val context: Context) {
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
         ?: DefaultAdBlockFilters.map { it.url }
+
+    private fun Preferences.userScripts(): List<String> = get(Keys.userScriptUrls)
+        ?.split('\n')
+        ?.map(String::trim)
+        ?.filter(String::isNotBlank)
+        ?: emptyList()
 
     private fun filterFromUrl(url: String): AdBlockFilter = when (url) {
         DefaultAdBlockFilters[0].url -> DefaultAdBlockFilters[0]

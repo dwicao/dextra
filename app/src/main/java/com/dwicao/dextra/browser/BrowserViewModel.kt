@@ -116,6 +116,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             })
             syncAdBlockSettings(_state.value.settings)
+            syncUserScripts(_state.value.settings)
         }
     }
 
@@ -134,6 +135,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     if (desktopSitesChanged && tab.hasPage) tab.session.reload()
                 }
                 syncAdBlockSettings(settings)
+                syncUserScripts(settings)
             }
         }
         viewModelScope.launch {
@@ -301,6 +303,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun removeAdBlockFilter(filter: AdBlockFilter) {
         viewModelScope.launch { settingsRepository.removeAdBlockFilter(filter.url) }
+    }
+
+    fun addUserScript(url: String) {
+        val normalized = url.trim()
+        if (!normalized.startsWith("https://") && !normalized.startsWith("http://")) {
+            showSnackbar("Enter a valid http(s) userscript URL")
+            return
+        }
+        viewModelScope.launch { settingsRepository.addUserScript(normalized) }
+    }
+
+    fun removeUserScript(url: String) {
+        viewModelScope.launch { settingsRepository.removeUserScript(url) }
     }
 
     fun setDesktopSites(enabled: Boolean) {
@@ -539,6 +554,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             JSONObject()
                 .put("type", "updateAdblock")
                 .put("enabled", settings.adBlockingEnabled)
+                .put("urls", urls),
+        )
+    }
+
+    private fun syncUserScripts(settings: BrowserSettings) {
+        val port = adBlockPort ?: return
+        val urls = JSONArray()
+        settings.userScriptUrls.forEach(urls::put)
+        port.postMessage(
+            JSONObject()
+                .put("type", "updateUserscripts")
                 .put("urls", urls),
         )
     }

@@ -216,6 +216,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
                 onAddAdBlockFilter = viewModel::addAdBlockFilter,
                 onRemoveAdBlockFilter = viewModel::removeAdBlockFilter,
+                onAddUserScript = viewModel::addUserScript,
+                onRemoveUserScript = viewModel::removeUserScript,
                 onOpenDownload = viewModel::openDownload,
                 onShareDownload = viewModel::shareDownload,
                 onToggleDownload = viewModel::toggleDownload,
@@ -256,6 +258,8 @@ private fun BrowserScreen(
     onSetAdBlockingEnabled: (Boolean) -> Unit,
     onAddAdBlockFilter: (String) -> Unit,
     onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
+    onAddUserScript: (String) -> Unit,
+    onRemoveUserScript: (String) -> Unit,
     onOpenDownload: (DownloadEntry) -> Unit,
     onShareDownload: (DownloadEntry) -> Unit,
     onToggleDownload: (DownloadEntry) -> Unit,
@@ -400,6 +404,9 @@ private fun BrowserScreen(
                         onSetAdBlockingEnabled = onSetAdBlockingEnabled,
                         onAddAdBlockFilter = onAddAdBlockFilter,
                         onRemoveAdBlockFilter = onRemoveAdBlockFilter,
+                        userScriptUrls = state.settings.userScriptUrls,
+                        onAddUserScript = onAddUserScript,
+                        onRemoveUserScript = onRemoveUserScript,
                     )
                     BrowserOverlay.NONE -> Unit
                 }
@@ -1233,6 +1240,9 @@ private fun SettingsSheet(
     onSetAdBlockingEnabled: (Boolean) -> Unit,
     onAddAdBlockFilter: (String) -> Unit,
     onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
+    userScriptUrls: List<String>,
+    onAddUserScript: (String) -> Unit,
+    onRemoveUserScript: (String) -> Unit,
 ) {
     SheetHeader("Settings", "Tune Dextra for the way you work")
     SettingSection("Appearance") {
@@ -1321,6 +1331,52 @@ private fun SettingsSheet(
                 trailingContent = {
                     IconButton(onClick = { onRemoveAdBlockFilter(filter) }) {
                         Icon(Icons.Outlined.Close, contentDescription = "Remove ${filter.name}")
+                    }
+                },
+            )
+        }
+    }
+    SettingSection("User scripts") {
+        var userScriptUrl by rememberSaveable { mutableStateOf("") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = userScriptUrl,
+                onValueChange = { userScriptUrl = it },
+                modifier = Modifier.weight(1f),
+                label = { Text("Userscript URL") },
+                placeholder = { Text("https://example.com/script.user.js") },
+                singleLine = true,
+            )
+            Button(
+                onClick = {
+                    onAddUserScript(userScriptUrl)
+                    userScriptUrl = ""
+                },
+                enabled = userScriptUrl.isNotBlank(),
+                modifier = Modifier.height(56.dp),
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = "Add userscript")
+            }
+        }
+        Text(
+            "Scripts run on matching sites using their @match and @run-at metadata.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        userScriptUrls.forEach { url ->
+            ListItem(
+                modifier = Modifier.padding(top = 4.dp),
+                headlineContent = { Text(url.substringAfterLast('/').ifBlank { "Custom userscript" }, maxLines = 1) },
+                supportingContent = { Text(url, maxLines = 1) },
+                leadingContent = { Icon(Icons.Outlined.Language, contentDescription = null) },
+                trailingContent = {
+                    IconButton(onClick = { onRemoveUserScript(url) }) {
+                        Icon(Icons.Outlined.Close, contentDescription = "Remove userscript")
                     }
                 },
             )
