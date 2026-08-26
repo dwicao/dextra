@@ -122,6 +122,7 @@ data class InstalledExtension(
     val enabled: Boolean,
     val allowedInPrivateBrowsing: Boolean,
     val amoListingUrl: String?,
+    val optionsPageUrl: String?,
 )
 
 data class ExtensionInstallPrompt(
@@ -572,6 +573,29 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    fun openExtensionOptions(id: String) {
+        val extension = installedExtensionObjects[id] ?: return
+        val declaredUrl = extension.metaData.optionsPageUrl?.takeIf(String::isNotBlank)
+        if (declaredUrl == null) {
+            showSnackbar("This extension has no settings page")
+            return
+        }
+        val optionsUrl = if (declaredUrl.startsWith("moz-extension://")) {
+            declaredUrl
+        } else {
+            "${extension.metaData.baseUrl.trimEnd('/')}/${declaredUrl.trimStart('/')}"
+        }
+        val scheme = runCatching { Uri.parse(optionsUrl).scheme?.lowercase() }.getOrNull()
+        if (scheme != "moz-extension" && scheme != "https") {
+            showSnackbar("Extension settings URL is invalid")
+            return
+        }
+        val tabId = createTab()
+        val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        updateTab(tabId) { it.copy(url = optionsUrl, title = "Extension settings", hasPage = true, isLoading = true) }
+        tab.session.loadUri(optionsUrl)
+    }
+
     fun setExtensionPrivateBrowsing(id: String, allowed: Boolean) {
         val extension = installedExtensionObjects[id] ?: return
         runtime.webExtensionController.setAllowedInPrivateBrowsing(extension, allowed).accept(
@@ -1017,6 +1041,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             enabled = extension.metaData.enabled,
             allowedInPrivateBrowsing = extension.metaData.allowedInPrivateBrowsing,
             amoListingUrl = extension.metaData.amoListingUrl,
+            optionsPageUrl = extension.metaData.optionsPageUrl,
         )
 
     private fun resolveExtensionPackageUrl(input: String): String? {

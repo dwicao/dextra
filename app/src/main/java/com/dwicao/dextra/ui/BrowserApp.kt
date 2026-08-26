@@ -241,6 +241,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onSetExtensionEnabled = viewModel::setExtensionEnabled,
                  onSetExtensionPrivateBrowsing = viewModel::setExtensionPrivateBrowsing,
                  onUpdateExtension = viewModel::updateExtension,
+                 onOpenExtensionOptions = viewModel::openExtensionOptions,
                  onUninstallExtension = viewModel::uninstallExtension,
                 onOpenDownload = viewModel::openDownload,
                 onShareDownload = viewModel::shareDownload,
@@ -309,6 +310,7 @@ private fun BrowserScreen(
     onSetExtensionEnabled: (String, Boolean) -> Unit,
     onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
     onUpdateExtension: (String) -> Unit,
+    onOpenExtensionOptions: (String) -> Unit,
     onUninstallExtension: (String) -> Unit,
     onOpenDownload: (DownloadEntry) -> Unit,
     onShareDownload: (DownloadEntry) -> Unit,
@@ -391,6 +393,7 @@ private fun BrowserScreen(
                 onSetExtensionEnabled = onSetExtensionEnabled,
                 onSetExtensionPrivateBrowsing = onSetExtensionPrivateBrowsing,
                 onUpdateExtension = onUpdateExtension,
+                onOpenExtensionOptions = onOpenExtensionOptions,
                 onUninstallExtension = onUninstallExtension,
             )
         } else {
@@ -1556,6 +1559,7 @@ private fun SettingsScreen(
     onSetExtensionEnabled: (String, Boolean) -> Unit,
     onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
     onUpdateExtension: (String) -> Unit,
+    onOpenExtensionOptions: (String) -> Unit,
     onUninstallExtension: (String) -> Unit,
 ) {
     var pendingExtensionRemoval by remember { mutableStateOf<InstalledExtension?>(null) }
@@ -1834,6 +1838,11 @@ private fun SettingsScreen(
                                     checked = extension.enabled,
                                     onCheckedChange = { onSetExtensionEnabled(extension.id, it) },
                                 )
+                                if (!extension.optionsPageUrl.isNullOrBlank()) {
+                                    IconButton(onClick = { onOpenExtensionOptions(extension.id) }) {
+                                        Icon(Icons.Outlined.Settings, contentDescription = "Open ${extension.name} settings")
+                                    }
+                                }
                                 IconButton(onClick = { onUpdateExtension(extension.id) }) {
                                     Icon(Icons.Outlined.Refresh, contentDescription = "Update ${extension.name}")
                                 }

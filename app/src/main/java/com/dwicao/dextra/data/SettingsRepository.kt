@@ -20,9 +20,9 @@ data class AdBlockFilter(
     val enabled: Boolean = true,
 )
 
-val DefaultAdBlockFilters = listOf(
-    AdBlockFilter("EasyList", "https://easylist.to/easylist/easylist.txt"),
-    AdBlockFilter("EasyPrivacy", "https://easylist.to/easylist/easyprivacy.txt"),
+private val RemovedDefaultAdBlockFilterUrls = setOf(
+    "https://easylist.to/easylist/easylist.txt",
+    "https://easylist.to/easylist/easyprivacy.txt",
 )
 
 data class BrowserSettings(
@@ -32,7 +32,7 @@ data class BrowserSettings(
     val desktopSites: Boolean = true,
     val tabBarWithAddressBar: Boolean = true,
     val adBlockingEnabled: Boolean = true,
-    val adBlockFilters: List<AdBlockFilter> = DefaultAdBlockFilters,
+    val adBlockFilters: List<AdBlockFilter> = emptyList(),
     val userScriptUrls: List<String> = emptyList(),
     val disabledUserScriptUrls: Set<String> = emptySet(),
     val extensionInstallRecords: Map<String, ExtensionInstallRecord> = emptyMap(),
@@ -204,7 +204,8 @@ class SettingsRepository(private val context: Context) {
         ?.split('\n')
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
-        ?: DefaultAdBlockFilters.map { it.url }
+        ?.filterNot { it in RemovedDefaultAdBlockFilterUrls }
+        ?: emptyList()
 
     private fun Preferences.disabledFilterUrls(): List<String> = get(Keys.disabledAdBlockFilters)
         ?.split('\n')
@@ -238,9 +239,6 @@ class SettingsRepository(private val context: Context) {
         ?.toMap()
         ?: emptyMap()
 
-    private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter = when (url) {
-        DefaultAdBlockFilters[0].url -> DefaultAdBlockFilters[0].copy(enabled = enabled)
-        DefaultAdBlockFilters[1].url -> DefaultAdBlockFilters[1].copy(enabled = enabled)
-        else -> AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url, enabled)
-    }
+    private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter =
+        AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url, enabled)
 }
