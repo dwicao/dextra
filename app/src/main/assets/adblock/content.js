@@ -1,6 +1,14 @@
 (() => {
   "use strict";
 
+  // Keep the browser's native context menu available on sites that disable it.
+  document.addEventListener("contextmenu", (event) => {
+    event.stopImmediatePropagation();
+  }, true);
+  document.addEventListener("mousedown", (event) => {
+    if (event.button === 2) event.stopImmediatePropagation();
+  }, true);
+
   const selectors = [".adbox.banner_ads.adsbox", ".textads"];
 
   const hideAds = () => {

@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ChevronLeft
@@ -254,6 +255,13 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onContextMenuAction = viewModel::handleContextMenuAction,
                 onDismissContextMenu = viewModel::dismissContextMenu,
             )
+            state.lastCrashReport?.let { report ->
+                CrashReportDialog(
+                    report = report,
+                    onCopy = viewModel::copyCrashReport,
+                    onDismiss = viewModel::dismissCrashReport,
+                )
+            }
         }
     }
 }
@@ -1457,6 +1465,30 @@ private fun ExtensionInstallDialog(
             }
         },
         dismissButton = { TextButton(onClick = { onResolve(false, false, false) }) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun CrashReportDialog(
+    report: String,
+    onCopy: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.BugReport, contentDescription = null) },
+        title = { Text("Previous crash report") },
+        text = {
+            Text(
+                text = report,
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        },
+        confirmButton = { TextButton(onClick = onCopy) { Text("Copy") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 

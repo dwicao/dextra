@@ -35,7 +35,13 @@ data class BrowserSettings(
     val adBlockFilters: List<AdBlockFilter> = DefaultAdBlockFilters,
     val userScriptUrls: List<String> = emptyList(),
     val disabledUserScriptUrls: Set<String> = emptySet(),
-    val extensionInstallSources: Map<String, String> = emptyMap(),
+    val extensionInstallRecords: Map<String, ExtensionInstallRecord> = emptyMap(),
+)
+
+data class ExtensionInstallRecord(
+    val filePath: String,
+    val allowInPrivateBrowsing: Boolean,
+    val allowDataCollection: Boolean,
 )
 
 enum class SearchEngine(val label: String, val searchUrl: String) {
@@ -63,7 +69,7 @@ class SettingsRepository(private val context: Context) {
         val disabledAdBlockFilters = stringPreferencesKey("disabled_ad_block_filters")
         val userScriptUrls = stringPreferencesKey("user_script_urls")
         val disabledUserScripts = stringPreferencesKey("disabled_user_scripts")
-        val extensionInstallSources = stringPreferencesKey("extension_install_sources")
+        val extensionInstallRecords = stringPreferencesKey("extension_install_records")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -156,21 +162,25 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    suspend fun saveExtensionInstallSource(id: String, url: String) {
+    suspend fun saveExtensionInstallRecord(id: String, record: ExtensionInstallRecord) {
         context.settingsDataStore.edit { preferences ->
-            val sources = preferences.extensionInstallSources().toMutableMap()
-            sources[id] = url
-            preferences[Keys.extensionInstallSources] = sources.entries
-                .joinToString("\n") { (extensionId, source) -> "$extensionId\t$source" }
+            val records = preferences.extensionInstallRecords().toMutableMap()
+            records[id] = record
+            preferences[Keys.extensionInstallRecords] = records.entries
+                .joinToString("\n") { (extensionId, value) ->
+                    "$extensionId\t${value.filePath}\t${value.allowInPrivateBrowsing}\t${value.allowDataCollection}"
+                }
         }
     }
 
-    suspend fun removeExtensionInstallSource(id: String) {
+    suspend fun removeExtensionInstallRecord(id: String) {
         context.settingsDataStore.edit { preferences ->
-            preferences[Keys.extensionInstallSources] = preferences.extensionInstallSources()
+            preferences[Keys.extensionInstallRecords] = preferences.extensionInstallRecords()
                 .filterKeys { it != id }
                 .entries
-                .joinToString("\n") { (extensionId, source) -> "$extensionId\t$source" }
+                .joinToString("\n") { (extensionId, value) ->
+                    "$extensionId\t${value.filePath}\t${value.allowInPrivateBrowsing}\t${value.allowDataCollection}"
+                }
         }
     }
 
@@ -187,7 +197,7 @@ class SettingsRepository(private val context: Context) {
         adBlockFilters = filterUrls().map { url -> filterFromUrl(url, url !in disabledFilterUrls()) },
         userScriptUrls = userScripts(),
         disabledUserScriptUrls = disabledUserScripts().intersect(userScripts().toSet()),
-        extensionInstallSources = extensionInstallSources(),
+        extensionInstallRecords = extensionInstallRecords(),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -214,12 +224,16 @@ class SettingsRepository(private val context: Context) {
         ?.filter(String::isNotBlank)
         ?: emptyList()
 
-    private fun Preferences.extensionInstallSources(): Map<String, String> = get(Keys.extensionInstallSources)
+    private fun Preferences.extensionInstallRecords(): Map<String, ExtensionInstallRecord> = get(Keys.extensionInstallRecords)
         ?.split('\n')
         ?.mapNotNull { line ->
-            val separator = line.indexOf('\t')
-            if (separator <= 0 || separator == line.lastIndex) null
-            else line.substring(0, separator) to line.substring(separator + 1)
+            val values = line.split('\t')
+            if (values.size != 4 || values[0].isBlank() || values[1].isBlank()) null
+            else values[0] to ExtensionInstallRecord(
+                filePath = values[1],
+                allowInPrivateBrowsing = values[2].toBoolean(),
+                allowDataCollection = values[3].toBoolean(),
+            )
         }
         ?.toMap()
         ?: emptyMap()

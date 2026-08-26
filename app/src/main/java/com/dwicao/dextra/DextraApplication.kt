@@ -2,10 +2,31 @@ package com.dwicao.dextra
 
 import android.app.Application
 import android.content.Context
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import kotlin.system.exitProcess
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
 
-class DextraApplication : Application()
+class DextraApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            runCatching {
+                val trace = StringWriter().also { writer ->
+                    error.printStackTrace(PrintWriter(writer))
+                }.toString()
+                File(filesDir, "last-crash.txt").writeText(
+                    "Thread: ${thread.name}\n\n$trace",
+                )
+            }
+            if (previousHandler != null) previousHandler.uncaughtException(thread, error)
+            else exitProcess(10)
+        }
+    }
+}
 
 object GeckoRuntimeHolder {
     @Volatile

@@ -20,6 +20,7 @@ import com.dwicao.dextra.data.BrowserDatabase
 import com.dwicao.dextra.data.BrowserSettings
 import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
+import com.dwicao.dextra.data.ExtensionInstallRecord
 import com.dwicao.dextra.data.HistoryEntry
 import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.SettingsRepository
@@ -45,6 +46,8 @@ import org.mozilla.geckoview.WebResponse
 import java.net.HttpURLConnection
 import java.net.URL
 import java.io.File
+import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 
@@ -123,13 +126,17 @@ data class InstalledExtension(
 
 data class ExtensionInstallPrompt(
     val id: String,
+    val extensionId: String,
     val name: String,
     val version: String,
     val permissions: List<String>,
     val origins: List<String>,
     val dataCollectionPermissions: List<String>,
+    val packageFilePath: String?,
     val result: GeckoResult<WebExtension.PermissionPromptResponse>,
 )
+
+private const val MAX_EXTENSION_PACKAGE_BYTES = 64L * 1024L * 1024L
 
 data class ExtensionUpdatePrompt(
     val id: String,
@@ -154,6 +161,7 @@ data class BrowserUiState(
     val extensionUpdatePrompt: ExtensionUpdatePrompt? = null,
     val extensionInstallInProgress: Boolean = false,
     val contextMenu: BrowserContextMenu? = null,
+    val lastCrashReport: String? = null,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -165,6 +173,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val removedDownloadIds = ConcurrentHashMap.newKeySet<Long>()
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val restoringExtensionIds = ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var pendingExtensionPackagePath: String? = null
+    @Volatile
+    private var pendingExtensionPrivateBrowsing = false
+    @Volatile
+    private var pendingExtensionDataCollection = false
     private val downloadEngine = DownloadEngine(viewModelScope) { downloadId, update ->
         viewModelScope.launch { applyDownloadUpdate(downloadId, update) }
     }
@@ -225,7 +239,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         override fun onReady(extension: WebExtension) {
             refreshInstalledExtensions()
-            restoreMissingExtensions()
         }
     }
 
@@ -235,6 +248,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val downloads: Flow<List<DownloadEntry>> = dao.observeDownloads()
 
     init {
+        readLastCrashReport()?.let { report ->
+            _state.update { it.copy(lastCrashReport = report) }
+        }
         viewModelScope.launch {
             settingsRepository.settings.collect { settings ->
                 val desktopSitesChanged = _state.value.settings.desktopSites != settings.desktopSites
@@ -271,7 +287,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         installAdBlocker()
         viewModelScope.launch {
             delay(2_000)
-            restoreMissingExtensions()
+            restoreOfflineExtensions()
         }
         restoreDownloads()
         createTab()
@@ -503,16 +519,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         if (_state.value.extensionInstallInProgress) return
 
+        pendingExtensionPrivateBrowsing = false
+        pendingExtensionDataCollection = false
         _state.update { it.copy(extensionInstallInProgress = true) }
         viewModelScope.launch {
             val packageUrl = withContext(Dispatchers.IO) { resolveExtensionPackageUrl(normalized) }
             if (packageUrl == null) {
-                restoringExtensionIds.clear()
                 _state.update { it.copy(extensionInstallInProgress = false) }
                 showSnackbar("Could not find a signed Firefox extension package")
                 return@launch
             }
-            installExtensionPackage(packageUrl, normalized)
+            val packageFile = withContext(Dispatchers.IO) { cacheExtensionPackage(packageUrl) }
+            if (packageFile == null) {
+                _state.update { it.copy(extensionInstallInProgress = false) }
+                showSnackbar("Could not save extension package offline")
+                return@launch
+            }
+            installExtensionPackage(Uri.fromFile(packageFile).toString(), packageFile.path)
         }
     }
 
@@ -555,10 +578,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun uninstallExtension(id: String) {
         val extension = installedExtensionObjects[id] ?: return
+        val installRecord = _state.value.settings.extensionInstallRecords[id]
         runtime.webExtensionController.uninstall(extension).accept(
             {
                 installedExtensionObjects.remove(id)
-                viewModelScope.launch { settingsRepository.removeExtensionInstallSource(id) }
+                installRecord?.filePath?.let { path -> runCatching { File(path).delete() } }
+                viewModelScope.launch { settingsRepository.removeExtensionInstallRecord(id) }
                 refreshInstalledExtensions()
                 showSnackbar("Extension removed")
             },
@@ -572,6 +597,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         allowDataCollection: Boolean,
     ) {
         val prompt = _state.value.extensionInstallPrompt ?: return
+        pendingExtensionPrivateBrowsing = allow && allowInPrivateBrowsing
+        pendingExtensionDataCollection = allow && allowDataCollection
         prompt.result.complete(
             WebExtension.PermissionPromptResponse(
                 allow,
@@ -613,6 +640,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearSnackbar() {
         _state.update { it.copy(snackbar = null) }
+    }
+
+    fun dismissCrashReport() {
+        runCatching { File(getApplication<Application>().filesDir, "last-crash.txt").delete() }
+        _state.update { it.copy(lastCrashReport = null) }
+    }
+
+    fun copyCrashReport() {
+        _state.value.lastCrashReport?.let { copyToClipboard("Crash report", it) }
     }
 
     fun openDownload(download: DownloadEntry) {
@@ -730,6 +766,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         showSnackbar("$label copied")
     }
 
+    private fun readLastCrashReport(): String? = runCatching {
+        File(getApplication<Application>().filesDir, "last-crash.txt")
+            .takeIf(File::isFile)
+            ?.readText()
+            ?.takeIf(String::isNotBlank)
+    }.getOrNull()
+
     private fun openContextUrl(tabId: String, url: String, inNewTab: Boolean) {
         val scheme = runCatching { Uri.parse(url).scheme?.lowercase() }.getOrNull()
         if (scheme !in setOf("http", "https", "about", "file", "data")) {
@@ -787,8 +830,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runtime.webExtensionController.list().accept(
             { extensions ->
                 val staleExtensions = extensions.orEmpty().filter {
-                    it.id == "uBlock0@raymondhill.net" ||
-                        (it.id == "adblock@dextra" && it.metaData.version != "2.4.0")
+                    it.id == "adblock@dextra" && it.metaData.version != "2.4.0"
                 }
                 removeStaleAdBlockers(staleExtensions)
             },
@@ -868,19 +910,34 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         origins: Array<String>,
         dataCollectionPermissions: Array<String>,
     ): GeckoResult<WebExtension.PermissionPromptResponse> {
+        val result = GeckoResult<WebExtension.PermissionPromptResponse>()
+        val restoreRecord = _state.value.settings.extensionInstallRecords[extension.id]
+        if (extension.id in restoringExtensionIds && restoreRecord != null) {
+            pendingExtensionPrivateBrowsing = restoreRecord.allowInPrivateBrowsing
+            pendingExtensionDataCollection = restoreRecord.allowDataCollection
+            result.complete(
+                WebExtension.PermissionPromptResponse(
+                    true,
+                    restoreRecord.allowInPrivateBrowsing,
+                    restoreRecord.allowDataCollection,
+                ),
+            )
+            return result
+        }
         _state.value.extensionInstallPrompt?.result?.complete(
             WebExtension.PermissionPromptResponse(false, false, false),
         )
-        val result = GeckoResult<WebExtension.PermissionPromptResponse>()
         _state.update {
             it.copy(
                 extensionInstallPrompt = ExtensionInstallPrompt(
                     id = UUID.randomUUID().toString(),
+                    extensionId = extension.id,
                     name = extension.metaData.name ?: extension.id,
                     version = extension.metaData.version,
                     permissions = permissions.toList(),
                     origins = origins.toList(),
                     dataCollectionPermissions = dataCollectionPermissions.toList(),
+                    packageFilePath = pendingExtensionPackagePath,
                     result = result,
                 ),
             )
@@ -928,19 +985,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
-    private fun restoreMissingExtensions() {
+    private fun restoreOfflineExtensions() {
         if (_state.value.extensionInstallInProgress) return
         runtime.webExtensionController.list().accept(
             { extensions ->
                 val installedIds = extensions.orEmpty().mapTo(hashSetOf()) { it.id }
-                val missing = _state.value.settings.extensionInstallSources
-                    .filterKeys { it !in installedIds }
-                    .entries
-                    .firstOrNull { restoringExtensionIds.add(it.key) }
+                val missing = _state.value.settings.extensionInstallRecords.entries
+                    .firstOrNull { (id, record) ->
+                        id !in installedIds && File(record.filePath).isFile && restoringExtensionIds.add(id)
+                    }
                     ?: return@accept
-                installExtension(missing.value)
+                val file = File(missing.value.filePath)
+                pendingExtensionPrivateBrowsing = missing.value.allowInPrivateBrowsing
+                pendingExtensionDataCollection = missing.value.allowDataCollection
+                installExtensionPackage(Uri.fromFile(file).toString(), file.path)
             },
-            { error -> Log.e("Dextra", "Could not restore Firefox extensions", error) },
+            { error -> Log.e("Dextra", "Could not restore offline extensions", error) },
         )
     }
 
@@ -982,29 +1042,111 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun installExtensionPackage(packageUrl: String, sourceUrl: String = packageUrl) {
+    private suspend fun cacheExtensionPackage(packageUrl: String): File? = withContext(Dispatchers.IO) {
+        val directory = File(getApplication<Application>().filesDir, "extensions")
+        if (!directory.isDirectory && !directory.mkdirs()) return@withContext null
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(packageUrl.toByteArray())
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val destination = File(directory, "$digest.xpi")
+        if (destination.isFile && destination.length() > 0) return@withContext destination
+
+        val temporary = File(directory, "$digest.xpi.part")
+        val connection = (URL(packageUrl).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/x-xpinstall,application/octet-stream")
+            setRequestProperty("User-Agent", "Dextra/${android.os.Build.VERSION.SDK_INT}")
+        }
+        try {
+            if (connection.responseCode !in 200..299 || connection.contentLengthLong > MAX_EXTENSION_PACKAGE_BYTES) {
+                temporary.delete()
+                return@withContext null
+            }
+            try {
+                var total = 0L
+                connection.inputStream.use { input ->
+                    temporary.outputStream().use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count == -1) break
+                            total += count
+                            if (total > MAX_EXTENSION_PACKAGE_BYTES) throw IOException("Extension package is too large")
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                }
+                if (temporary.length() == 0L) {
+                    temporary.delete()
+                    return@withContext null
+                }
+                if (!temporary.renameTo(destination)) {
+                    temporary.copyTo(destination, overwrite = true)
+                    temporary.delete()
+                }
+                destination
+            } catch (_: Exception) {
+                temporary.delete()
+                null
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun installExtensionPackageFromUrl(packageUrl: String) {
+        if (_state.value.extensionInstallInProgress) return
+        _state.update { it.copy(extensionInstallInProgress = true) }
+        viewModelScope.launch {
+            val packageFile = withContext(Dispatchers.IO) { cacheExtensionPackage(packageUrl) }
+            if (packageFile == null) {
+                _state.update { it.copy(extensionInstallInProgress = false) }
+                showSnackbar("Could not save extension package offline")
+                return@launch
+            }
+            installExtensionPackage(Uri.fromFile(packageFile).toString(), packageFile.path)
+        }
+    }
+
+    private fun installExtensionPackage(packageUri: String, packageFilePath: String?) {
+        pendingExtensionPackagePath = packageFilePath
         val alreadyPreparing = _state.value.extensionInstallInProgress
         _state.update { it.copy(extensionInstallInProgress = true) }
         if (!alreadyPreparing) showSnackbar("Preparing extension installation")
         runtime.webExtensionController.install(
-            packageUrl,
-            WebExtensionController.INSTALLATION_METHOD_MANAGER,
+            packageUri,
+            WebExtensionController.INSTALLATION_METHOD_FROM_FILE,
         ).accept(
             { extension ->
                 val installedId = extension?.id
-                val savedSource = extension?.metaData?.amoListingUrl
-                    ?.takeIf(FirefoxAddons::isAmoUrl)
-                    ?: sourceUrl
-                if (installedId != null) {
-                    viewModelScope.launch { settingsRepository.saveExtensionInstallSource(installedId, savedSource) }
+                val filePath = pendingExtensionPackagePath
+                if (installedId != null && filePath != null) {
+                    viewModelScope.launch {
+                        settingsRepository.saveExtensionInstallRecord(
+                            installedId,
+                            ExtensionInstallRecord(
+                                filePath = filePath,
+                                allowInPrivateBrowsing = pendingExtensionPrivateBrowsing,
+                                allowDataCollection = pendingExtensionDataCollection,
+                            ),
+                        )
+                    }
                 }
+                pendingExtensionPackagePath = null
+                pendingExtensionPrivateBrowsing = false
+                pendingExtensionDataCollection = false
                 restoringExtensionIds.clear()
                 _state.update { it.copy(extensionInstallInProgress = false, extensionInstallPrompt = null) }
                 refreshInstalledExtensions()
-                restoreMissingExtensions()
                 showSnackbar("${extension?.metaData?.name ?: "Extension"} installed")
             },
             { error ->
+                pendingExtensionPackagePath = null
+                pendingExtensionPrivateBrowsing = false
+                pendingExtensionDataCollection = false
                 restoringExtensionIds.clear()
                 _state.update { it.copy(extensionInstallInProgress = false, extensionInstallPrompt = null) }
                 showSnackbar(extensionInstallError(error))
@@ -1168,9 +1310,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession> {
+            val popupUri = uri.ifBlank { "about:blank" }
+            val scheme = runCatching { Uri.parse(popupUri).scheme?.lowercase() }.getOrNull()
+            if (scheme !in setOf("http", "https", "about")) {
+                if (scheme != null) launchExternal(popupUri)
+                return GeckoResult.fromValue<GeckoSession>(null)
+            }
+            if (_state.value.tabs.size >= 32) {
+                showSnackbar("Popup blocked: tab limit reached")
+                return GeckoResult.fromValue<GeckoSession>(null)
+            }
             val newTabId = createTab()
-            val newSession = _state.value.tabs.first { it.id == newTabId }.session
-            updateTab(newTabId) { it.copy(url = uri, hasPage = true, isLoading = true) }
+            val newSession = _state.value.tabs.firstOrNull { it.id == newTabId }?.session
+                ?: return GeckoResult.fromValue<GeckoSession>(null)
+            updateTab(newTabId) { it.copy(url = popupUri, hasPage = true, isLoading = true, crashed = false) }
             return GeckoResult.fromValue(newSession)
         }
     }
@@ -1227,7 +1380,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
             val contentType = response.headers["Content-Type"] ?: response.headers["content-type"]
             if (FirefoxAddons.isAmoUrl(response.uri) && FirefoxAddons.isXpiDownload(response.uri, contentType)) {
-                installExtensionPackage(response.uri, response.uri)
+                installExtensionPackageFromUrl(response.uri)
             } else {
                 download(response)
             }
