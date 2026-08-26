@@ -306,9 +306,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun activeTab(): BrowserTabState? = _state.value.tabs.firstOrNull { it.id == _state.value.activeTabId }
 
-    fun createTab(privateMode: Boolean = false, initialUri: String? = null): String {
+    fun createTab(
+        privateMode: Boolean = false,
+        initialUri: String? = null,
+        openSession: Boolean = true,
+    ): String {
         val id = UUID.randomUUID().toString()
-        val session = createSession(id, privateMode)
+        val session = createSession(id, privateMode, openSession)
         val tab = BrowserTabState(id = id, session = session, isPrivate = privateMode)
         _state.update { current ->
             current.copy(
@@ -317,7 +321,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 overlay = BrowserOverlay.NONE,
             )
         }
-        if (initialUri != null) navigate(id, initialUri)
+        if (initialUri != null && openSession) navigate(id, initialUri)
         return id
     }
 
@@ -705,7 +709,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { dao.deleteDownload(download.downloadId) }
     }
 
-    private fun createSession(tabId: String, privateMode: Boolean): GeckoSession {
+    private fun createSession(tabId: String, privateMode: Boolean, openSession: Boolean = true): GeckoSession {
         val settings = _state.value.settings
         val session = GeckoSession(
             GeckoSessionSettings.Builder()
@@ -728,7 +732,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         session.setProgressDelegate(ProgressDelegate(tabId))
         session.setContentDelegate(ContentDelegate(tabId))
         session.setPermissionDelegate(PermissionDelegate(tabId))
-        session.open(runtime)
+        if (openSession) session.open(runtime)
         return session
     }
 
@@ -1320,7 +1324,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 showSnackbar("Popup blocked: tab limit reached")
                 return GeckoResult.fromValue<GeckoSession>(null)
             }
-            val newTabId = createTab()
+            // GeckoView opens the returned session itself; it must still be unopened here.
+            val newTabId = createTab(openSession = false)
             val newSession = _state.value.tabs.firstOrNull { it.id == newTabId }?.session
                 ?: return GeckoResult.fromValue<GeckoSession>(null)
             updateTab(newTabId) { it.copy(url = popupUri, hasPage = true, isLoading = true, crashed = false) }
