@@ -46,7 +46,9 @@ data class DownloadEntry(
     val bytesDownloaded: Long,
     val totalBytes: Long,
     val localUri: String?,
+    val filePath: String?,
     val reason: String?,
+    val speedBytesPerSecond: Long,
     val createdAt: Long,
 )
 
@@ -88,6 +90,9 @@ interface BrowserDao {
     @Query("SELECT * FROM downloads")
     suspend fun getDownloads(): List<DownloadEntry>
 
+    @Query("SELECT * FROM downloads WHERE downloadId = :downloadId LIMIT 1")
+    suspend fun getDownload(downloadId: Long): DownloadEntry?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertDownload(download: DownloadEntry)
 
@@ -95,7 +100,7 @@ interface BrowserDao {
     suspend fun deleteDownload(downloadId: Long)
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class], version = 2, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class], version = 4, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -108,7 +113,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2).fallbackToDestructiveMigration().build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).fallbackToDestructiveMigration().build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -130,6 +135,18 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                     )
                     """.trimIndent(),
                 )
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE downloads ADD COLUMN filePath TEXT")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE downloads ADD COLUMN speedBytesPerSecond INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

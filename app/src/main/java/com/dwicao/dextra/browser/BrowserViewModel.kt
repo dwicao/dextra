@@ -2,8 +2,6 @@ package com.dwicao.dextra.browser
 
 import android.Manifest
 import android.app.Application
-import android.app.DownloadManager
-import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -13,6 +11,7 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.core.content.FileProvider
 import com.dwicao.dextra.GeckoRuntimeHolder
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
@@ -31,8 +30,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -45,6 +42,8 @@ import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebResponse
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 
 data class BrowserTabState(
@@ -98,9 +97,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val runtime = GeckoRuntimeHolder.get(application)
     private val database = BrowserDatabase.get(application)
     private val dao: BrowserDao = database.browserDao()
-    private val downloadManager = application.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
     private val settingsRepository = SettingsRepository(application)
     private val _state = MutableStateFlow(BrowserUiState())
+    private val removedDownloadIds = ConcurrentHashMap.newKeySet<Long>()
+    private val downloadEngine = DownloadEngine(viewModelScope) { downloadId, update ->
+        viewModelScope.launch { applyDownloadUpdate(downloadId, update) }
+    }
     @Volatile
     private var adBlockPort: WebExtension.Port? = null
 
@@ -146,7 +148,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         installAdBlocker()
-        startDownloadMonitor()
+        restoreDownloads()
         createTab()
     }
 
@@ -361,17 +363,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun cancelDownload(download: DownloadEntry) {
         if (download.status == DownloadStatus.COMPLETE.label) return
-        downloadManager.remove(download.downloadId)
-        viewModelScope.launch {
-            dao.upsertDownload(download.copy(status = DownloadStatus.CANCELED.label, reason = "Canceled by user"))
+        downloadEngine.cancel(download)
+    }
+
+    fun toggleDownload(download: DownloadEntry) {
+        when (download.status) {
+            DownloadStatus.QUEUED.label,
+            DownloadStatus.DOWNLOADING.label,
+            -> downloadEngine.pause(download)
+            DownloadStatus.PAUSED.label -> downloadEngine.start(download)
+            else -> Unit
         }
     }
 
     fun removeDownload(download: DownloadEntry) {
-        downloadManager.remove(download.downloadId)
-        downloadUri(download)?.let { uri ->
-            runCatching { getApplication<Application>().contentResolver.delete(uri, null, null) }
-        }
+        removedDownloadIds.add(download.downloadId)
+        downloadEngine.remove(download)
+        download.filePath?.let { path -> runCatching { File(path).delete() } }
         viewModelScope.launch { dao.deleteDownload(download.downloadId) }
     }
 
@@ -428,69 +436,47 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(snackbar = message) }
     }
 
-    private fun startDownloadMonitor() {
-        viewModelScope.launch {
-            while (isActive) {
-                val hasActiveDownloads = syncDownloadStatuses()
-                delay(if (hasActiveDownloads) 600L else 1_500L)
-            }
-        }
-    }
-
-    private suspend fun syncDownloadStatuses(): Boolean {
-        var hasActiveDownloads = false
-        dao.getDownloads().forEach { download ->
-            val cursor = runCatching {
-                downloadManager.query(DownloadManager.Query().setFilterById(download.downloadId))
-            }.getOrNull()
-            if (cursor == null) return@forEach
-            cursor.use {
-                if (!it.moveToFirst()) {
-                    if (download.status !in terminalDownloadStatuses) {
-                        dao.upsertDownload(download.copy(status = DownloadStatus.CANCELED.label, reason = "Removed from device"))
-                    }
-                    return@use
-                }
-
-                val managerStatus = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                val status = managerStatus.toDownloadStatus()
-                if (status !in terminalDownloadStatuses) hasActiveDownloads = true
-                val bytes = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-                val localUri = it.getString(it.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
-                val reason = if (status == DownloadStatus.FAILED.label) {
-                    "Download error (${it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))})"
-                } else {
-                    null
-                }
-                dao.upsertDownload(
-                    download.copy(
-                        status = status,
-                        bytesDownloaded = bytes,
-                        totalBytes = total,
-                        localUri = localUri ?: download.localUri,
-                        reason = reason,
-                    ),
-                )
-            }
-        }
-        return hasActiveDownloads
-    }
-
-    private fun Int.toDownloadStatus(): String = when (this) {
-        DownloadManager.STATUS_PENDING -> DownloadStatus.QUEUED.label
-        DownloadManager.STATUS_RUNNING -> DownloadStatus.DOWNLOADING.label
-        DownloadManager.STATUS_PAUSED -> DownloadStatus.PAUSED.label
-        DownloadManager.STATUS_SUCCESSFUL -> DownloadStatus.COMPLETE.label
-        DownloadManager.STATUS_FAILED -> DownloadStatus.FAILED.label
-        else -> DownloadStatus.FAILED.label
-    }
-
-    private val terminalDownloadStatuses = setOf(
+    private val activeDownloadStatuses = setOf(
         DownloadStatus.COMPLETE.label,
         DownloadStatus.FAILED.label,
         DownloadStatus.CANCELED.label,
     )
+
+    private fun restoreDownloads() {
+        viewModelScope.launch {
+            dao.getDownloads()
+                .filter { it.filePath != null && it.status !in activeDownloadStatuses }
+                .forEach(downloadEngine::start)
+        }
+    }
+
+    private suspend fun applyDownloadUpdate(downloadId: Long, update: DownloadUpdate) {
+        if (downloadId in removedDownloadIds) return
+        val current = dao.getDownload(downloadId) ?: return
+        val filePath = update.filePath ?: current.filePath
+        val localUri = if (update.status == DownloadStatus.COMPLETE.label && filePath != null) {
+            runCatching {
+                FileProvider.getUriForFile(
+                    getApplication<Application>(),
+                    "${getApplication<Application>().packageName}.fileprovider",
+                    File(filePath),
+                ).toString()
+            }.getOrNull()
+        } else {
+            current.localUri
+        }
+        dao.upsertDownload(
+            current.copy(
+                status = update.status,
+                bytesDownloaded = update.bytesDownloaded ?: current.bytesDownloaded,
+                totalBytes = update.totalBytes ?: current.totalBytes,
+                speedBytesPerSecond = update.speedBytesPerSecond ?: current.speedBytesPerSecond,
+                localUri = localUri,
+                filePath = filePath,
+                reason = update.reason,
+            ),
+        )
+    }
 
     private fun installAdBlocker() {
         runtime.webExtensionController.list().accept(
@@ -606,30 +592,27 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runCatching {
             val fileName = downloadName(response)
             val mimeType = response.headers["Content-Type"]?.substringBefore(';')
-            val request = DownloadManager.Request(Uri.parse(response.uri))
-                .setTitle(fileName)
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS,
-                    fileName,
-                )
-            mimeType?.let { request.setMimeType(it) }
-            val downloadId = downloadManager.enqueue(request)
+            val downloadId = -System.nanoTime()
+            val downloadDirectory = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: File(getApplication<Application>().filesDir, "downloads")
+            val outputPath = File(downloadDirectory, "$downloadId-$fileName").path
+            val download = DownloadEntry(
+                downloadId = downloadId,
+                fileName = fileName,
+                url = response.uri,
+                mimeType = mimeType,
+                status = DownloadStatus.QUEUED.label,
+                bytesDownloaded = 0,
+                totalBytes = -1,
+                localUri = null,
+                filePath = outputPath,
+                reason = null,
+                speedBytesPerSecond = 0,
+                createdAt = System.currentTimeMillis(),
+            )
             viewModelScope.launch {
-                dao.upsertDownload(
-                    DownloadEntry(
-                        downloadId = downloadId,
-                        fileName = fileName,
-                        url = response.uri,
-                        mimeType = mimeType,
-                        status = DownloadStatus.QUEUED.label,
-                        bytesDownloaded = 0,
-                        totalBytes = -1,
-                        localUri = null,
-                        reason = null,
-                        createdAt = System.currentTimeMillis(),
-                    ),
-                )
+                dao.upsertDownload(download)
+                downloadEngine.start(download)
             }
             showSnackbar("Download started")
         }.onFailure { showSnackbar("Could not start download") }
@@ -637,15 +620,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun downloadUri(download: DownloadEntry): Uri? =
         download.localUri?.let(Uri::parse)
-            ?: runCatching { downloadManager.getUriForDownloadedFile(download.downloadId) }.getOrNull()
+            ?: download.filePath?.let { path ->
+                runCatching {
+                    FileProvider.getUriForFile(
+                        getApplication<Application>(),
+                        "${getApplication<Application>().packageName}.fileprovider",
+                        File(path),
+                    )
+                }.getOrNull()
+            }
 
     private fun downloadName(response: WebResponse): String {
         val pathName = Uri.parse(response.uri).lastPathSegment?.takeIf { it.isNotBlank() }
-        if (pathName != null) return pathName
+        if (pathName != null) return pathName.sanitizeFileName()
         val mimeType = response.headers["Content-Type"]?.substringBefore(';')
         val extension = mimeType?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
         return "dextra-download${extension?.let { ".${it}" } ?: ""}"
     }
+
+    private fun String.sanitizeFileName(): String =
+        replace(Regex("[^A-Za-z0-9._-]"), "_").take(120).ifBlank { "dextra-download" }
 
     private inner class NavigationDelegate(private val tabId: String) : GeckoSession.NavigationDelegate {
         override fun onLocationChange(
@@ -814,6 +808,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        downloadEngine.shutdown()
         _state.value.tabs.forEach { it.session.close() }
         super.onCleared()
     }

@@ -56,6 +56,8 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
@@ -86,6 +88,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -164,7 +168,15 @@ fun DextraApp(viewModel: BrowserViewModel) {
 
     LaunchedEffect(state.snackbar) {
         state.snackbar?.let {
-            snackbarHostState.showSnackbar(it)
+            val result = snackbarHostState.showSnackbar(
+                message = it,
+                actionLabel = if (it == "Download started") "Downloads" else null,
+                withDismissAction = true,
+                duration = SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed && it == "Download started") {
+                viewModel.setOverlay(BrowserOverlay.DOWNLOADS)
+            }
             viewModel.clearSnackbar()
         }
     }
@@ -174,11 +186,12 @@ fun DextraApp(viewModel: BrowserViewModel) {
 
     DextraTheme(state.settings.themeMode) {
         Scaffold(
-            snackbarHost = { SnackbarHost(snackbarHostState) },
+            snackbarHost = {},
             containerColor = MaterialTheme.colorScheme.surface,
         ) { padding ->
             BrowserScreen(
                 modifier = Modifier.padding(padding),
+                snackbarHostState = snackbarHostState,
                 state = state,
                 history = history,
                 bookmarks = bookmarks,
@@ -205,6 +218,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onRemoveAdBlockFilter = viewModel::removeAdBlockFilter,
                 onOpenDownload = viewModel::openDownload,
                 onShareDownload = viewModel::shareDownload,
+                onToggleDownload = viewModel::toggleDownload,
                 onCancelDownload = viewModel::cancelDownload,
                 onRemoveDownload = viewModel::removeDownload,
                 onResolvePermission = viewModel::resolveContentPermission,
@@ -217,6 +231,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
 @Composable
 private fun BrowserScreen(
     modifier: Modifier,
+    snackbarHostState: SnackbarHostState,
     state: com.dwicao.dextra.browser.BrowserUiState,
     history: List<HistoryEntry>,
     bookmarks: List<Bookmark>,
@@ -243,6 +258,7 @@ private fun BrowserScreen(
     onRemoveAdBlockFilter: (AdBlockFilter) -> Unit,
     onOpenDownload: (DownloadEntry) -> Unit,
     onShareDownload: (DownloadEntry) -> Unit,
+    onToggleDownload: (DownloadEntry) -> Unit,
     onCancelDownload: (DownloadEntry) -> Unit,
     onRemoveDownload: (DownloadEntry) -> Unit,
     onResolvePermission: (Boolean) -> Unit,
@@ -363,6 +379,7 @@ private fun BrowserScreen(
                         downloads = downloads,
                         onOpen = onOpenDownload,
                         onShare = onShareDownload,
+                        onToggle = onToggleDownload,
                         onCancel = onCancelDownload,
                         onRemove = onRemoveDownload,
                     )
@@ -394,6 +411,15 @@ private fun BrowserScreen(
                 text = { Text("${prompt.origin} wants to use ${prompt.label}.") },
                 confirmButton = { TextButton(onClick = { onResolvePermission(true) }) { Text("Allow") } },
                 dismissButton = { TextButton(onClick = { onResolvePermission(false) }) { Text("Block") } },
+            )
+        }
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.padding(top = 8.dp, start = 16.dp, end = 16.dp),
             )
         }
     }
@@ -1057,9 +1083,11 @@ private fun DownloadsSheet(
     downloads: List<DownloadEntry>,
     onOpen: (DownloadEntry) -> Unit,
     onShare: (DownloadEntry) -> Unit,
+    onToggle: (DownloadEntry) -> Unit,
     onCancel: (DownloadEntry) -> Unit,
     onRemove: (DownloadEntry) -> Unit,
 ) {
+    var pendingDelete by remember { mutableStateOf<DownloadEntry?>(null) }
     val activeCount = downloads.count { it.status in setOf(DownloadStatus.QUEUED.label, DownloadStatus.DOWNLOADING.label, DownloadStatus.PAUSED.label) }
     SheetHeader("Downloads", if (activeCount == 0) "Files saved by Dextra" else "$activeCount active")
     if (downloads.isEmpty()) {
@@ -1106,11 +1134,17 @@ private fun DownloadsSheet(
                                         Icon(Icons.Outlined.Share, contentDescription = "Share ${download.fileName}")
                                     }
                                 } else if (isActive) {
+                                    IconButton(onClick = { onToggle(download) }) {
+                                        Icon(
+                                            if (download.status == DownloadStatus.PAUSED.label) Icons.Outlined.PlayArrow else Icons.Outlined.Pause,
+                                            contentDescription = if (download.status == DownloadStatus.PAUSED.label) "Resume ${download.fileName}" else "Pause ${download.fileName}",
+                                        )
+                                    }
                                     IconButton(onClick = { onCancel(download) }) {
                                         Icon(Icons.Outlined.Close, contentDescription = "Cancel ${download.fileName}")
                                     }
                                 }
-                                IconButton(onClick = { onRemove(download) }) {
+                                IconButton(onClick = { pendingDelete = download }) {
                                     Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove ${download.fileName}")
                                 }
                             }
@@ -1128,6 +1162,22 @@ private fun DownloadsSheet(
             }
         }
     }
+    pendingDelete?.let { download ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete download?") },
+            text = { Text("Remove ${download.fileName} and its downloaded file?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDelete = null
+                        onRemove(download)
+                    },
+                ) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Keep") } },
+        )
+    }
     Spacer(Modifier.height(24.dp))
 }
 
@@ -1140,7 +1190,8 @@ private fun buildDownloadSummary(download: DownloadEntry): String {
     } else {
         ""
     }
-    return listOf(status, size, download.reason.orEmpty())
+    val speed = download.speedBytesPerSecond.takeIf { it > 0 }?.let { "${formatBytes(it)}/s" }.orEmpty()
+    return listOf(status, size, speed, download.reason.orEmpty())
         .filter(String::isNotBlank)
         .joinToString("  •  ")
 }
