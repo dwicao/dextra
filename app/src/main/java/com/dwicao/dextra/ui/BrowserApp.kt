@@ -1,0 +1,943 @@
+package com.dwicao.dextra.ui
+
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Tab
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dwicao.dextra.browser.BrowserTabState
+import com.dwicao.dextra.browser.BrowserUrl
+import com.dwicao.dextra.browser.BrowserViewModel
+import com.dwicao.dextra.browser.BrowserOverlay
+import com.dwicao.dextra.data.Bookmark
+import com.dwicao.dextra.data.HistoryEntry
+import com.dwicao.dextra.data.SearchEngine
+import com.dwicao.dextra.data.ThemeMode
+import kotlinx.coroutines.launch
+import org.mozilla.geckoview.GeckoView
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DextraApp(viewModel: BrowserViewModel) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val history by viewModel.history.collectAsStateWithLifecycle(initialValue = emptyList())
+    val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle(initialValue = emptyList())
+    val snackbarHostState = remember { SnackbarHostState() }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        viewModel.resolveAndroidPermission(result.values.all { it })
+    }
+
+    LaunchedEffect(state.snackbar) {
+        state.snackbar?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearSnackbar()
+        }
+    }
+    LaunchedEffect(state.androidPermission?.id) {
+        state.androidPermission?.let { permissionLauncher.launch(it.permissions.toTypedArray()) }
+    }
+
+    DextraTheme(state.settings.themeMode) {
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) { padding ->
+            BrowserScreen(
+                modifier = Modifier.padding(padding),
+                state = state,
+                history = history,
+                bookmarks = bookmarks,
+                onNavigate = viewModel::navigateActive,
+                onBack = viewModel::goBack,
+                onForward = viewModel::goForward,
+                onReload = viewModel::reloadOrStop,
+                onNewTab = { viewModel.createTab() },
+                onNewPrivateTab = viewModel::createPrivateTab,
+                onSelectTab = viewModel::selectTab,
+                onCloseTab = viewModel::closeTab,
+                onToggleBookmark = viewModel::toggleBookmark,
+                onOpenSavedPage = viewModel::openSavedPage,
+                onClearHistory = viewModel::clearHistory,
+                onSetOverlay = viewModel::setOverlay,
+                onDismissOverlay = viewModel::dismissOverlay,
+                onSetTheme = viewModel::setThemeMode,
+                onSetSearchEngine = viewModel::setSearchEngine,
+                onSetTrackingProtection = viewModel::setTrackingProtection,
+                onResolvePermission = viewModel::resolveContentPermission,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BrowserScreen(
+    modifier: Modifier,
+    state: com.dwicao.dextra.browser.BrowserUiState,
+    history: List<HistoryEntry>,
+    bookmarks: List<Bookmark>,
+    onNavigate: (String) -> Unit,
+    onBack: () -> Boolean,
+    onForward: () -> Unit,
+    onReload: () -> Unit,
+    onNewTab: () -> Unit,
+    onNewPrivateTab: () -> String,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onToggleBookmark: () -> Unit,
+    onOpenSavedPage: (String) -> Unit,
+    onClearHistory: () -> Unit,
+    onSetOverlay: (BrowserOverlay) -> Unit,
+    onDismissOverlay: () -> Unit,
+    onSetTheme: (ThemeMode) -> Unit,
+    onSetSearchEngine: (SearchEngine) -> Unit,
+    onSetTrackingProtection: (Boolean) -> Unit,
+    onResolvePermission: (Boolean) -> Unit,
+) {
+    val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
+    var menuExpanded by remember { mutableStateOf(false) }
+    val addressFocusRequester = remember { FocusRequester() }
+    val rootFocusRequester = remember { FocusRequester() }
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(top = 8.dp)
+            .focusRequester(rootFocusRequester)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown || !event.isCtrlPressed) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.T -> {
+                        onNewTab()
+                        true
+                    }
+                    Key.R -> {
+                        onReload()
+                        true
+                    }
+                    Key.W -> {
+                        activeTab?.let { onCloseTab(it.id) }
+                        true
+                    }
+                    Key.L -> {
+                        addressFocusRequester.requestFocus()
+                        true
+                    }
+                    else -> false
+                }
+            },
+    ) {
+        LaunchedEffect(Unit) { rootFocusRequester.requestFocus() }
+        val expanded = maxWidth >= 840.dp
+        if (expanded) {
+            DesktopBrowserLayout(
+                state = state,
+                activeTab = activeTab,
+                onNavigate = onNavigate,
+                onBack = onBack,
+                onForward = onForward,
+                onReload = onReload,
+                onNewTab = { onNewTab() },
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+                onToggleBookmark = onToggleBookmark,
+                onMenu = { menuExpanded = true },
+                addressFocusRequester = addressFocusRequester,
+            )
+        } else {
+            CompactBrowserLayout(
+                state = state,
+                activeTab = activeTab,
+                onNavigate = onNavigate,
+                onBack = onBack,
+                onForward = onForward,
+                onReload = onReload,
+                onNewTab = { onNewTab() },
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+                onToggleBookmark = onToggleBookmark,
+                onMenu = { menuExpanded = true },
+                addressFocusRequester = addressFocusRequester,
+                onShowTabs = { onSetOverlay(BrowserOverlay.TABS) },
+            )
+        }
+
+        BrowserMenu(
+            expanded = menuExpanded,
+            onDismiss = { menuExpanded = false },
+            onNewPrivateTab = {
+                menuExpanded = false
+                onNewPrivateTab()
+            },
+            onShowTabs = {
+                menuExpanded = false
+                onSetOverlay(BrowserOverlay.TABS)
+            },
+            onShowLibrary = {
+                menuExpanded = false
+                onSetOverlay(BrowserOverlay.LIBRARY)
+            },
+            onShowSettings = {
+                menuExpanded = false
+                onSetOverlay(BrowserOverlay.SETTINGS)
+            },
+        )
+
+        if (state.overlay != BrowserOverlay.NONE) {
+            ModalBottomSheet(onDismissRequest = onDismissOverlay) {
+                when (state.overlay) {
+                    BrowserOverlay.TABS -> TabsSheet(
+                        tabs = state.tabs,
+                        activeTabId = state.activeTabId,
+                        onNewTab = { onDismissOverlay(); onNewTab() },
+                        onNewPrivateTab = { onDismissOverlay(); onNewPrivateTab() },
+                        onSelectTab = onSelectTab,
+                        onCloseTab = onCloseTab,
+                    )
+                    BrowserOverlay.LIBRARY -> LibrarySheet(
+                        bookmarks = bookmarks,
+                        history = history,
+                        onOpen = onOpenSavedPage,
+                        onClearHistory = onClearHistory,
+                    )
+                    BrowserOverlay.SETTINGS -> SettingsSheet(
+                        themeMode = state.settings.themeMode,
+                        searchEngine = state.settings.searchEngine,
+                        trackingProtection = state.settings.trackingProtection,
+                        onSetTheme = onSetTheme,
+                        onSetSearchEngine = onSetSearchEngine,
+                        onSetTrackingProtection = onSetTrackingProtection,
+                    )
+                    BrowserOverlay.NONE -> Unit
+                }
+            }
+        }
+
+        state.contentPermission?.let { prompt ->
+            AlertDialog(
+                onDismissRequest = { onResolvePermission(false) },
+                icon = { Icon(Icons.Outlined.Security, contentDescription = null) },
+                title = { Text("Allow access?") },
+                text = { Text("${prompt.origin} wants to use ${prompt.label}.") },
+                confirmButton = { TextButton(onClick = { onResolvePermission(true) }) { Text("Allow") } },
+                dismissButton = { TextButton(onClick = { onResolvePermission(false) }) { Text("Block") } },
+            )
+        }
+    }
+}
+
+@Composable
+private fun DesktopBrowserLayout(
+    state: com.dwicao.dextra.browser.BrowserUiState,
+    activeTab: BrowserTabState?,
+    onNavigate: (String) -> Unit,
+    onBack: () -> Boolean,
+    onForward: () -> Unit,
+    onReload: () -> Unit,
+    onNewTab: () -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onToggleBookmark: () -> Unit,
+    onMenu: () -> Unit,
+    addressFocusRequester: FocusRequester,
+) {
+    Column(Modifier.fillMaxSize()) {
+        TabStrip(
+            tabs = state.tabs,
+            activeTabId = state.activeTabId,
+            onNewTab = onNewTab,
+            onSelectTab = onSelectTab,
+            onCloseTab = onCloseTab,
+        )
+        DesktopToolbar(
+            activeTab = activeTab,
+            onNavigate = onNavigate,
+            onBack = onBack,
+            onForward = onForward,
+            onReload = onReload,
+            onToggleBookmark = onToggleBookmark,
+            onMenu = onMenu,
+            addressFocusRequester = addressFocusRequester,
+        )
+        BrowserViewport(activeTab, onNavigate)
+    }
+}
+
+@Composable
+private fun CompactBrowserLayout(
+    state: com.dwicao.dextra.browser.BrowserUiState,
+    activeTab: BrowserTabState?,
+    onNavigate: (String) -> Unit,
+    onBack: () -> Boolean,
+    onForward: () -> Unit,
+    onReload: () -> Unit,
+    onNewTab: () -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onToggleBookmark: () -> Unit,
+    onMenu: () -> Unit,
+    addressFocusRequester: FocusRequester,
+    onShowTabs: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Outlined.Menu, contentDescription = "Open menu")
+            }
+            AddressBar(
+                tab = activeTab,
+                modifier = Modifier.weight(1f),
+                onNavigate = onNavigate,
+                onToggleBookmark = onToggleBookmark,
+                focusRequester = addressFocusRequester,
+            )
+            IconButton(onClick = onNewTab) {
+                Icon(Icons.Outlined.Add, contentDescription = "New tab")
+            }
+        }
+        activeTab?.takeIf { it.isLoading }?.let {
+            LinearProgressIndicator(
+                progress = { it.progress / 100f },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        BrowserViewport(activeTab, onNavigate)
+        CompactBottomBar(
+            tabCount = state.tabs.size,
+            activeTab = activeTab,
+            onBack = onBack,
+            onForward = onForward,
+            onReload = onReload,
+            onShowTabs = onShowTabs,
+            onSelectTab = onSelectTab,
+            onCloseTab = onCloseTab,
+        )
+    }
+}
+
+@Composable
+private fun DesktopToolbar(
+    activeTab: BrowserTabState?,
+    onNavigate: (String) -> Unit,
+    onBack: () -> Boolean,
+    onForward: () -> Unit,
+    onReload: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    onMenu: () -> Unit,
+    addressFocusRequester: FocusRequester,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        BrowserNavButton(Icons.Outlined.ArrowBack, "Back", enabled = activeTab?.canGoBack == true, onClick = { onBack() })
+        BrowserNavButton(Icons.Outlined.ArrowForward, "Forward", enabled = activeTab?.canGoForward == true, onClick = onForward)
+        BrowserNavButton(
+            if (activeTab?.isLoading == true) Icons.Outlined.Close else Icons.Outlined.Refresh,
+            if (activeTab?.isLoading == true) "Stop" else "Reload",
+            enabled = activeTab != null,
+            onClick = onReload,
+        )
+        AddressBar(
+            tab = activeTab,
+            modifier = Modifier.weight(1f),
+            onNavigate = onNavigate,
+            onToggleBookmark = onToggleBookmark,
+            focusRequester = addressFocusRequester,
+        )
+        BrowserNavButton(
+            if (activeTab?.isBookmarked == true) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+            if (activeTab?.isBookmarked == true) "Remove bookmark" else "Bookmark",
+            enabled = activeTab?.hasPage == true,
+            onClick = onToggleBookmark,
+        )
+        BrowserNavButton(Icons.Outlined.MoreVert, "More", enabled = true, onClick = onMenu)
+    }
+    activeTab?.takeIf { it.isLoading }?.let {
+        LinearProgressIndicator(
+            progress = { it.progress / 100f },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp),
+        )
+    }
+}
+
+@Composable
+private fun CompactBottomBar(
+    tabCount: Int,
+    activeTab: BrowserTabState?,
+    onBack: () -> Boolean,
+    onForward: () -> Unit,
+    onReload: () -> Unit,
+    onShowTabs: () -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+) {
+    Surface(shadowElevation = 4.dp, tonalElevation = 2.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp)
+                .padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            IconButton(onClick = { onBack() }, enabled = activeTab?.canGoBack == true) {
+                Icon(Icons.Outlined.ArrowBack, contentDescription = "Back")
+            }
+            IconButton(onClick = onForward, enabled = activeTab?.canGoForward == true) {
+                Icon(Icons.Outlined.ArrowForward, contentDescription = "Forward")
+            }
+            IconButton(onClick = onReload, enabled = activeTab != null) {
+                Icon(
+                    if (activeTab?.isLoading == true) Icons.Outlined.Close else Icons.Outlined.Refresh,
+                    contentDescription = if (activeTab?.isLoading == true) "Stop" else "Reload",
+                )
+            }
+            IconButton(onClick = onShowTabs) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Outlined.Tab, contentDescription = "Tabs")
+                    Text(tabCount.toString(), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowserNavButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, enabled = enabled) {
+        Icon(icon, contentDescription = label)
+    }
+}
+
+@Composable
+private fun AddressBar(
+    tab: BrowserTabState?,
+    modifier: Modifier,
+    onNavigate: (String) -> Unit,
+    onToggleBookmark: () -> Unit,
+    focusRequester: FocusRequester,
+) {
+    var value by remember(tab?.id) { mutableStateOf(tab?.url?.let(BrowserUrl::displayValue).orEmpty()) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(tab?.id, tab?.url) {
+        value = BrowserUrl.displayValue(tab?.url.orEmpty())
+    }
+
+    OutlinedTextField(
+        value = value,
+        onValueChange = { value = it },
+        modifier = modifier
+            .defaultMinSize(minHeight = 48.dp)
+            .focusRequester(focusRequester),
+        singleLine = true,
+        placeholder = { Text("Search or enter web address") },
+        leadingIcon = {
+            Icon(
+                if (tab?.isSecure == true) Icons.Outlined.Lock else Icons.Outlined.Search,
+                contentDescription = if (tab?.isSecure == true) "Secure connection" else "Search",
+            )
+        },
+        trailingIcon = {
+            if (value.isNotEmpty()) {
+                IconButton(onClick = { value = "" }) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Clear")
+                }
+            }
+        },
+        shape = RoundedCornerShape(18.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+            focusedContainerColor = MaterialTheme.colorScheme.surface,
+        ),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+        keyboardActions = KeyboardActions(
+            onGo = {
+                onNavigate(value)
+                keyboardController?.hide()
+            },
+        ),
+    )
+}
+
+@Composable
+private fun TabStrip(
+    tabs: List<BrowserTabState>,
+    activeTabId: String?,
+    onNewTab: () -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            LazyRow(
+                modifier = Modifier.weight(1f),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                items(tabs, key = { it.id }) { tab ->
+                    Surface(
+                        onClick = { onSelectTab(tab.id) },
+                        selected = tab.id == activeTabId,
+                        color = if (tab.id == activeTabId) MaterialTheme.colorScheme.surface else Color.Transparent,
+                        shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+                        tonalElevation = if (tab.id == activeTabId) 2.dp else 0.dp,
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .widthIn(min = 150.dp, max = 240.dp)
+                                .padding(start = 12.dp, end = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = tab.title.ifBlank { "New tab" },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 8.dp, vertical = 14.dp),
+                                maxLines = 1,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            IconButton(onClick = { onCloseTab(tab.id) }, modifier = Modifier.size(30.dp)) {
+                                Icon(Icons.Outlined.Close, contentDescription = "Close tab", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            IconButton(onClick = onNewTab, modifier = Modifier.padding(horizontal = 8.dp)) {
+                Icon(Icons.Outlined.Add, contentDescription = "New tab")
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowserViewport(tab: BrowserTabState?, onNavigate: (String) -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
+        if (tab == null || !tab.hasPage) {
+            NewTabPage(onNavigate)
+        } else {
+            key(tab.id) {
+                AndroidView(
+                    factory = { context -> GeckoView(context).apply { setSession(tab.session) } },
+                    modifier = Modifier.fillMaxSize(),
+                    onRelease = { it.releaseSession() },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NewTabPage(onNavigate: (String) -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Surface(
+            modifier = Modifier.size(76.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("D", fontSize = 38.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Text("The web, with room to think.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Private by default. Comfortable on a phone, expansive on DeX.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(28.dp))
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            QuickLink("DuckDuckGo", Icons.Outlined.Search, { onNavigate("https://duckduckgo.com") })
+            QuickLink("Wikipedia", Icons.Outlined.Public, { onNavigate("https://wikipedia.org") })
+            QuickLink("GitHub", Icons.Outlined.Language, { onNavigate("https://github.com") })
+            QuickLink("MDN", Icons.Outlined.Security, { onNavigate("https://developer.mozilla.org") })
+        }
+        Spacer(Modifier.height(22.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Security, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(6.dp))
+            Text("Tracking protection is on", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun QuickLink(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+) {
+    AssistChip(onClick = onClick, label = { Text(label) }, leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp)) })
+}
+
+@Composable
+private fun BrowserMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onNewPrivateTab: () -> Unit,
+    onShowTabs: () -> Unit,
+    onShowLibrary: () -> Unit,
+    onShowSettings: () -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text("New private tab") },
+            leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
+            onClick = onNewPrivateTab,
+        )
+        DropdownMenuItem(
+            text = { Text("All tabs") },
+            leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
+            onClick = onShowTabs,
+        )
+        DropdownMenuItem(
+            text = { Text("Bookmarks & history") },
+            leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+            onClick = onShowLibrary,
+        )
+        DropdownMenuItem(
+            text = { Text("Settings") },
+            leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+            onClick = onShowSettings,
+        )
+    }
+}
+
+@Composable
+private fun TabsSheet(
+    tabs: List<BrowserTabState>,
+    activeTabId: String?,
+    onNewTab: () -> Unit,
+    onNewPrivateTab: () -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+) {
+    SheetHeader("Your tabs", "${tabs.size} open")
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Button(onClick = onNewTab) { Icon(Icons.Outlined.Add, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("New tab") }
+        AssistChip(onClick = onNewPrivateTab, label = { Text("Private") }, leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) })
+    }
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 460.dp)
+            .padding(top = 12.dp),
+    ) {
+        items(tabs, key = { it.id }) { tab ->
+            ListItem(
+                modifier = Modifier.padding(horizontal = 12.dp),
+                headlineContent = { Text(tab.title.ifBlank { "New tab" }, maxLines = 1) },
+                supportingContent = { Text(tab.url.ifBlank { "Start browsing" }, maxLines = 1) },
+                leadingContent = { Icon(if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language, contentDescription = null) },
+                trailingContent = { IconButton(onClick = { onCloseTab(tab.id) }) { Icon(Icons.Outlined.Close, contentDescription = "Close tab") } },
+            )
+            if (tab.id != tabs.lastOrNull()?.id) Divider(modifier = Modifier.padding(horizontal = 24.dp))
+        }
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+@Composable
+private fun LibrarySheet(
+    bookmarks: List<Bookmark>,
+    history: List<HistoryEntry>,
+    onOpen: (String) -> Unit,
+    onClearHistory: () -> Unit,
+) {
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    SheetHeader("Library", "Keep the useful parts close")
+    ScrollableTabRow(selectedTabIndex = selectedTab, edgePadding = 20.dp) {
+        Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Bookmarks") }, icon = { Icon(Icons.Outlined.Bookmark, null) })
+        Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("History") }, icon = { Icon(Icons.Outlined.History, null) })
+    }
+    if (selectedTab == 0) {
+        if (bookmarks.isEmpty()) EmptyLibrary("Bookmarks you save will appear here.", Icons.Outlined.BookmarkBorder)
+        else {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
+                items(bookmarks, key = { it.id }) { bookmark ->
+                    ListItem(
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp)
+                            .clickable { onOpen(bookmark.url) },
+                        headlineContent = { Text(bookmark.title.ifBlank { BrowserUrl.displayValue(bookmark.url) }, maxLines = 1) },
+                        supportingContent = { Text(bookmark.url, maxLines = 1) },
+                        leadingContent = { Icon(Icons.Outlined.Bookmark, null) },
+                    )
+                }
+            }
+        }
+    } else {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onClearHistory, enabled = history.isNotEmpty()) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Clear history")
+            }
+        }
+        if (history.isEmpty()) EmptyLibrary("Pages you visit will appear here.", Icons.Outlined.History)
+        else {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
+                items(history, key = { it.id }) { entry ->
+                    ListItem(
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp)
+                            .clickable { onOpen(entry.url) },
+                        headlineContent = { Text(entry.title.ifBlank { BrowserUrl.displayValue(entry.url) }, maxLines = 1) },
+                        supportingContent = { Text(entry.url, maxLines = 1) },
+                        leadingContent = { Icon(Icons.Outlined.History, null) },
+                    )
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+@Composable
+private fun EmptyLibrary(message: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 36.dp, horizontal = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(12.dp))
+        Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun SettingsSheet(
+    themeMode: ThemeMode,
+    searchEngine: SearchEngine,
+    trackingProtection: Boolean,
+    onSetTheme: (ThemeMode) -> Unit,
+    onSetSearchEngine: (SearchEngine) -> Unit,
+    onSetTrackingProtection: (Boolean) -> Unit,
+) {
+    SheetHeader("Settings", "Tune Dextra for the way you work")
+    SettingSection("Appearance") {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeMode.values().forEach { mode ->
+                FilterChip(
+                    selected = themeMode == mode,
+                    onClick = { onSetTheme(mode) },
+                    label = { Text(mode.name.lowercase().replaceFirstChar { it.uppercase() }) },
+                    leadingIcon = {
+                        Icon(
+                            when (mode) {
+                                ThemeMode.SYSTEM -> Icons.Outlined.LightMode
+                                ThemeMode.LIGHT -> Icons.Outlined.LightMode
+                                ThemeMode.DARK -> Icons.Outlined.DarkMode
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                )
+            }
+        }
+    }
+    SettingSection("Search engine") {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SearchEngine.values().forEach { engine ->
+                FilterChip(selected = searchEngine == engine, onClick = { onSetSearchEngine(engine) }, label = { Text(engine.label) })
+            }
+        }
+    }
+    SettingSection("Privacy") {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Tracking protection", style = MaterialTheme.typography.titleMedium)
+                Text("Block known trackers in every tab", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(checked = trackingProtection, onCheckedChange = onSetTrackingProtection)
+        }
+    }
+    Spacer(Modifier.height(28.dp))
+}
+
+@Composable
+private fun SettingSection(title: String, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(10.dp))
+        content()
+    }
+}
+
+@Composable
+private fun SheetHeader(title: String, subtitle: String) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
