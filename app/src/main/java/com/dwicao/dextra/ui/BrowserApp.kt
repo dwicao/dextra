@@ -77,6 +77,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -269,6 +270,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
                     onCopy = viewModel::copyCrashReport,
                     onDismiss = viewModel::dismissCrashReport,
                 )
+            }
+            if (state.extensionInstallInProgress && state.extensionInstallPrompt == null) {
+                ExtensionInstallProgressDialog()
             }
         }
     }
@@ -1603,6 +1607,17 @@ private fun CrashReportDialog(
 }
 
 @Composable
+private fun ExtensionInstallProgressDialog() {
+    AlertDialog(
+        onDismissRequest = {},
+        icon = { CircularProgressIndicator(modifier = Modifier.size(32.dp)) },
+        title = { Text("Installing extension") },
+        text = { Text("Downloading and validating the .xpi package...") },
+        confirmButton = {},
+    )
+}
+
+@Composable
 private fun ExtensionUpdateDialog(
     prompt: ExtensionUpdatePrompt,
     onResolve: (Boolean) -> Unit,
@@ -1764,143 +1779,6 @@ private fun SettingsScreen(
             checked = dnsOverHttpsEnabled,
             onCheckedChange = onSetDnsOverHttpsEnabled,
         )
-        Text(
-            "GeckoView provides DNS over HTTPS (TRR); Oblivious HTTP is not exposed by this engine.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp),
-        )
-    }
-    SettingSection("Ad blocking") {
-        SettingToggle(
-            title = "Enable ad blocking",
-            summary = "Use the filter URLs below to block ad hosts",
-            checked = adBlockingEnabled,
-            onCheckedChange = onSetAdBlockingEnabled,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            TextButton(onClick = onRefreshAdBlockFilters) {
-                Icon(Icons.Outlined.Refresh, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Update lists")
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        var filterUrl by rememberSaveable { mutableStateOf("") }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = filterUrl,
-                onValueChange = { filterUrl = it },
-                modifier = Modifier.weight(1f),
-                label = { Text("Filter URL") },
-                placeholder = { Text("https://example.com/filter.txt") },
-                singleLine = true,
-            )
-            Button(
-                onClick = {
-                    onAddAdBlockFilter(filterUrl)
-                    filterUrl = ""
-                },
-                enabled = filterUrl.isNotBlank(),
-                modifier = Modifier.height(56.dp),
-            ) {
-                Icon(Icons.Outlined.Add, contentDescription = "Add filter")
-            }
-        }
-        adBlockFilters.forEach { filter ->
-            ListItem(
-                modifier = Modifier.padding(top = 4.dp),
-                headlineContent = { Text(filter.name) },
-                supportingContent = { Text(filter.url, maxLines = 1) },
-                leadingContent = { Icon(Icons.Outlined.Security, contentDescription = null) },
-                trailingContent = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(
-                            checked = filter.enabled,
-                            onCheckedChange = { onSetAdBlockFilterEnabled(filter, it) },
-                        )
-                        IconButton(onClick = onRefreshAdBlockFilters) {
-                            Icon(Icons.Outlined.Refresh, contentDescription = "Update ${filter.name}")
-                        }
-                        IconButton(onClick = { onRemoveAdBlockFilter(filter) }) {
-                            Icon(Icons.Outlined.Close, contentDescription = "Remove ${filter.name}")
-                        }
-                    }
-                },
-            )
-        }
-    }
-    SettingSection("User scripts") {
-        var userScriptUrl by rememberSaveable { mutableStateOf("") }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            TextButton(onClick = onRefreshUserScripts) {
-                Icon(Icons.Outlined.Refresh, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Update scripts")
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = userScriptUrl,
-                onValueChange = { userScriptUrl = it },
-                modifier = Modifier.weight(1f),
-                label = { Text("Userscript URL") },
-                placeholder = { Text("https://example.com/script.user.js") },
-                singleLine = true,
-            )
-            Button(
-                onClick = {
-                    onAddUserScript(userScriptUrl)
-                    userScriptUrl = ""
-                },
-                enabled = userScriptUrl.isNotBlank(),
-                modifier = Modifier.height(56.dp),
-            ) {
-                Icon(Icons.Outlined.Add, contentDescription = "Add userscript")
-            }
-        }
-        Text(
-            "Scripts run on matching sites using their @match and @run-at metadata.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp),
-        )
-        userScriptUrls.forEach { url ->
-            ListItem(
-                modifier = Modifier.padding(top = 4.dp),
-                headlineContent = { Text(url.substringAfterLast('/').ifBlank { "Custom userscript" }, maxLines = 1) },
-                supportingContent = { Text(url, maxLines = 1) },
-                leadingContent = { Icon(Icons.Outlined.Language, contentDescription = null) },
-                trailingContent = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(
-                            checked = url !in disabledUserScriptUrls,
-                            onCheckedChange = { onSetUserScriptEnabled(url, it) },
-                        )
-                        IconButton(onClick = onRefreshUserScripts) {
-                            Icon(Icons.Outlined.Refresh, contentDescription = "Update userscript")
-                        }
-                        IconButton(onClick = { onRemoveUserScript(url) }) {
-                            Icon(Icons.Outlined.Close, contentDescription = "Remove userscript")
-                        }
-                    }
-                },
-            )
-        }
     }
     SettingSection("Firefox extensions") {
         var extensionUrl by rememberSaveable { mutableStateOf("") }

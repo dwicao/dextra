@@ -40,6 +40,7 @@ object GeckoRuntimeHolder {
                 .fissionEnabled(true)
                 .consoleOutput(false)
                 .extensionsProcessEnabled(true)
+                .extensionsWebAPIEnabled(true)
                 .build(),
         ).also { runtime = it }
     }

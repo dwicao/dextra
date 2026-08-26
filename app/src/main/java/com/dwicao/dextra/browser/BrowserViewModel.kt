@@ -1335,6 +1335,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 restoringExtensionIds.clear()
                 _state.update { it.copy(extensionInstallInProgress = false, extensionInstallPrompt = null) }
                 refreshInstalledExtensions()
+                refreshAmoPages()
                 showSnackbar("${extension?.metaData?.name ?: "Extension"} installed")
             },
             { error ->
@@ -1357,6 +1358,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             "cancel" in message || "denied" in message -> "Extension installation canceled"
             else -> "Could not install extension"
         }
+    }
+
+    private fun refreshAmoPages() {
+        _state.value.tabs
+            .filter { it.url.startsWith("https://addons.mozilla.org/") && !it.crashed }
+            .forEach { it.session.reload() }
     }
 
     private fun recordHistory(tabId: String) {
