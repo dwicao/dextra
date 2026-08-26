@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "Dextra Ad Block",
-  "version": "1.0.3",
-  "description": "Host-based ad blocking powered by EasyList.",
+  "version": "2.2.0",
+  "description": "Dextra ad blocking with host, script, and cosmetic rules.",
   "browser_specific_settings": {
     "gecko": {
       "id": "adblock@dextra"
@@ -11,11 +11,20 @@
   "permissions": [
     "nativeMessaging",
     "geckoViewAddons",
+    "storage",
     "webRequest",
     "webRequestBlocking",
     "<all_urls>"
   ],
   "background": {
     "scripts": ["background.js"]
-  }
+  },
+  "content_scripts": [
+    {
+      "all_frames": true,
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
 }

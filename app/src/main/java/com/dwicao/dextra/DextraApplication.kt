@@ -17,7 +17,6 @@ object GeckoRuntimeHolder {
             GeckoRuntimeSettings.Builder()
                 .javaScriptEnabled(true)
                 .extensionsProcessEnabled(true)
-                .extensionsWebAPIEnabled(true)
                 .build(),
         ).also { runtime = it }
     }

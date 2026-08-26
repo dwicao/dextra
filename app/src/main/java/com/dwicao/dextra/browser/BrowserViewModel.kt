@@ -39,6 +39,7 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.WebExtension
+import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebResponse
 import java.net.HttpURLConnection
 import java.net.URL
@@ -482,24 +483,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun installAdBlocker() {
         runtime.webExtensionController.list().accept(
             { extensions ->
-                val staleBlockers = extensions.orEmpty().filter {
+                val staleExtensions = extensions.orEmpty().filter {
                     it.id == "uBlock0@raymondhill.net" ||
-                        (it.id == "adblock@dextra" && it.metaData.version != "1.0.3")
+                        (it.id == "adblock@dextra" && it.metaData.version != "2.2.0")
                 }
-                removeStaleBlockers(staleBlockers)
+                removeStaleAdBlockers(staleExtensions)
             },
-            { removeStaleBlockers(emptyList()) },
+            { ensureAdBlocker() },
         )
     }
 
-    private fun removeStaleBlockers(blockers: List<WebExtension>, index: Int = 0) {
+    private fun removeStaleAdBlockers(blockers: List<WebExtension>, index: Int = 0) {
         if (index >= blockers.size) {
             ensureAdBlocker()
             return
         }
         runtime.webExtensionController.uninstall(blockers[index]).accept(
-            { removeStaleBlockers(blockers, index + 1) },
-            { removeStaleBlockers(blockers, index + 1) },
+            { removeStaleAdBlockers(blockers, index + 1) },
+            { removeStaleAdBlockers(blockers, index + 1) },
         )
     }
 
@@ -508,17 +509,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             "resource://android/assets/adblock/",
             "adblock@dextra",
         ).accept(
-            { extension ->
-                extension?.let { installedExtension ->
-                    installedExtension.setMessageDelegate(adBlockMessageDelegate, "dextra")
-                    runtime.webExtensionController.setAllowedInPrivateBrowsing(installedExtension, true)
-                        .accept({}, { error -> Log.e("Dextra", "Could not enable EasyList for private tabs", error) })
-                }
-            },
-            { error ->
-                Log.e("Dextra", "Could not start EasyList ad blocker", error)
-            },
+            { extension -> extension?.let(::configureAdBlocker) },
+            { error -> Log.e("Dextra", "Could not start Dextra ad blocker", error) },
         )
+    }
+
+    private fun configureAdBlocker(extension: WebExtension) {
+        runtime.webExtensionController.enable(extension, WebExtensionController.EnableSource.APP)
+            .accept(
+                { enabledExtension -> configureAdBlockerPermissions(enabledExtension ?: extension) },
+                { error ->
+                    Log.e("Dextra", "Could not enable Dextra ad blocker", error)
+                    configureAdBlockerPermissions(extension)
+                },
+            )
+    }
+
+    private fun configureAdBlockerPermissions(extension: WebExtension) {
+        extension.setMessageDelegate(adBlockMessageDelegate, "dextra")
+        runtime.webExtensionController.setAllowedInPrivateBrowsing(extension, true)
+            .accept({}, { error -> Log.e("Dextra", "Could not allow ad blocking in private tabs", error) })
     }
 
     private fun syncAdBlockSettings(settings: BrowserSettings) {
@@ -527,7 +537,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         settings.adBlockFilters.forEach { urls.put(it.url) }
         port.postMessage(
             JSONObject()
-                .put("type", "updateFilters")
+                .put("type", "updateAdblock")
                 .put("enabled", settings.adBlockingEnabled)
                 .put("urls", urls),
         )

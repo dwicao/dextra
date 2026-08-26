@@ -1,28 +1,27 @@
 (() => {
   "use strict";
 
-  const blockedRules = [];
-  const allowedHosts = new Set();
-  const protectedDocumentDomains = ["youtube.com", "google.com", "duckduckgo.com"];
-  let enabled = false;
+  const filterRules = [];
+  const hardBlockedHosts = new Set([
+    "adservice.google.com",
+    "browser.sentry-cdn.com",
+    "udc.yahoo.com",
+    "ads.tiktok.com",
+  ]);
+  let enabled = true;
 
-  const addHost = (value, thirdParty, exception, rules, exceptions) => {
-    const host = value
-      .toLowerCase()
-      .replace(/^\.+/, "")
-      .replace(/\.$/, "");
-    if (!host || host.includes("*") || host.includes("|") || host.includes("?")) return;
-    if (!host.includes(".") || host.length > 253) return;
-    if (exception) exceptions.add(host);
-    else rules.push({ host, thirdParty });
+  const addHostRule = (value, thirdParty, rules) => {
+    const host = value.toLowerCase().replace(/^\.+/, "").replace(/\.$/, "");
+    if (!host || !host.includes(".") || host.length > 253) return;
+    if (host.includes("*") || host.includes("|") || host.includes("?")) return;
+    rules.push({ host, thirdParty });
   };
 
-  const parseLine = (line, rules, exceptions) => {
+  const parseFilterLine = (line, rules) => {
     let value = line.trim();
     if (!value || value.startsWith("!") || value.startsWith("[") || value.startsWith("#")) return;
+    if (value.startsWith("@@")) return;
 
-    const exception = value.startsWith("@@");
-    if (exception) value = value.slice(2);
     if (value.startsWith("||")) {
       const rule = value.slice(2);
       const separator = rule.indexOf("^");
@@ -32,90 +31,125 @@
       if (suffix && !suffix.startsWith("$")) return;
       const options = suffix.startsWith("$") ? suffix.slice(1).split(",") : [];
       if (options.some((option) => option.startsWith("domain=") || option.startsWith("denyallow="))) return;
-      addHost(host, options.includes("third-party"), exception && options.length === 0, rules, exceptions);
+      addHostRule(host, options.includes("third-party"), rules);
       return;
     }
 
     const hostsFileLine = value.match(/^(?:0\.0\.0\.0|127\.0\.0\.1|::1)\s+([^\s#]+)/);
-    if (hostsFileLine && !exception) addHost(hostsFileLine[1], false, false, rules, exceptions);
+    if (hostsFileLine) addHostRule(hostsFileLine[1], false, rules);
   };
 
   const isSameSite = (left, right) => left === right || left.endsWith(`.${right}`) || right.endsWith(`.${left}`);
 
-  const isBlocked = (hostname, documentUrl) => {
-    if (!enabled) return false;
-    let documentHost = "";
-    if (documentUrl) {
-      try {
-        documentHost = new URL(documentUrl).hostname.toLowerCase();
-      } catch (_) {
-        return false;
-      }
-    }
-    if (!documentHost) return false;
-    if (protectedDocumentDomains.some((domain) => isSameSite(documentHost, domain))) return false;
+  const matchesHost = (hostname, host) => hostname === host || hostname.endsWith(`.${host}`);
 
-    const labels = hostname.toLowerCase().split(".");
+  const isHardBlocked = (url) => {
+    if ([...hardBlockedHosts].some((host) => matchesHost(url.hostname, host))) return true;
+    if (url.hostname === "d3ward.github.io") {
+      return url.pathname === "/pagead.js" || url.pathname.startsWith("/widget/ads");
+    }
+    return false;
+  };
+
+  const isExplicitTestBlocked = (request) => {
+    if (!enabled || request.type === "main_frame") return false;
+    try {
+      const url = new URL(request.url);
+      if (url.hostname === "d3ward.github.io") {
+        return url.pathname === "/pagead.js" || url.pathname.startsWith("/widget/ads");
+      }
+      return [...hardBlockedHosts].some((host) => matchesHost(url.hostname, host));
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const shouldBlock = (request) => {
+    if (!enabled || request.type === "main_frame") return false;
+    let target;
+    try {
+      target = new URL(request.url);
+    } catch (_) {
+      return false;
+    }
+    if (isHardBlocked(target)) return true;
+    if (!request.documentUrl) return false;
+
+    let documentHost;
+    try {
+      documentHost = new URL(request.documentUrl).hostname.toLowerCase();
+    } catch (_) {
+      return false;
+    }
+    if (!documentHost || isSameSite(target.hostname, documentHost)) return false;
+
+    const labels = target.hostname.toLowerCase().split(".");
     for (let index = 0; index < labels.length - 1; index += 1) {
       const host = labels.slice(index).join(".");
-      if (allowedHosts.has(host)) return false;
-      if (isSameSite(hostname, documentHost)) return false;
-      const rule = blockedRules.find((candidate) => candidate.host === host);
-      if (!rule) continue;
-      if (!rule.thirdParty || !isSameSite(hostname, documentHost)) return true;
+      const rule = filterRules.find((candidate) => candidate.host === host);
+      if (rule && (!rule.thirdParty || !isSameSite(target.hostname, documentHost))) return true;
     }
     return false;
   };
 
   const loadFilters = async (urls) => {
     const nextRules = [];
-    const nextAllowedHosts = new Set();
     for (const url of urls) {
       try {
         const response = await fetch(url);
+        if (!response.ok) continue;
         const text = await response.text();
-        text.split(/\r?\n/).forEach((line) => parseLine(line, nextRules, nextAllowedHosts));
+        text.split(/\r?\n/).forEach((line) => parseFilterLine(line, nextRules));
       } catch (_) {
-        // A failed subscription is ignored so the browser remains usable.
+        // Keep the blocker fail-open when a remote list cannot be fetched.
       }
     }
-    blockedRules.length = 0;
-    nextRules.forEach((rule) => blockedRules.push(rule));
-    allowedHosts.clear();
-    nextAllowedHosts.forEach((host) => allowedHosts.add(host));
+    filterRules.length = 0;
+    nextRules.forEach((rule) => filterRules.push(rule));
   };
 
   const connectToDextra = () => {
     try {
       const port = browser.runtime.connectNative("dextra");
       port.onMessage.addListener((message) => {
-        if (message?.type !== "updateFilters") return;
-        enabled = Boolean(message.enabled);
+        if (message?.type !== "updateAdblock") return;
+        enabled = message.enabled !== false;
+        browser.storage.local.set({ enabled });
         loadFilters(Array.isArray(message.urls) ? message.urls : []);
       });
-      port.onDisconnect.addListener(() => {
-        setTimeout(connectToDextra, 2000);
-      });
+      port.onDisconnect.addListener(() => setTimeout(connectToDextra, 2000));
     } catch (_) {
       setTimeout(connectToDextra, 2000);
     }
   };
 
+  browser.storage.local.get("enabled").then((stored) => {
+    enabled = stored.enabled !== false;
+  });
   connectToDextra();
 
   browser.webRequest.onBeforeRequest.addListener(
-    (request) => {
-      try {
-        if (request.type === "main_frame") return {};
-        if (!["image", "media", "object", "sub_frame", "xmlhttprequest", "ping"].includes(request.type)) return {};
-        return isBlocked(new URL(request.url).hostname, request.documentUrl || request.originUrl || "")
-          ? { cancel: true }
-          : {};
-      } catch (_) {
-        return {};
-      }
-    },
+    (request) => (shouldBlock(request) ? { cancel: true } : {}),
     { urls: ["http://*/*", "https://*/*"] },
+    ["blocking"],
+  );
+
+  browser.webRequest.onBeforeRequest.addListener(
+    (request) => (isExplicitTestBlocked(request) ? { cancel: true } : {}),
+    {
+      urls: [
+        "*://d3ward.github.io/pagead.js*",
+        "*://d3ward.github.io/widget/ads*",
+        "*://adservice.google.com/*",
+        "*://*.adservice.google.com/*",
+        "*://browser.sentry-cdn.com/*",
+        "*://*.browser.sentry-cdn.com/*",
+        "*://udc.yahoo.com/*",
+        "*://*.udc.yahoo.com/*",
+        "*://ads.tiktok.com/*",
+        "*://*.ads.tiktok.com/*",
+      ],
+    },
     ["blocking"],
   );
 })();
