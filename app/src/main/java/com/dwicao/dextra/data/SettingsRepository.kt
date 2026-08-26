@@ -35,6 +35,7 @@ data class BrowserSettings(
     val adBlockFilters: List<AdBlockFilter> = DefaultAdBlockFilters,
     val userScriptUrls: List<String> = emptyList(),
     val disabledUserScriptUrls: Set<String> = emptySet(),
+    val extensionInstallSources: Map<String, String> = emptyMap(),
 )
 
 enum class SearchEngine(val label: String, val searchUrl: String) {
@@ -62,6 +63,7 @@ class SettingsRepository(private val context: Context) {
         val disabledAdBlockFilters = stringPreferencesKey("disabled_ad_block_filters")
         val userScriptUrls = stringPreferencesKey("user_script_urls")
         val disabledUserScripts = stringPreferencesKey("disabled_user_scripts")
+        val extensionInstallSources = stringPreferencesKey("extension_install_sources")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -154,6 +156,24 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun saveExtensionInstallSource(id: String, url: String) {
+        context.settingsDataStore.edit { preferences ->
+            val sources = preferences.extensionInstallSources().toMutableMap()
+            sources[id] = url
+            preferences[Keys.extensionInstallSources] = sources.entries
+                .joinToString("\n") { (extensionId, source) -> "$extensionId\t$source" }
+        }
+    }
+
+    suspend fun removeExtensionInstallSource(id: String) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.extensionInstallSources] = preferences.extensionInstallSources()
+                .filterKeys { it != id }
+                .entries
+                .joinToString("\n") { (extensionId, source) -> "$extensionId\t$source" }
+        }
+    }
+
     private fun Preferences.toBrowserSettings(): BrowserSettings = BrowserSettings(
         themeMode = get(Keys.theme)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
             ?: ThemeMode.SYSTEM,
@@ -167,6 +187,7 @@ class SettingsRepository(private val context: Context) {
         adBlockFilters = filterUrls().map { url -> filterFromUrl(url, url !in disabledFilterUrls()) },
         userScriptUrls = userScripts(),
         disabledUserScriptUrls = disabledUserScripts().intersect(userScripts().toSet()),
+        extensionInstallSources = extensionInstallSources(),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -192,6 +213,16 @@ class SettingsRepository(private val context: Context) {
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
         ?: emptyList()
+
+    private fun Preferences.extensionInstallSources(): Map<String, String> = get(Keys.extensionInstallSources)
+        ?.split('\n')
+        ?.mapNotNull { line ->
+            val separator = line.indexOf('\t')
+            if (separator <= 0 || separator == line.lastIndex) null
+            else line.substring(0, separator) to line.substring(separator + 1)
+        }
+        ?.toMap()
+        ?: emptyMap()
 
     private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter = when (url) {
         DefaultAdBlockFilters[0].url -> DefaultAdBlockFilters[0].copy(enabled = enabled)

@@ -1,9 +1,10 @@
 (() => {
   "use strict";
 
-  const filterRules = [];
+  const filterRules = new Map();
   const userScripts = [];
   const injectedScripts = new Set();
+  let filterLoadGeneration = 0;
   const hardBlockedHosts = new Set([
     "adservice.google.com",
     "browser.sentry-cdn.com",
@@ -16,7 +17,7 @@
     const host = value.toLowerCase().replace(/^\.+/, "").replace(/\.$/, "");
     if (!host || !host.includes(".") || host.length > 253) return;
     if (host.includes("*") || host.includes("|") || host.includes("?")) return;
-    rules.push({ host, thirdParty });
+    rules.set(host, { host, thirdParty });
   };
 
   const parseFilterLine = (line, rules) => {
@@ -88,14 +89,15 @@
     const labels = target.hostname.toLowerCase().split(".");
     for (let index = 0; index < labels.length - 1; index += 1) {
       const host = labels.slice(index).join(".");
-      const rule = filterRules.find((candidate) => candidate.host === host);
+      const rule = filterRules.get(host);
       if (rule && (!rule.thirdParty || !isSameSite(target.hostname, documentHost))) return true;
     }
     return false;
   };
 
   const loadFilters = async (urls) => {
-    const nextRules = [];
+    const generation = ++filterLoadGeneration;
+    const nextRules = new Map();
     for (const url of urls) {
       try {
         const response = await fetch(url);
@@ -106,8 +108,9 @@
         // Keep the blocker fail-open when a remote list cannot be fetched.
       }
     }
-    filterRules.length = 0;
-    nextRules.forEach((rule) => filterRules.push(rule));
+    if (generation !== filterLoadGeneration) return;
+    filterRules.clear();
+    nextRules.forEach((rule, host) => filterRules.set(host, rule));
   };
 
   const globToRegExp = (pattern) => {

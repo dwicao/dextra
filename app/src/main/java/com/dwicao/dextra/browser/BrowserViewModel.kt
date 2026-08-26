@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -61,6 +62,7 @@ data class BrowserTabState(
     val hasPage: Boolean = false,
     val isBookmarked: Boolean = false,
     val favicon: Bitmap? = null,
+    val crashed: Boolean = false,
 )
 
 enum class BrowserOverlay {
@@ -70,6 +72,31 @@ enum class BrowserOverlay {
     SETTINGS,
     DOWNLOADS,
 }
+
+enum class ContextMenuAction {
+    BACK,
+    FORWARD,
+    RELOAD,
+    OPEN_LINK,
+    OPEN_LINK_IN_NEW_TAB,
+    COPY_LINK,
+    COPY_TEXT,
+    OPEN_MEDIA_IN_NEW_TAB,
+    DISMISS,
+}
+
+data class BrowserContextMenu(
+    val tabId: String,
+    val x: Int,
+    val y: Int,
+    val linkUri: String?,
+    val linkText: String?,
+    val textContent: String?,
+    val resourceUri: String?,
+    val resourceType: Int,
+    val canGoBack: Boolean,
+    val canGoForward: Boolean,
+)
 
 data class ContentPermissionPrompt(
     val id: String,
@@ -126,6 +153,7 @@ data class BrowserUiState(
     val extensionInstallPrompt: ExtensionInstallPrompt? = null,
     val extensionUpdatePrompt: ExtensionUpdatePrompt? = null,
     val extensionInstallInProgress: Boolean = false,
+    val contextMenu: BrowserContextMenu? = null,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -136,6 +164,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _state = MutableStateFlow(BrowserUiState())
     private val removedDownloadIds = ConcurrentHashMap.newKeySet<Long>()
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
+    private val restoringExtensionIds = ConcurrentHashMap.newKeySet<String>()
     private val downloadEngine = DownloadEngine(viewModelScope) { downloadId, update ->
         viewModelScope.launch { applyDownloadUpdate(downloadId, update) }
     }
@@ -156,6 +185,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private val extensionPromptDelegate = object : WebExtensionController.PromptDelegate {
+        @Suppress("DEPRECATION")
         override fun onInstallPromptRequest(
             extension: WebExtension,
             permissions: Array<String>,
@@ -192,6 +222,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onEnabled(extension: WebExtension) = refreshInstalledExtensions()
 
         override fun onDisabled(extension: WebExtension) = refreshInstalledExtensions()
+
+        override fun onReady(extension: WebExtension) {
+            refreshInstalledExtensions()
+            restoreMissingExtensions()
+        }
     }
 
     val state: StateFlow<BrowserUiState> = _state.asStateFlow()
@@ -234,6 +269,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runtime.webExtensionController.setAddonManagerDelegate(addonManagerDelegate)
         refreshInstalledExtensions()
         installAdBlocker()
+        viewModelScope.launch {
+            delay(2_000)
+            restoreMissingExtensions()
+        }
         restoreDownloads()
         createTab()
     }
@@ -302,7 +341,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (url.isEmpty()) return
         val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
         updateTab(tabId) {
-            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null)
+            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false)
         }
         tab.session.loadUri(url)
     }
@@ -319,7 +358,42 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun reloadOrStop() {
-        activeTab()?.let { tab -> if (tab.isLoading) tab.session.stop() else tab.session.reload() }
+        activeTab()?.let { tab ->
+            if (tab.crashed) reloadCrashedTab()
+            else if (tab.isLoading) tab.session.stop() else tab.session.reload()
+        }
+    }
+
+    fun dismissContextMenu() {
+        _state.update { it.copy(contextMenu = null) }
+    }
+
+    fun handleContextMenuAction(action: ContextMenuAction) {
+        val menu = _state.value.contextMenu ?: return
+        when (action) {
+            ContextMenuAction.BACK -> if (menu.canGoBack) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goBack(true)
+            ContextMenuAction.FORWARD -> if (menu.canGoForward) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goForward(true)
+            ContextMenuAction.RELOAD -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
+            ContextMenuAction.OPEN_LINK -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = false) }
+            ContextMenuAction.OPEN_LINK_IN_NEW_TAB -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
+            ContextMenuAction.COPY_LINK -> menu.linkUri?.let { copyToClipboard("Link", it) }
+            ContextMenuAction.COPY_TEXT -> menu.textContent?.takeIf(String::isNotBlank)?.let { copyToClipboard("Text", it) }
+            ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB -> menu.resourceUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
+            ContextMenuAction.DISMISS -> Unit
+        }
+        dismissContextMenu()
+    }
+
+    fun reloadCrashedTab() {
+        val tab = activeTab()?.takeIf { it.crashed } ?: return
+        val url = tab.url
+        if (url.isBlank()) return
+        tab.session.close()
+        val session = createSession(tab.id, tab.isPrivate)
+        updateTab(tab.id) {
+            it.copy(session = session, crashed = false, hasPage = true, isLoading = true, progress = 0)
+        }
+        session.loadUri(url)
     }
 
     fun toggleBookmark() {
@@ -433,11 +507,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val packageUrl = withContext(Dispatchers.IO) { resolveExtensionPackageUrl(normalized) }
             if (packageUrl == null) {
+                restoringExtensionIds.clear()
                 _state.update { it.copy(extensionInstallInProgress = false) }
                 showSnackbar("Could not find a signed Firefox extension package")
                 return@launch
             }
-            installExtensionPackage(packageUrl)
+            installExtensionPackage(packageUrl, normalized)
         }
     }
 
@@ -483,6 +558,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runtime.webExtensionController.uninstall(extension).accept(
             {
                 installedExtensionObjects.remove(id)
+                viewModelScope.launch { settingsRepository.removeExtensionInstallSource(id) }
                 refreshInstalledExtensions()
                 showSnackbar("Extension removed")
             },
@@ -647,6 +723,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(snackbar = message) }
     }
 
+    private fun copyToClipboard(label: String, value: String) {
+        val clipboard = getApplication<Application>().getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager
+        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText(label, value))
+        showSnackbar("$label copied")
+    }
+
+    private fun openContextUrl(tabId: String, url: String, inNewTab: Boolean) {
+        val scheme = runCatching { Uri.parse(url).scheme?.lowercase() }.getOrNull()
+        if (scheme !in setOf("http", "https", "about", "file", "data")) {
+            launchExternal(url)
+        } else if (inNewTab) {
+            createTab(initialUri = url)
+        } else {
+            navigate(tabId, url)
+        }
+    }
+
     private val activeDownloadStatuses = setOf(
         DownloadStatus.COMPLETE.label,
         DownloadStatus.FAILED.label,
@@ -718,7 +812,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             "resource://android/assets/adblock/",
             "adblock@dextra",
         ).accept(
-            { extension -> extension?.let(::configureAdBlocker) },
+            { extension ->
+                extension?.let(::configureAdBlocker)
+                refreshInstalledExtensions()
+            },
             { error -> Log.e("Dextra", "Could not start Dextra ad blocker", error) },
         )
     }
@@ -831,6 +928,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    private fun restoreMissingExtensions() {
+        if (_state.value.extensionInstallInProgress) return
+        runtime.webExtensionController.list().accept(
+            { extensions ->
+                val installedIds = extensions.orEmpty().mapTo(hashSetOf()) { it.id }
+                val missing = _state.value.settings.extensionInstallSources
+                    .filterKeys { it !in installedIds }
+                    .entries
+                    .firstOrNull { restoringExtensionIds.add(it.key) }
+                    ?: return@accept
+                installExtension(missing.value)
+            },
+            { error -> Log.e("Dextra", "Could not restore Firefox extensions", error) },
+        )
+    }
+
     private fun installedExtensionState(extension: WebExtension): InstalledExtension =
         InstalledExtension(
             id = extension.id,
@@ -869,7 +982,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun installExtensionPackage(packageUrl: String) {
+    private fun installExtensionPackage(packageUrl: String, sourceUrl: String = packageUrl) {
         val alreadyPreparing = _state.value.extensionInstallInProgress
         _state.update { it.copy(extensionInstallInProgress = true) }
         if (!alreadyPreparing) showSnackbar("Preparing extension installation")
@@ -878,11 +991,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             WebExtensionController.INSTALLATION_METHOD_MANAGER,
         ).accept(
             { extension ->
+                val installedId = extension?.id
+                val savedSource = extension?.metaData?.amoListingUrl
+                    ?.takeIf(FirefoxAddons::isAmoUrl)
+                    ?: sourceUrl
+                if (installedId != null) {
+                    viewModelScope.launch { settingsRepository.saveExtensionInstallSource(installedId, savedSource) }
+                }
+                restoringExtensionIds.clear()
                 _state.update { it.copy(extensionInstallInProgress = false, extensionInstallPrompt = null) }
                 refreshInstalledExtensions()
+                restoreMissingExtensions()
                 showSnackbar("${extension?.metaData?.name ?: "Extension"} installed")
             },
             { error ->
+                restoringExtensionIds.clear()
                 _state.update { it.copy(extensionInstallInProgress = false, extensionInstallPrompt = null) }
                 showSnackbar(extensionInstallError(error))
             },
@@ -1020,7 +1143,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (resolvedUrl == "about:blank") {
                 updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0) }
             } else {
-                updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://")) }
+                updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://"), crashed = false) }
             }
         }
 
@@ -1072,7 +1195,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (url == "about:blank") {
                 updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0, favicon = null) }
             } else {
-                updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0, favicon = null) }
+                updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false) }
             }
         }
 
@@ -1104,7 +1227,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
             val contentType = response.headers["Content-Type"] ?: response.headers["content-type"]
             if (FirefoxAddons.isAmoUrl(response.uri) && FirefoxAddons.isXpiDownload(response.uri, contentType)) {
-                installExtensionPackage(response.uri)
+                installExtensionPackage(response.uri, response.uri)
             } else {
                 download(response)
             }
@@ -1114,8 +1237,41 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             closeTab(tabId)
         }
 
+        override fun onContextMenu(
+            session: GeckoSession,
+            screenX: Int,
+            screenY: Int,
+            element: GeckoSession.ContentDelegate.ContextElement,
+        ) {
+            _state.update {
+                it.copy(
+                    contextMenu = BrowserContextMenu(
+                        tabId = tabId,
+                        x = screenX,
+                        y = screenY,
+                        linkUri = element.linkUri,
+                        linkText = element.textContent,
+                        textContent = element.textContent,
+                        resourceUri = element.srcUri,
+                        resourceType = element.type,
+                        canGoBack = _state.value.tabs.firstOrNull { tab -> tab.id == tabId }?.canGoBack == true,
+                        canGoForward = _state.value.tabs.firstOrNull { tab -> tab.id == tabId }?.canGoForward == true,
+                    ),
+                )
+            }
+        }
+
         override fun onCrash(session: GeckoSession) {
-            showSnackbar("This tab stopped responding")
+            markTabCrashed("This site crashed. Reload to recover it.")
+        }
+
+        override fun onKill(session: GeckoSession) {
+            markTabCrashed("This site was stopped. Reload to recover it.")
+        }
+
+        private fun markTabCrashed(message: String) {
+            updateTab(tabId) { it.copy(crashed = true, isLoading = false, progress = 0) }
+            showSnackbar(message)
         }
     }
 

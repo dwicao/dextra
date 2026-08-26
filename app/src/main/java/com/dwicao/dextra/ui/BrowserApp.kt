@@ -44,6 +44,7 @@ import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DarkMode
@@ -117,6 +118,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -128,6 +130,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -141,9 +144,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.Image
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dwicao.dextra.browser.BrowserTabState
+import com.dwicao.dextra.browser.BrowserContextMenu
 import com.dwicao.dextra.browser.BrowserUrl
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
+import com.dwicao.dextra.browser.ContextMenuAction
 import com.dwicao.dextra.browser.ExtensionInstallPrompt
 import com.dwicao.dextra.browser.ExtensionUpdatePrompt
 import com.dwicao.dextra.browser.InstalledExtension
@@ -205,6 +210,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onBack = viewModel::goBack,
                 onForward = viewModel::goForward,
                 onReload = viewModel::reloadOrStop,
+                onReloadCrashedTab = viewModel::reloadCrashedTab,
                 onNewTab = { viewModel.createTab() },
                 onNewPrivateTab = viewModel::createPrivateTab,
                 onSelectTab = viewModel::selectTab,
@@ -245,6 +251,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onResolveExtensionInstall = viewModel::resolveExtensionInstall,
                 extensionUpdatePrompt = state.extensionUpdatePrompt,
                 onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
+                onContextMenuAction = viewModel::handleContextMenuAction,
+                onDismissContextMenu = viewModel::dismissContextMenu,
             )
         }
     }
@@ -263,6 +271,7 @@ private fun BrowserScreen(
     onBack: () -> Boolean,
     onForward: () -> Unit,
     onReload: () -> Unit,
+    onReloadCrashedTab: () -> Unit,
     onNewTab: () -> Unit,
     onNewPrivateTab: () -> String,
     onSelectTab: (String) -> Unit,
@@ -303,6 +312,8 @@ private fun BrowserScreen(
     onResolveExtensionInstall: (Boolean, Boolean, Boolean) -> Unit,
     extensionUpdatePrompt: ExtensionUpdatePrompt?,
     onResolveExtensionUpdate: (Boolean) -> Unit,
+    onContextMenuAction: (ContextMenuAction) -> Unit,
+    onDismissContextMenu: () -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
     var menuExpanded by remember { mutableStateOf(false) }
@@ -384,6 +395,7 @@ private fun BrowserScreen(
                     onBack = onBack,
                     onForward = onForward,
                     onReload = onReload,
+                    onReloadCrashedTab = onReloadCrashedTab,
                     onNewTab = { onNewTab() },
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
@@ -400,6 +412,7 @@ private fun BrowserScreen(
                     onBack = onBack,
                     onForward = onForward,
                     onReload = onReload,
+                    onReloadCrashedTab = onReloadCrashedTab,
                     onNewTab = { onNewTab() },
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
@@ -485,6 +498,9 @@ private fun BrowserScreen(
         extensionUpdatePrompt?.let { prompt ->
             ExtensionUpdateDialog(prompt, onResolveExtensionUpdate)
         }
+        state.contextMenu?.let { menu ->
+            BrowserContextMenuPopup(menu, onContextMenuAction, onDismissContextMenu)
+        }
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.TopCenter,
@@ -505,6 +521,7 @@ private fun DesktopBrowserLayout(
     onBack: () -> Boolean,
     onForward: () -> Unit,
     onReload: () -> Unit,
+    onReloadCrashedTab: () -> Unit,
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
@@ -538,7 +555,7 @@ private fun DesktopBrowserLayout(
                     .height(2.dp),
             )
         }
-        BrowserViewport(activeTab, onNavigate)
+        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab)
     }
 }
 
@@ -550,6 +567,7 @@ private fun CompactBrowserLayout(
     onBack: () -> Boolean,
     onForward: () -> Unit,
     onReload: () -> Unit,
+    onReloadCrashedTab: () -> Unit,
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
@@ -595,7 +613,7 @@ private fun CompactBrowserLayout(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        BrowserViewport(activeTab, onNavigate)
+        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab)
         CompactBottomBar(
             tabCount = state.tabs.size,
             activeTab = activeTab,
@@ -932,16 +950,22 @@ private fun TabStrip(
 }
 
 @Composable
-private fun BrowserViewport(tab: BrowserTabState?, onNavigate: (String) -> Unit) {
+private fun BrowserViewport(
+    tab: BrowserTabState?,
+    onNavigate: (String) -> Unit,
+    onReloadCrashedTab: () -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface),
     ) {
-        if (tab == null || !tab.hasPage || tab.url.isBlank() || tab.url == "about:blank") {
+        if (tab?.crashed == true) {
+            SiteCrashedPage(onReloadCrashedTab)
+        } else if (tab == null || !tab.hasPage || tab.url.isBlank() || tab.url == "about:blank") {
             NewTabPage(onNavigate)
         } else {
-            key(tab.id) {
+            key(tab.id, tab.session) {
                 AndroidView(
                     factory = { context -> GeckoView(context).apply { setSession(tab.session) } },
                     modifier = Modifier.fillMaxSize(),
@@ -949,6 +973,100 @@ private fun BrowserViewport(tab: BrowserTabState?, onNavigate: (String) -> Unit)
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SiteCrashedPage(onReload: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.error)
+        Spacer(Modifier.height(16.dp))
+        Text("This site crashed", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "The page process stopped before the site finished loading.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = onReload) {
+            Icon(Icons.Outlined.Refresh, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Reload page")
+        }
+    }
+}
+
+@Composable
+private fun BrowserContextMenuPopup(
+    menu: BrowserContextMenu,
+    onAction: (ContextMenuAction) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val offset = with(LocalDensity.current) { DpOffset(menu.x.toDp(), menu.y.toDp()) }
+    DropdownMenu(
+        expanded = true,
+        onDismissRequest = onDismiss,
+        offset = offset,
+    ) {
+        if (!menu.linkUri.isNullOrBlank()) {
+            DropdownMenuItem(
+                text = { Text("Open link") },
+                leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.OPEN_LINK) },
+            )
+            DropdownMenuItem(
+                text = { Text("Open link in new tab") },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.OPEN_LINK_IN_NEW_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text("Copy link") },
+                leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.COPY_LINK) },
+            )
+        }
+        if (!menu.resourceUri.isNullOrBlank()) {
+            DropdownMenuItem(
+                text = { Text("Open media in new tab") },
+                leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB) },
+            )
+        }
+        if (menu.linkUri.isNullOrBlank() && !menu.textContent.isNullOrBlank()) {
+            DropdownMenuItem(
+                text = { Text("Copy text") },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.COPY_TEXT) },
+            )
+        }
+        if (!menu.linkUri.isNullOrBlank() || !menu.resourceUri.isNullOrBlank() || !menu.textContent.isNullOrBlank()) {
+            Divider()
+        }
+        if (menu.canGoBack) {
+            DropdownMenuItem(
+                text = { Text("Back") },
+                leadingIcon = { Icon(Icons.Outlined.ArrowBack, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.BACK) },
+            )
+        }
+        if (menu.canGoForward) {
+            DropdownMenuItem(
+                text = { Text("Forward") },
+                leadingIcon = { Icon(Icons.Outlined.ArrowForward, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.FORWARD) },
+            )
+        }
+        DropdownMenuItem(
+            text = { Text("Reload") },
+            leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+            onClick = { onAction(ContextMenuAction.RELOAD) },
+        )
     }
 }
 

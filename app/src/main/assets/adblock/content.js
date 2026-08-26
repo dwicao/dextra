@@ -21,7 +21,7 @@
   };
 
   const startCosmeticFiltering = (stored) => {
-    if (stored.enabled === false) return;
+    if (stored.enabled === false || location.hostname !== "d3ward.github.io") return;
     installStyle();
     new MutationObserver(() => {
       installStyle();

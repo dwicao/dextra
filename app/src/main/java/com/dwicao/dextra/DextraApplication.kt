@@ -16,6 +16,8 @@ object GeckoRuntimeHolder {
             context.applicationContext,
             GeckoRuntimeSettings.Builder()
                 .javaScriptEnabled(true)
+                .fissionEnabled(true)
+                .consoleOutput(true)
                 .extensionsProcessEnabled(true)
                 .build(),
         ).also { runtime = it }
