@@ -1151,7 +1151,7 @@ private fun TabStrip(
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     if (event.type == PointerEventType.Scroll) {
                         val delta = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
-                        if (delta != 0f) scope.launch { listState.scrollBy(delta * 2f) }
+                        if (delta != 0f) scope.launch { listState.scrollBy(delta * 8f) }
                         event.changes.forEach { it.consume() }
                     }
                 }
