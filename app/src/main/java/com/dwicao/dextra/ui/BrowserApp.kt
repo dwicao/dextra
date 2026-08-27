@@ -224,7 +224,6 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onNewPrivateTab = viewModel::createPrivateTab,
                  onSelectTab = viewModel::selectTab,
                  onCloseTab = viewModel::closeTab,
-                 onToggleTabPinned = viewModel::toggleTabPinned,
                 onToggleBookmark = viewModel::toggleBookmark,
                 onOpenSavedPage = viewModel::openSavedPage,
                 onClearHistory = viewModel::clearHistory,
@@ -266,9 +265,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onResolveExtensionInstall = viewModel::resolveExtensionInstall,
                 extensionUpdatePrompt = state.extensionUpdatePrompt,
                 onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
-                onContextMenuAction = viewModel::handleContextMenuAction,
-                onDismissContextMenu = viewModel::dismissContextMenu,
+                 onContextMenuAction = viewModel::handleContextMenuAction,
+                 onDismissContextMenu = viewModel::dismissContextMenu,
                  onShowContextMenu = viewModel::showContextMenu,
+                 onTabContextMenu = viewModel::showTabContextMenu,
                  extensionPopup = state.extensionPopup,
                  onCloseExtensionPopup = viewModel::closeExtensionPopup,
             )
@@ -304,7 +304,6 @@ private fun BrowserScreen(
     onNewPrivateTab: () -> String,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
-    onToggleTabPinned: (String) -> Unit,
     onToggleBookmark: () -> Unit,
     onOpenSavedPage: (String) -> Unit,
     onClearHistory: () -> Unit,
@@ -349,6 +348,7 @@ private fun BrowserScreen(
     onContextMenuAction: (ContextMenuAction) -> Unit,
     onDismissContextMenu: () -> Unit,
     onShowContextMenu: (String, Int, Int) -> Unit,
+    onTabContextMenu: (String, Int, Int) -> Unit,
     extensionPopup: ExtensionPopupState?,
     onCloseExtensionPopup: () -> Unit,
 ) {
@@ -439,12 +439,12 @@ private fun BrowserScreen(
                     onReload = onReload,
                     onReloadCrashedTab = onReloadCrashedTab,
                     onShowContextMenu = onShowContextMenu,
+                    onTabContextMenu = onTabContextMenu,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                     onNewTab = { onNewTab() },
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
-                    onToggleTabPinned = onToggleTabPinned,
                     onToggleBookmark = onToggleBookmark,
                     onMenu = { menuExpanded = true },
                     addressFocusRequester = addressFocusRequester,
@@ -460,12 +460,12 @@ private fun BrowserScreen(
                     onReload = onReload,
                     onReloadCrashedTab = onReloadCrashedTab,
                     onShowContextMenu = onShowContextMenu,
+                    onTabContextMenu = onTabContextMenu,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                     onNewTab = { onNewTab() },
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
-                    onToggleTabPinned = onToggleTabPinned,
                     onToggleBookmark = onToggleBookmark,
                     onMenu = { menuExpanded = true },
                     addressFocusRequester = addressFocusRequester,
@@ -509,7 +509,6 @@ private fun BrowserScreen(
                             onNewPrivateTab = { onDismissOverlay(); onNewPrivateTab() },
                             onSelectTab = onSelectTab,
                             onCloseTab = onCloseTab,
-                            onToggleTabPinned = onToggleTabPinned,
                         )
                         BrowserOverlay.LIBRARY -> LibrarySheet(
                             bookmarks = bookmarks,
@@ -577,12 +576,12 @@ private fun DesktopBrowserLayout(
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
     onShowContextMenu: (String, Int, Int) -> Unit,
+    onTabContextMenu: (String, Int, Int) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
-    onToggleTabPinned: (String) -> Unit,
     onToggleBookmark: () -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
@@ -594,7 +593,7 @@ private fun DesktopBrowserLayout(
             activeTabId = state.activeTabId,
             onSelectTab = onSelectTab,
             onCloseTab = onCloseTab,
-            onToggleTabPinned = onToggleTabPinned,
+            onTabContextMenu = onTabContextMenu,
             onNewTab = onNewTab,
             showTabBar = showTabBarWithAddressBar,
             activeTab = activeTab,
@@ -630,12 +629,12 @@ private fun CompactBrowserLayout(
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
     onShowContextMenu: (String, Int, Int) -> Unit,
+    onTabContextMenu: (String, Int, Int) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
-    onToggleTabPinned: (String) -> Unit,
     onToggleBookmark: () -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
@@ -673,7 +672,7 @@ private fun CompactBrowserLayout(
                 onNewTab = onNewTab,
                 onSelectTab = onSelectTab,
                 onCloseTab = onCloseTab,
-                onToggleTabPinned = onToggleTabPinned,
+                onTabContextMenu = onTabContextMenu,
             )
         }
         activeTab?.takeIf { it.isLoading }?.let {
@@ -703,7 +702,7 @@ private fun DesktopToolbar(
     activeTabId: String?,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
-    onToggleTabPinned: (String) -> Unit,
+    onTabContextMenu: (String, Int, Int) -> Unit,
     onNewTab: () -> Unit,
     showTabBar: Boolean,
     activeTab: BrowserTabState?,
@@ -756,7 +755,7 @@ private fun DesktopToolbar(
                     showNewTabButton = false,
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
-                    onToggleTabPinned = onToggleTabPinned,
+                    onTabContextMenu = onTabContextMenu,
                 )
             }
             BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
@@ -975,7 +974,7 @@ private fun TabStrip(
     showNewTabButton: Boolean = true,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
-    onToggleTabPinned: (String) -> Unit,
+    onTabContextMenu: (String, Int, Int) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -1020,6 +1019,21 @@ private fun TabStrip(
             ) {
                 items(orderedTabs, key = { it.id }) { tab ->
                     Surface(
+                        modifier = Modifier.pointerInput(tab.id) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val motionEvent = event.motionEvent
+                                    if (event.type == PointerEventType.Press &&
+                                        ((motionEvent?.buttonState ?: 0) and MotionEvent.BUTTON_SECONDARY) != 0
+                                    ) {
+                                        val position = event.changes.firstOrNull()?.position ?: continue
+                                        event.changes.forEach { change -> change.consume() }
+                                        onTabContextMenu(tab.id, position.x.toInt(), position.y.toInt())
+                                    }
+                                }
+                            }
+                        },
                         onClick = { onSelectTab(tab.id) },
                         selected = tab.id == activeTabId,
                         color = when {
@@ -1028,7 +1042,7 @@ private fun TabStrip(
                             } else {
                                 MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
                             }
-                            tab.id == activeTabId -> MaterialTheme.colorScheme.surface
+                            tab.id == activeTabId -> MaterialTheme.colorScheme.primaryContainer
                             else -> Color.Transparent
                         },
                         shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
@@ -1036,45 +1050,58 @@ private fun TabStrip(
                     ) {
                         Row(
                             modifier = Modifier
-                                .widthIn(min = 150.dp, max = 240.dp)
-                                .padding(start = 12.dp, end = 4.dp),
+                                .widthIn(
+                                    min = if (tab.pinned) 48.dp else 150.dp,
+                                    max = if (tab.pinned) 56.dp else 240.dp,
+                                )
+                                .padding(
+                                    start = if (tab.pinned) 10.dp else 12.dp,
+                                    end = if (tab.pinned) 10.dp else 4.dp,
+                                ),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            if (tab.favicon != null && !tab.isPrivate) {
-                                Image(
-                                    bitmap = tab.favicon.asImageBitmap(),
-                                    contentDescription = "Site favicon",
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .clip(RoundedCornerShape(4.dp)),
-                                )
+                            if (tab.pinned) {
+                                if (tab.favicon != null && !tab.isPrivate) {
+                                    Image(
+                                        bitmap = tab.favicon.asImageBitmap(),
+                                        contentDescription = tab.title.ifBlank { "Pinned tab" },
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clip(RoundedCornerShape(4.dp)),
+                                    )
+                                } else {
+                                    Icon(
+                                        if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
+                                        contentDescription = tab.title.ifBlank { "Pinned tab" },
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
                             } else {
-                                Icon(
-                                    if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
+                                if (tab.favicon != null && !tab.isPrivate) {
+                                    Image(
+                                        bitmap = tab.favicon.asImageBitmap(),
+                                        contentDescription = "Site favicon",
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clip(RoundedCornerShape(4.dp)),
+                                    )
+                                } else {
+                                    Icon(
+                                        if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                                Text(
+                                    text = tab.title.ifBlank { "New tab" },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                                    maxLines = 1,
+                                    style = MaterialTheme.typography.labelLarge,
                                 )
+                                BrowserNavButton(Icons.Outlined.Close, "Close tab", enabled = true, onClick = { onCloseTab(tab.id) })
                             }
-                            Text(
-                                text = tab.title.ifBlank { "New tab" },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                                maxLines = 1,
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                            IconButton(
-                                onClick = { onToggleTabPinned(tab.id) },
-                                modifier = Modifier.size(28.dp),
-                            ) {
-                                Icon(
-                                    Icons.Outlined.PushPin,
-                                    contentDescription = if (tab.pinned) "Unpin tab" else "Pin tab",
-                                    modifier = Modifier.size(16.dp),
-                                    tint = if (tab.pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            BrowserNavButton(Icons.Outlined.Close, "Close tab", enabled = true, onClick = { onCloseTab(tab.id) })
                         }
                     }
                 }
@@ -1271,7 +1298,50 @@ private fun BrowserContextMenuPopup(
         onDismissRequest = onDismiss,
         offset = offset,
     ) {
-        if (!menu.linkUri.isNullOrBlank()) {
+        if (menu.isTab) {
+            DropdownMenuItem(
+                text = { Text("New tab") },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.NEW_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text("New private tab") },
+                leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.NEW_PRIVATE_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text("Duplicate tab") },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.DUPLICATE_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text("Reload tab") },
+                leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.RELOAD_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text(if (menu.isPinned) "Unpin tab" else "Pin tab") },
+                leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.TOGGLE_TAB_PINNED) },
+            )
+            Divider()
+            DropdownMenuItem(
+                text = { Text("Close tab") },
+                leadingIcon = { Icon(Icons.Outlined.Close, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.CLOSE_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text("Close other tabs") },
+                leadingIcon = { Icon(Icons.Outlined.Close, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.CLOSE_OTHER_TABS) },
+            )
+            DropdownMenuItem(
+                text = { Text("Close tabs to the right") },
+                leadingIcon = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.CLOSE_TABS_TO_RIGHT) },
+            )
+        } else {
+            if (!menu.linkUri.isNullOrBlank()) {
             DropdownMenuItem(
                 text = { Text("Open link") },
                 leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
@@ -1292,7 +1362,7 @@ private fun BrowserContextMenuPopup(
                 leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.COPY_LINK) },
             )
-        }
+            }
         if (!menu.resourceUri.isNullOrBlank()) {
             DropdownMenuItem(
                 text = { Text(if (isImage) "Open image in new tab" else "Open media in new tab") },
@@ -1352,6 +1422,7 @@ private fun BrowserContextMenuPopup(
             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
             onClick = { onAction(ContextMenuAction.SAVE_PAGE) },
         )
+        }
     }
 }
 
@@ -1465,7 +1536,6 @@ private fun TabsSheet(
     onNewPrivateTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
-    onToggleTabPinned: (String) -> Unit,
 ) {
     SheetHeader("Your tabs", "${tabs.size} open")
     Row(
@@ -1496,20 +1566,7 @@ private fun TabsSheet(
                 headlineContent = { Text(tab.title.ifBlank { "New tab" }, maxLines = 1) },
                 supportingContent = { Text(tab.url.ifBlank { "Start browsing" }, maxLines = 1) },
                 leadingContent = { Icon(if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language, contentDescription = null) },
-                trailingContent = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { onToggleTabPinned(tab.id) }) {
-                            Icon(
-                                Icons.Outlined.PushPin,
-                                contentDescription = if (tab.pinned) "Unpin tab" else "Pin tab",
-                                tint = if (tab.pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        IconButton(onClick = { onCloseTab(tab.id) }) {
-                            Icon(Icons.Outlined.Close, contentDescription = "Close tab")
-                        }
-                    }
-                },
+                trailingContent = { IconButton(onClick = { onCloseTab(tab.id) }) { Icon(Icons.Outlined.Close, contentDescription = "Close tab") } },
             )
             if (tab.id != tabs.lastOrNull()?.id) Divider(modifier = Modifier.padding(horizontal = 24.dp))
         }

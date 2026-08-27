@@ -79,6 +79,14 @@ enum class BrowserOverlay {
 }
 
 enum class ContextMenuAction {
+    NEW_TAB,
+    NEW_PRIVATE_TAB,
+    DUPLICATE_TAB,
+    RELOAD_TAB,
+    TOGGLE_TAB_PINNED,
+    CLOSE_TAB,
+    CLOSE_OTHER_TABS,
+    CLOSE_TABS_TO_RIGHT,
     BACK,
     FORWARD,
     RELOAD,
@@ -102,6 +110,7 @@ data class BrowserContextMenu(
     val y: Int,
     val pageUrl: String,
     val isBookmarked: Boolean,
+    val isPinned: Boolean = false,
     val linkUri: String?,
     val linkText: String?,
     val textContent: String?,
@@ -109,6 +118,7 @@ data class BrowserContextMenu(
     val resourceType: Int,
     val canGoBack: Boolean,
     val canGoForward: Boolean,
+    val isTab: Boolean = false,
 )
 
 data class ContentPermissionPrompt(
@@ -471,7 +481,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun toggleTabPinned(id: String) {
         if (_state.value.tabs.none { it.id == id }) return
         _state.update {
-            it.copy(tabs = it.tabs.map { tab -> if (tab.id == id) tab.copy(pinned = !tab.pinned) else tab })
+            it.copy(
+                tabs = it.tabs
+                    .map { tab -> if (tab.id == id) tab.copy(pinned = !tab.pinned) else tab }
+                    .sortedWith(compareByDescending { tab -> tab.pinned }),
+            )
         }
     }
 
@@ -542,9 +556,44 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun showTabContextMenu(tabId: String, x: Int, y: Int) {
+        val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        _state.update {
+            it.copy(
+                contextMenu = BrowserContextMenu(
+                    tabId = tabId,
+                    x = x,
+                    y = y,
+                    pageUrl = tab.url,
+                    isBookmarked = tab.isBookmarked,
+                    linkUri = null,
+                    linkText = null,
+                    textContent = null,
+                    resourceUri = null,
+                    resourceType = GeckoSession.ContentDelegate.ContextElement.TYPE_NONE,
+                    canGoBack = tab.canGoBack,
+                    canGoForward = tab.canGoForward,
+                    isPinned = tab.pinned,
+                    isTab = true,
+                ),
+            )
+        }
+    }
+
     fun handleContextMenuAction(action: ContextMenuAction) {
         val menu = _state.value.contextMenu ?: return
         when (action) {
+            ContextMenuAction.NEW_TAB -> createTab()
+            ContextMenuAction.NEW_PRIVATE_TAB -> createPrivateTab()
+            ContextMenuAction.DUPLICATE_TAB -> {
+                val tab = _state.value.tabs.firstOrNull { it.id == menu.tabId }
+                if (tab != null) createTab(privateMode = tab.isPrivate, initialUri = tab.url.takeIf(String::isNotBlank))
+            }
+            ContextMenuAction.RELOAD_TAB -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
+            ContextMenuAction.TOGGLE_TAB_PINNED -> toggleTabPinned(menu.tabId)
+            ContextMenuAction.CLOSE_TAB -> closeTab(menu.tabId)
+            ContextMenuAction.CLOSE_OTHER_TABS -> closeOtherTabs(menu.tabId)
+            ContextMenuAction.CLOSE_TABS_TO_RIGHT -> closeTabsToRight(menu.tabId)
             ContextMenuAction.BACK -> if (menu.canGoBack) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goBack(true)
             ContextMenuAction.FORWARD -> if (menu.canGoForward) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goForward(true)
             ContextMenuAction.RELOAD -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
@@ -562,6 +611,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.DISMISS -> Unit
         }
         dismissContextMenu()
+    }
+
+    private fun closeOtherTabs(id: String) {
+        val current = _state.value
+        val keep = current.tabs.firstOrNull { it.id == id } ?: return
+        val closing = current.tabs.filterNot { it.id == id }
+        _state.update { it.copy(tabs = listOf(keep), activeTabId = id, overlay = BrowserOverlay.NONE) }
+        closing.forEach { tab -> runCatching { tab.session.close() } }
+    }
+
+    private fun closeTabsToRight(id: String) {
+        val current = _state.value
+        val index = current.tabs.indexOfFirst { it.id == id }
+        if (index < 0 || index == current.tabs.lastIndex) return
+        val closing = current.tabs.drop(index + 1)
+        _state.update { it.copy(tabs = current.tabs.take(index + 1)) }
+        closing.forEach { tab -> runCatching { tab.session.close() } }
     }
 
     fun reloadCrashedTab() {

@@ -1,6 +1,14 @@
 (() => {
   "use strict";
 
+  const selectionStyle = document.createElement("style");
+  selectionStyle.id = "dextra-selection-style";
+  selectionStyle.textContent = `
+    ::selection { background: #5b57c8 !important; color: #ffffff !important; }
+    ::-moz-selection { background: #5b57c8 !important; color: #ffffff !important; }
+  `;
+  (document.head || document.documentElement)?.appendChild(selectionStyle);
+
   const selectors = [".adbox.banner_ads.adsbox", ".textads"];
 
   const openLinkInNewTab = (event) => {
