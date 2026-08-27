@@ -123,7 +123,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -135,7 +140,6 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -146,6 +150,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.Image
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.mozilla.geckoview.GeckoSession
@@ -1018,22 +1025,33 @@ private fun TabStrip(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 items(orderedTabs, key = { it.id }) { tab ->
+                    val tabOrigin = remember(tab.id) { mutableStateOf(IntOffset.Zero) }
                     Surface(
-                        modifier = Modifier.pointerInput(tab.id) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                                    val motionEvent = event.motionEvent
-                                    if (event.type == PointerEventType.Press &&
-                                        ((motionEvent?.buttonState ?: 0) and MotionEvent.BUTTON_SECONDARY) != 0
-                                    ) {
-                                        val position = event.changes.firstOrNull()?.position ?: continue
-                                        event.changes.forEach { change -> change.consume() }
-                                        onTabContextMenu(tab.id, position.x.toInt(), position.y.toInt())
+                        modifier = Modifier
+                            .onGloballyPositioned { coordinates ->
+                                val position = coordinates.positionInWindow()
+                                tabOrigin.value = IntOffset(position.x.toInt(), position.y.toInt())
+                            }
+                            .pointerInput(tab.id) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val motionEvent = event.motionEvent
+                                        if (event.type == PointerEventType.Press &&
+                                            ((motionEvent?.buttonState ?: 0) and MotionEvent.BUTTON_SECONDARY) != 0
+                                        ) {
+                                            val position = event.changes.firstOrNull()?.position ?: continue
+                                            event.changes.forEach { change -> change.consume() }
+                                            val origin = tabOrigin.value
+                                            onTabContextMenu(
+                                                tab.id,
+                                                origin.x + position.x.toInt(),
+                                                origin.y + position.y.toInt(),
+                                            )
+                                        }
                                     }
                                 }
-                            }
-                        },
+                            },
                         onClick = { onSelectTab(tab.id) },
                         selected = tab.id == activeTabId,
                         color = when {
@@ -1050,6 +1068,7 @@ private fun TabStrip(
                     ) {
                         Row(
                             modifier = Modifier
+                                .height(36.dp)
                                 .widthIn(
                                     min = if (tab.pinned) 48.dp else 150.dp,
                                     max = if (tab.pinned) 56.dp else 240.dp,
@@ -1285,19 +1304,48 @@ private fun SiteCrashedPage(onReload: () -> Unit) {
     }
 }
 
+private class ContextMenuPositionProvider(
+    private val x: Int,
+    private val y: Int,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val maxX = (windowSize.width - popupContentSize.width - 8).coerceAtLeast(8)
+        val maxY = (windowSize.height - popupContentSize.height - 8).coerceAtLeast(8)
+        return IntOffset(
+            x.coerceIn(8, maxX),
+            (y + 8).coerceIn(8, maxY),
+        )
+    }
+}
+
 @Composable
 private fun BrowserContextMenuPopup(
     menu: BrowserContextMenu,
     onAction: (ContextMenuAction) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val offset = with(LocalDensity.current) { DpOffset(menu.x.toDp(), menu.y.toDp()) }
     val isImage = menu.resourceType == GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE
-    DropdownMenu(
-        expanded = true,
+    Popup(
+        popupPositionProvider = ContextMenuPositionProvider(menu.x, menu.y),
+        properties = PopupProperties(focusable = true),
         onDismissRequest = onDismiss,
-        offset = offset,
     ) {
+        Surface(
+            shape = RoundedCornerShape(4.dp),
+            tonalElevation = 4.dp,
+            shadowElevation = 8.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 220.dp, max = 360.dp)
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
         if (menu.isTab) {
             DropdownMenuItem(
                 text = { Text("New tab") },
@@ -1422,6 +1470,8 @@ private fun BrowserContextMenuPopup(
             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
             onClick = { onAction(ContextMenuAction.SAVE_PAGE) },
         )
+        }
+            }
         }
     }
 }
