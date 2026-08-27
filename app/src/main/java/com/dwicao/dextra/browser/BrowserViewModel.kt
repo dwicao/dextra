@@ -1094,6 +1094,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { settingsRepository.setTabBarWithAddressBar(enabled) }
     }
 
+    fun setVerticalTabs(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setVerticalTabs(enabled) }
+    }
+
     fun setDnsOverHttpsEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setDnsOverHttpsEnabled(enabled) }
     }

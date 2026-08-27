@@ -34,6 +34,7 @@ data class BrowserSettings(
     val homepage: String = "https://www.google.com/",
     val desktopSites: Boolean = true,
     val tabBarWithAddressBar: Boolean = true,
+    val verticalTabs: Boolean = false,
     val dnsOverHttpsEnabled: Boolean = false,
     val dnsProvider: DnsProvider = DnsProvider.CLOUDFLARE,
     val adBlockingEnabled: Boolean = true,
@@ -85,6 +86,7 @@ class SettingsRepository(private val context: Context) {
         val homepage = stringPreferencesKey("homepage")
         val desktopSites = booleanPreferencesKey("desktop_sites")
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
+        val verticalTabs = booleanPreferencesKey("vertical_tabs")
         val dnsOverHttpsEnabled = booleanPreferencesKey("dns_over_https_enabled")
         val dnsProvider = stringPreferencesKey("dns_provider")
         val adBlockingEnabled = booleanPreferencesKey("ad_blocking_enabled")
@@ -117,6 +119,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setTabBarWithAddressBar(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.tabBarWithAddressBar] = enabled }
+    }
+
+    suspend fun setVerticalTabs(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.verticalTabs] = enabled }
     }
 
     suspend fun setDnsOverHttpsEnabled(enabled: Boolean) {
@@ -243,6 +249,7 @@ class SettingsRepository(private val context: Context) {
         homepage = get(Keys.homepage) ?: "https://www.google.com/",
         desktopSites = get(Keys.desktopSites) ?: true,
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
+        verticalTabs = get(Keys.verticalTabs) ?: false,
         dnsOverHttpsEnabled = get(Keys.dnsOverHttpsEnabled) ?: false,
         dnsProvider = get(Keys.dnsProvider)?.let {
             runCatching { DnsProvider.valueOf(it) }.getOrNull()

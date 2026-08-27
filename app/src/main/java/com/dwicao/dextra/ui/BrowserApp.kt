@@ -242,8 +242,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onDismissOverlay = viewModel::dismissOverlay,
                 onSetTheme = viewModel::setThemeMode,
                 onSetSearchEngine = viewModel::setSearchEngine,
-                 onSetDesktopSites = viewModel::setDesktopSites,
-                 onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
+                  onSetDesktopSites = viewModel::setDesktopSites,
+                  onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
+                  onSetVerticalTabs = viewModel::setVerticalTabs,
                  onSetDnsOverHttpsEnabled = viewModel::setDnsOverHttpsEnabled,
                  onSetDnsProvider = viewModel::setDnsProvider,
                  onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
@@ -326,8 +327,9 @@ private fun BrowserScreen(
     onDismissOverlay: () -> Unit,
     onSetTheme: (ThemeMode) -> Unit,
     onSetSearchEngine: (SearchEngine) -> Unit,
-    onSetDesktopSites: (Boolean) -> Unit,
-    onSetTabBarWithAddressBar: (Boolean) -> Unit,
+     onSetDesktopSites: (Boolean) -> Unit,
+     onSetTabBarWithAddressBar: (Boolean) -> Unit,
+     onSetVerticalTabs: (Boolean) -> Unit,
     onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
     onSetDnsProvider: (DnsProvider) -> Unit,
     onSetAdBlockingEnabled: (Boolean) -> Unit,
@@ -412,13 +414,15 @@ private fun BrowserScreen(
             SettingsScreen(
                 onBack = onDismissOverlay,
                 themeMode = state.settings.themeMode,
-                searchEngine = state.settings.searchEngine,
-                onSetTheme = onSetTheme,
-                onSetSearchEngine = onSetSearchEngine,
-                desktopSites = state.settings.desktopSites,
-                tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
-                onSetDesktopSites = onSetDesktopSites,
-                onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
+                 searchEngine = state.settings.searchEngine,
+                 onSetTheme = onSetTheme,
+                 onSetSearchEngine = onSetSearchEngine,
+                 desktopSites = state.settings.desktopSites,
+                 tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+                 verticalTabs = state.settings.verticalTabs,
+                 onSetDesktopSites = onSetDesktopSites,
+                 onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
+                 onSetVerticalTabs = onSetVerticalTabs,
                 dnsOverHttpsEnabled = state.settings.dnsOverHttpsEnabled,
                 onSetDnsOverHttpsEnabled = onSetDnsOverHttpsEnabled,
                 dnsProvider = state.settings.dnsProvider,
@@ -468,8 +472,9 @@ private fun BrowserScreen(
                      onShowDownloads = { onSetOverlay(BrowserOverlay.DOWNLOADS) },
                      onMenu = { menuExpanded = true },
                     addressFocusRequester = addressFocusRequester,
-                    showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
-                )
+                     showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+                     verticalTabs = state.settings.verticalTabs,
+                 )
             } else {
                 CompactBrowserLayout(
                     state = state,
@@ -615,37 +620,54 @@ private fun DesktopBrowserLayout(
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
     showTabBarWithAddressBar: Boolean,
+    verticalTabs: Boolean,
 ) {
-    Column(Modifier.fillMaxSize()) {
-        DesktopToolbar(
-            tabs = state.tabs,
-            activeTabId = state.activeTabId,
-            onSelectTab = onSelectTab,
-            onCloseTab = onCloseTab,
-            onTabContextMenu = onTabContextMenu,
-            onNewTab = onNewTab,
-            showTabBar = showTabBarWithAddressBar,
-            activeTab = activeTab,
-            onNavigate = onNavigate,
-            onBack = onBack,
-            onForward = onForward,
-            onReload = onReload,
-            onToggleBookmark = onToggleBookmark,
-            onShowDownloads = onShowDownloads,
-            extensionActions = extensionActions,
-            onClickExtensionAction = onClickExtensionAction,
-            onMenu = onMenu,
-            addressFocusRequester = addressFocusRequester,
-        )
-        activeTab?.takeIf { it.isLoading }?.let {
-            LinearProgressIndicator(
-                progress = { it.progress / 100f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(2.dp),
+    Row(Modifier.fillMaxSize()) {
+        if (verticalTabs) {
+            VerticalTabStrip(
+                tabs = state.tabs,
+                activeTabId = state.activeTabId,
+                onNewTab = onNewTab,
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+                onTabContextMenu = onTabContextMenu,
             )
         }
-        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab, onShowContextMenu)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+        ) {
+            DesktopToolbar(
+                tabs = state.tabs,
+                activeTabId = state.activeTabId,
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+                onTabContextMenu = onTabContextMenu,
+                onNewTab = onNewTab,
+                showTabBar = showTabBarWithAddressBar && !verticalTabs,
+                activeTab = activeTab,
+                onNavigate = onNavigate,
+                onBack = onBack,
+                onForward = onForward,
+                onReload = onReload,
+                onToggleBookmark = onToggleBookmark,
+                onShowDownloads = onShowDownloads,
+                extensionActions = extensionActions,
+                onClickExtensionAction = onClickExtensionAction,
+                onMenu = onMenu,
+                addressFocusRequester = addressFocusRequester,
+            )
+            activeTab?.takeIf { it.isLoading }?.let {
+                LinearProgressIndicator(
+                    progress = { it.progress / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp),
+                )
+            }
+            BrowserViewport(activeTab, onNavigate, onReloadCrashedTab, onShowContextMenu)
+        }
     }
 }
 
@@ -933,6 +955,230 @@ private fun AllTabsDropdown(
                     }
                 }
             }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VerticalTabStrip(
+    tabs: List<BrowserTabState>,
+    activeTabId: String?,
+    onNewTab: () -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onTabContextMenu: (String, Int, Int) -> Unit,
+) {
+    var collapsed by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val orderedTabs = tabs.sortedWith(compareByDescending { it.pinned })
+    val filteredTabs = orderedTabs.filter { tab ->
+        query.isBlank() || tab.title.contains(query, ignoreCase = true) || tab.url.contains(query, ignoreCase = true)
+    }
+    val sidebarWidth = if (collapsed) 56.dp else 280.dp
+
+    LaunchedEffect(collapsed) {
+        if (collapsed) query = ""
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(sidebarWidth),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 1.dp,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (!collapsed) {
+                    Icon(Icons.Outlined.Tab, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                        Text("Tabs", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${tabs.size} open",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
+                    BrowserNavButton(
+                        Icons.Outlined.ChevronLeft,
+                        "Collapse vertical tabs",
+                        enabled = true,
+                        onClick = { collapsed = true },
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        BrowserNavButton(
+                            Icons.Outlined.ChevronRight,
+                            "Expand vertical tabs",
+                            enabled = true,
+                            onClick = { collapsed = false },
+                        )
+                        BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
+                    }
+                }
+            }
+            if (!collapsed) {
+                BasicTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 10.dp),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    decorationBox = { innerTextField ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                if (query.isBlank()) {
+                                    Text("Search tabs", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                innerTextField()
+                            }
+                        }
+                    },
+                )
+            }
+            Divider()
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .pointerInput(listState) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.type == PointerEventType.Scroll) {
+                                    val delta = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                                    if (delta != 0f) scope.launch { listState.scrollBy(delta * 8f) }
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
+                        }
+                    },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                if (filteredTabs.isEmpty()) {
+                    item {
+                        Text(
+                            "No matching tabs",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    items(filteredTabs, key = { it.id }) { tab ->
+                        val tabOrigin = remember(tab.id) { mutableStateOf(IntOffset.Zero) }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(if (collapsed) 44.dp else 58.dp)
+                                .onGloballyPositioned { coordinates ->
+                                    val position = coordinates.positionInWindow()
+                                    tabOrigin.value = IntOffset(position.x.toInt(), position.y.toInt())
+                                }
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(
+                                    when {
+                                        tab.isPrivate && tab.id == activeTabId -> MaterialTheme.colorScheme.tertiaryContainer
+                                        tab.isPrivate -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f)
+                                        tab.id == activeTabId -> MaterialTheme.colorScheme.primaryContainer
+                                        else -> Color.Transparent
+                                    },
+                                )
+                                .pointerInput(tab.id) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                                            val motionEvent = event.motionEvent
+                                            val buttonState = motionEvent?.buttonState ?: 0
+                                            if (event.type == PointerEventType.Press &&
+                                                buttonState and MotionEvent.BUTTON_SECONDARY != 0
+                                            ) {
+                                                val position = event.changes.firstOrNull()?.position ?: continue
+                                                event.changes.forEach { change -> change.consume() }
+                                                val origin = tabOrigin.value
+                                                onTabContextMenu(
+                                                    tab.id,
+                                                    origin.x + position.x.toInt(),
+                                                    origin.y + position.y.toInt(),
+                                                )
+                                            } else if (event.type == PointerEventType.Press &&
+                                                buttonState and MotionEvent.BUTTON_TERTIARY != 0
+                                            ) {
+                                                event.changes.forEach { change -> change.consume() }
+                                                onCloseTab(tab.id)
+                                            }
+                                        }
+                                    }
+                                }
+                                .clickable { onSelectTab(tab.id) }
+                                .padding(horizontal = if (collapsed) 8.dp else 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (tab.favicon != null && !tab.isPrivate) {
+                                Image(
+                                    bitmap = tab.favicon.asImageBitmap(),
+                                    contentDescription = tab.title.ifBlank { "Tab" },
+                                    modifier = Modifier
+                                        .size(if (collapsed) 22.dp else 18.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                )
+                            } else {
+                                Icon(
+                                    if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
+                                    contentDescription = tab.title.ifBlank { "Tab" },
+                                    modifier = Modifier.size(if (collapsed) 22.dp else 18.dp),
+                                )
+                            }
+                            if (!collapsed) {
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 9.dp),
+                                ) {
+                                    Text(
+                                        tab.title.ifBlank { "New tab" },
+                                        maxLines = 1,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        tab.url.ifBlank { "Start browsing" },
+                                        maxLines = 1,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                BrowserNavButton(
+                                    Icons.Outlined.Close,
+                                    "Close tab",
+                                    enabled = true,
+                                    onClick = { onCloseTab(tab.id) },
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2230,12 +2476,14 @@ private fun SettingsScreen(
     searchEngine: SearchEngine,
     desktopSites: Boolean,
     tabBarWithAddressBar: Boolean,
+    verticalTabs: Boolean,
     adBlockingEnabled: Boolean,
     adBlockFilters: List<AdBlockFilter>,
     onSetTheme: (ThemeMode) -> Unit,
     onSetSearchEngine: (SearchEngine) -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
+    onSetVerticalTabs: (Boolean) -> Unit,
     dnsOverHttpsEnabled: Boolean,
     onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
     dnsProvider: DnsProvider,
@@ -2330,6 +2578,13 @@ private fun SettingsScreen(
             summary = "Keep tabs visible beside the address bar on wide windows",
             checked = tabBarWithAddressBar,
             onCheckedChange = onSetTabBarWithAddressBar,
+        )
+        Spacer(Modifier.height(14.dp))
+        SettingToggle(
+            title = "Vertical tab strip",
+            summary = "Show tabs in a collapsible sidebar on wide windows",
+            checked = verticalTabs,
+            onCheckedChange = onSetVerticalTabs,
         )
     }
     SettingSection("Network") {
