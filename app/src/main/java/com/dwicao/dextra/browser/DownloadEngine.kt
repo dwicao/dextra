@@ -43,39 +43,45 @@ class DownloadEngine(
         cancelRequests.remove(download.downloadId)
         val job = scope.launch(Dispatchers.IO) {
             try {
-                onUpdate(download.downloadId, DownloadUpdate(DownloadStatus.DOWNLOADING.label))
-                val totalBytes = downloadFile(download)
-                coroutineContext.ensureActive()
-                onUpdate(
-                    download.downloadId,
-                    DownloadUpdate(
-                        status = DownloadStatus.COMPLETE.label,
-                        bytesDownloaded = totalBytes,
-                        totalBytes = totalBytes,
-                        filePath = download.filePath,
-                    ),
-                )
-            } catch (_: CancellationException) {
-                if (download.downloadId in removedDownloads) {
-                    return@launch
-                } else if (download.downloadId in cancelRequests) {
-                    onUpdate(
-                        download.downloadId,
-                        DownloadUpdate(DownloadStatus.CANCELED.label, reason = "Canceled by user"),
-                    )
-                } else {
-                    onUpdate(download.downloadId, DownloadUpdate(DownloadStatus.PAUSED.label))
-                }
-            } catch (error: Exception) {
-                onUpdate(
-                    download.downloadId,
-                    DownloadUpdate(DownloadStatus.FAILED.label, reason = error.message ?: "Connection failed"),
-                )
+                execute(download)
             } finally {
                 jobs.remove(download.downloadId)
             }
         }
         jobs[download.downloadId] = job
+    }
+
+    suspend fun execute(download: DownloadEntry) {
+        try {
+            onUpdate(download.downloadId, DownloadUpdate(DownloadStatus.DOWNLOADING.label))
+            val totalBytes = downloadFile(download)
+            coroutineContext.ensureActive()
+            onUpdate(
+                download.downloadId,
+                DownloadUpdate(
+                    status = DownloadStatus.COMPLETE.label,
+                    bytesDownloaded = totalBytes,
+                    totalBytes = totalBytes,
+                    filePath = download.filePath,
+                ),
+            )
+        } catch (_: CancellationException) {
+            if (download.downloadId in removedDownloads) {
+                return
+            } else if (download.downloadId in cancelRequests) {
+                onUpdate(
+                    download.downloadId,
+                    DownloadUpdate(DownloadStatus.CANCELED.label, reason = "Canceled by user"),
+                )
+            } else {
+                onUpdate(download.downloadId, DownloadUpdate(DownloadStatus.PAUSED.label))
+            }
+        } catch (error: Exception) {
+            onUpdate(
+                download.downloadId,
+                DownloadUpdate(DownloadStatus.FAILED.label, reason = error.message ?: "Connection failed"),
+            )
+        }
     }
 
     fun pause(download: DownloadEntry) {
@@ -122,7 +128,12 @@ class DownloadEngine(
         )
 
         if (totalBytes > 0 && probe.supportsRanges) {
-            downloadInParts(download, output, totalBytes)
+            try {
+                downloadInParts(download, output, totalBytes)
+            } catch (_: RangeUnsupportedException) {
+                cleanupPartsOnly(output)
+                downloadInOneStream(download, output, totalBytes)
+            }
         } else {
             downloadInOneStream(download, output, totalBytes)
         }
@@ -199,6 +210,11 @@ class DownloadEngine(
         }
         try {
             if (connection.responseCode != HttpURLConnection.HTTP_PARTIAL) {
+                throw RangeUnsupportedException()
+            }
+            val contentRange = connection.getHeaderField("Content-Range")
+            val expectedStart = part.start + existing
+            if (!validContentRange(contentRange, expectedStart, part.end)) {
                 throw RangeUnsupportedException()
             }
             part.file.parentFile?.mkdirs()
@@ -288,10 +304,12 @@ class DownloadEngine(
     private fun probe(url: String, knownTotalBytes: Long): Probe {
         val connection = openConnection(url).apply { requestMethod = "HEAD" }
         return try {
+            val responseCode = connection.responseCode
             val total = connection.contentLengthLong.takeIf { it > 0 } ?: knownTotalBytes
             Probe(
                 totalBytes = total,
-                supportsRanges = connection.getHeaderField("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true,
+                supportsRanges = responseCode in 200..299 &&
+                    connection.getHeaderField("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true,
             )
         } finally {
             connection.disconnect()
@@ -316,10 +334,20 @@ class DownloadEngine(
             }
         } ?: 0
 
+    private fun validContentRange(header: String?, expectedStart: Long, expectedEnd: Long): Boolean {
+        val match = Regex("bytes\\s+(\\d+)-(\\d+)/(?:\\d+|\\*)", RegexOption.IGNORE_CASE).matchEntire(header.orEmpty())
+            ?: return false
+        return match.groupValues[1].toLongOrNull() == expectedStart && match.groupValues[2].toLongOrNull() == expectedEnd
+    }
+
     private fun cleanupParts(download: DownloadEntry) {
         val output = download.filePath?.let(::File) ?: return
-        (0 until MAX_CONNECTIONS).forEach { File("${output.path}.part$it").delete() }
+        cleanupPartsOnly(output)
         output.delete()
+    }
+
+    private fun cleanupPartsOnly(output: File) {
+        (0 until MAX_CONNECTIONS).forEach { File("${output.path}.part$it").delete() }
     }
 
     private data class Probe(val totalBytes: Long, val supportsRanges: Boolean)

@@ -8,8 +8,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.activity.ComponentActivity
-import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.browser.BrowserViewModel
+import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.ui.DextraApp
 
 class MainActivity : ComponentActivity() {
@@ -21,8 +21,15 @@ class MainActivity : ComponentActivity() {
         browserViewModel.handleIncomingIntent(intent)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (browserViewModel.state.value.overlay == BrowserOverlay.SETTINGS) {
+                val state = browserViewModel.state.value
+                if (state.overlay != BrowserOverlay.NONE) {
                     browserViewModel.dismissOverlay()
+                    return
+                }
+                if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null ||
+                    state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null
+                ) {
+                    browserViewModel.dismissTransientUi()
                     return
                 }
                 if (browserViewModel.goBack()) return
@@ -43,11 +50,26 @@ class MainActivity : ComponentActivity() {
         browserViewModel.handleIncomingIntent(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        browserViewModel.onAppForeground()
+    }
+
+    override fun onStop() {
+        browserViewModel.onAppBackground()
+        super.onStop()
+    }
+
     @Suppress("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
             if (event.isCtrlPressed) {
                 when {
+                    event.keyCode in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> {
+                        val index = event.keyCode - KeyEvent.KEYCODE_1
+                        browserViewModel.state.value.tabs.getOrNull(index)?.let { browserViewModel.selectTab(it.id) }
+                        return true
+                    }
                     event.keyCode == KeyEvent.KEYCODE_TAB -> {
                         browserViewModel.cycleTab(forward = !event.isShiftPressed)
                         return true

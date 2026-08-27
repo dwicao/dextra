@@ -74,8 +74,10 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.ViewColumn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -254,6 +256,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 downloads = downloads,
                  onNavigate = viewModel::navigateActive,
                  onHome = { viewModel.navigateActive(state.settings.homepage) },
+                 onCloseSplit = viewModel::closeSplit,
+                 onSwapSplit = viewModel::swapSplit,
+                 onFocusSplitPane = viewModel::focusSplitPane,
                 onBack = viewModel::goBack,
                 onForward = viewModel::goForward,
                 onReload = viewModel::reloadOrStop,
@@ -273,6 +278,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onHibernateInactiveTabs = viewModel::hibernateInactiveTabs,
                  onToggleBookmark = viewModel::toggleBookmark,
                  onSetBookmarkFolder = viewModel::setBookmarkFolder,
+                 onUpdateBookmark = viewModel::updateBookmark,
+                 onDeleteBookmark = viewModel::deleteBookmark,
                  onExportBookmarks = { bookmarkExportLauncher.launch("dextra-bookmarks.html") },
                  onImportBookmarks = { bookmarkImportLauncher.launch(arrayOf("text/html", "text/*")) },
                  onOpenSavedPage = viewModel::openSavedPage,
@@ -283,7 +290,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onSetTheme = viewModel::setThemeMode,
                 onSetSearchEngine = viewModel::setSearchEngine,
                   onSetDesktopSites = viewModel::setDesktopSites,
-                  onSetHomepage = viewModel::setHomepage,
+                   onSetHomepage = viewModel::setHomepage,
+                   onClearSitePermissions = viewModel::clearSitePermissions,
                   onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
                   onSetVerticalTabs = viewModel::setVerticalTabs,
                  onSetDnsOverHttpsEnabled = viewModel::setDnsOverHttpsEnabled,
@@ -360,6 +368,9 @@ private fun BrowserScreen(
     downloads: List<DownloadEntry>,
     onNavigate: (String) -> Unit,
     onHome: () -> Unit,
+    onCloseSplit: () -> Unit,
+    onSwapSplit: () -> Unit,
+    onFocusSplitPane: (Boolean) -> Unit,
     onBack: () -> Boolean,
     onForward: () -> Unit,
     onReload: () -> Unit,
@@ -379,6 +390,8 @@ private fun BrowserScreen(
     onHibernateInactiveTabs: () -> Unit,
     onToggleBookmark: () -> Unit,
     onSetBookmarkFolder: (Bookmark, String?) -> Unit,
+    onUpdateBookmark: (Bookmark, String, String?) -> Unit,
+    onDeleteBookmark: (Bookmark) -> Unit,
     onExportBookmarks: () -> Unit,
     onImportBookmarks: () -> Unit,
     onOpenSavedPage: (String) -> Unit,
@@ -390,6 +403,7 @@ private fun BrowserScreen(
     onSetSearchEngine: (SearchEngine) -> Unit,
      onSetDesktopSites: (Boolean) -> Unit,
      onSetHomepage: (String) -> Unit,
+     onClearSitePermissions: () -> Unit,
      onSetTabBarWithAddressBar: (Boolean) -> Unit,
      onSetVerticalTabs: (Boolean) -> Unit,
     onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
@@ -419,7 +433,7 @@ private fun BrowserScreen(
     onToggleDownload: (DownloadEntry) -> Unit,
     onCancelDownload: (DownloadEntry) -> Unit,
     onRemoveDownload: (DownloadEntry) -> Unit,
-    onResolvePermission: (Boolean) -> Unit,
+    onResolvePermission: (Boolean, Boolean) -> Unit,
     extensionInstallPrompt: ExtensionInstallPrompt?,
     onResolveExtensionInstall: (Boolean, Boolean, Boolean) -> Unit,
     extensionUpdatePrompt: ExtensionUpdatePrompt?,
@@ -484,7 +498,8 @@ private fun BrowserScreen(
                  verticalTabs = state.settings.verticalTabs,
                   onSetDesktopSites = onSetDesktopSites,
                   homepage = state.settings.homepage,
-                  onSetHomepage = onSetHomepage,
+                   onSetHomepage = onSetHomepage,
+                   onClearSitePermissions = onClearSitePermissions,
                  onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
                  onSetVerticalTabs = onSetVerticalTabs,
                 dnsOverHttpsEnabled = state.settings.dnsOverHttpsEnabled,
@@ -522,6 +537,9 @@ private fun BrowserScreen(
                     activeTab = activeTab,
                      onNavigate = onNavigate,
                      onHome = onHome,
+                     onCloseSplit = onCloseSplit,
+                     onSwapSplit = onSwapSplit,
+                     onFocusSplitPane = onFocusSplitPane,
                     onBack = onBack,
                     onForward = onForward,
                     onReload = onReload,
@@ -619,6 +637,8 @@ private fun BrowserScreen(
                             onClearHistory = onClearHistory,
                             onDeleteHistoryEntry = onDeleteHistoryEntry,
                             onSetBookmarkFolder = onSetBookmarkFolder,
+                            onUpdateBookmark = onUpdateBookmark,
+                            onDeleteBookmark = onDeleteBookmark,
                             onExportBookmarks = onExportBookmarks,
                             onImportBookmarks = onImportBookmarks,
                         )
@@ -639,13 +659,25 @@ private fun BrowserScreen(
         }
 
         state.contentPermission?.let { prompt ->
+            var rememberPermission by remember(prompt.id) { mutableStateOf(false) }
             AlertDialog(
-                onDismissRequest = { onResolvePermission(false) },
+                onDismissRequest = { onResolvePermission(false, false) },
                 icon = { Icon(Icons.Outlined.Security, contentDescription = null) },
                 title = { Text("Allow access?") },
-                text = { Text("${prompt.origin} wants to use ${prompt.label}.") },
-                confirmButton = { TextButton(onClick = { onResolvePermission(true) }) { Text("Allow") } },
-                dismissButton = { TextButton(onClick = { onResolvePermission(false) }) { Text("Block") } },
+                text = {
+                    Column {
+                        Text("${prompt.origin} wants to use ${prompt.label}.")
+                        Spacer(Modifier.height(12.dp))
+                        SettingToggle(
+                            title = "Remember for this site",
+                            summary = "Reuse this decision for this origin",
+                            checked = rememberPermission,
+                            onCheckedChange = { rememberPermission = it },
+                        )
+                    }
+                },
+                confirmButton = { TextButton(onClick = { onResolvePermission(true, rememberPermission) }) { Text("Allow") } },
+                dismissButton = { TextButton(onClick = { onResolvePermission(false, rememberPermission) }) { Text("Block") } },
             )
         }
         extensionInstallPrompt?.let { prompt ->
@@ -686,6 +718,9 @@ private fun DesktopBrowserLayout(
     activeTab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onHome: () -> Unit,
+    onCloseSplit: () -> Unit,
+    onSwapSplit: () -> Unit,
+    onFocusSplitPane: (Boolean) -> Unit,
     onBack: () -> Boolean,
     onForward: () -> Unit,
     onReload: () -> Unit,
@@ -713,6 +748,8 @@ private fun DesktopBrowserLayout(
     showTabBarWithAddressBar: Boolean,
     verticalTabs: Boolean,
 ) {
+    val splitPrimaryTab = state.splitPrimaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
+    val splitSecondaryTab = state.splitSecondaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
     Row(Modifier.fillMaxSize()) {
         if (verticalTabs) {
             GroupedVerticalTabStrip(
@@ -771,7 +808,50 @@ private fun DesktopBrowserLayout(
                         .height(2.dp),
                 )
             }
-            BrowserViewport(activeTab, onNavigate, onReloadCrashedTab, onShowContextMenu)
+            if (splitPrimaryTab != null && splitSecondaryTab != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Split view", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    BrowserNavButton(Icons.Outlined.SwapHoriz, "Swap panes", true, onSwapSplit)
+                    BrowserNavButton(Icons.Outlined.Close, "Close split view", true, onCloseSplit)
+                }
+                Row(Modifier.fillMaxWidth().weight(1f)) {
+                    BrowserViewport(
+                        tab = splitPrimaryTab,
+                        onNavigate = onNavigate,
+                        onReloadCrashedTab = onReloadCrashedTab,
+                        onShowContextMenu = onShowContextMenu,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        onFocus = { onFocusSplitPane(false) },
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .width(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+                    BrowserViewport(
+                        tab = splitSecondaryTab,
+                        onNavigate = onNavigate,
+                        onReloadCrashedTab = onReloadCrashedTab,
+                        onShowContextMenu = onShowContextMenu,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        onFocus = { onFocusSplitPane(true) },
+                    )
+                }
+            } else {
+                BrowserViewport(
+                    tab = activeTab,
+                    onNavigate = onNavigate,
+                    onReloadCrashedTab = onReloadCrashedTab,
+                    onShowContextMenu = onShowContextMenu,
+                )
+            }
         }
     }
 }
@@ -1972,7 +2052,9 @@ private class ContextMenuGeckoView(
         val now = event.eventTime
         if (now - lastSecondaryClick < 150L) return true
         lastSecondaryClick = now
-        onSecondaryClick(tabId, event.x.toInt(), event.y.toInt())
+        val location = IntArray(2)
+        getLocationOnScreen(location)
+        onSecondaryClick(tabId, location[0] + event.x.toInt(), location[1] + event.y.toInt())
         return true
     }
 
@@ -1982,8 +2064,11 @@ private class ContextMenuGeckoView(
         ) {
             dispatchSecondaryClick(event)
         }
+        if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
         return super.onTouchEvent(event)
     }
+
+    override fun performClick(): Boolean = super.performClick()
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if ((event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS) &&
@@ -2148,10 +2233,12 @@ private fun BrowserViewport(
     onNavigate: (String) -> Unit,
     onReloadCrashedTab: () -> Unit,
     onShowContextMenu: (String, Int, Int) -> Unit,
+    modifier: Modifier = Modifier,
+    onFocus: (() -> Unit)? = null,
 ) {
     val pageBackground = MaterialTheme.colorScheme.surface.toArgb()
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface),
     ) {
@@ -2171,6 +2258,7 @@ private fun BrowserViewport(
                         setBackgroundColor(pageBackground)
                         coverUntilFirstPaint(pageBackground)
                         setSession(tab.session)
+                        setOnFocusChangeListener { _, focused -> if (focused) onFocus?.invoke() }
                         tab.session.compositorController.setClearColor(pageBackground)
                     }
                 },
@@ -2182,6 +2270,7 @@ private fun BrowserViewport(
                         view.releaseSession()
                         view.setSession(tab.session)
                     }
+                    view.setOnFocusChangeListener { _, focused -> if (focused) onFocus?.invoke() }
                     view.session?.compositorController?.setClearColor(pageBackground)
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -2290,6 +2379,11 @@ private fun BrowserContextMenuPopup(
                 text = { Text("Duplicate tab") },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.DUPLICATE_TAB) },
+            )
+            DropdownMenuItem(
+                text = { Text("Open in split view") },
+                leadingIcon = { Icon(Icons.Outlined.ViewColumn, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.OPEN_IN_SPLIT) },
             )
             DropdownMenuItem(
                 text = { Text("Reload tab") },
@@ -2572,6 +2666,8 @@ private fun LibrarySheet(
     onClearHistory: () -> Unit,
     onDeleteHistoryEntry: (HistoryEntry) -> Unit,
     onSetBookmarkFolder: (Bookmark, String?) -> Unit,
+    onUpdateBookmark: (Bookmark, String, String?) -> Unit,
+    onDeleteBookmark: (Bookmark) -> Unit,
     onExportBookmarks: () -> Unit,
     onImportBookmarks: () -> Unit,
 ) {
@@ -2585,6 +2681,9 @@ private fun LibrarySheet(
         var selectedFolder by rememberSaveable { mutableStateOf("") }
         var folderBookmark by remember { mutableStateOf<Bookmark?>(null) }
         var folderName by rememberSaveable { mutableStateOf("") }
+        var editBookmark by remember { mutableStateOf<Bookmark?>(null) }
+        var editTitle by rememberSaveable { mutableStateOf("") }
+        var editFolder by rememberSaveable { mutableStateOf("") }
         val folders = bookmarks.mapNotNull { it.folder?.takeIf(String::isNotBlank) }.distinct().sorted()
         val visibleBookmarks = bookmarks.filter { selectedFolder.isBlank() || it.folder == selectedFolder }
         Row(
@@ -2650,6 +2749,15 @@ private fun LibrarySheet(
                                     onDismissRequest = { folderMenuExpanded = false },
                                 ) {
                                     DropdownMenuItem(
+                                        text = { Text("Edit bookmark") },
+                                        onClick = {
+                                            folderMenuExpanded = false
+                                            editBookmark = bookmark
+                                            editTitle = bookmark.title
+                                            editFolder = bookmark.folder.orEmpty()
+                                        },
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("No folder") },
                                         onClick = {
                                             folderMenuExpanded = false
@@ -2671,6 +2779,13 @@ private fun LibrarySheet(
                                             folderMenuExpanded = false
                                             folderBookmark = bookmark
                                             folderName = ""
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Delete bookmark") },
+                                        onClick = {
+                                            folderMenuExpanded = false
+                                            onDeleteBookmark(bookmark)
                                         },
                                     )
                                 }
@@ -2702,6 +2817,39 @@ private fun LibrarySheet(
                     ) { Text("Save") }
                 },
                 dismissButton = { TextButton(onClick = { folderBookmark = null }) { Text("Cancel") } },
+            )
+        }
+        editBookmark?.let { bookmark ->
+            AlertDialog(
+                onDismissRequest = { editBookmark = null },
+                title = { Text("Edit bookmark") },
+                text = {
+                    Column {
+                        OutlinedTextField(
+                            value = editTitle,
+                            onValueChange = { editTitle = it },
+                            label = { Text("Title") },
+                            singleLine = true,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = editFolder,
+                            onValueChange = { editFolder = it },
+                            label = { Text("Folder (optional)") },
+                            singleLine = true,
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onUpdateBookmark(bookmark, editTitle, editFolder)
+                            editBookmark = null
+                        },
+                        enabled = editTitle.isNotBlank(),
+                    ) { Text("Save") }
+                },
+                dismissButton = { TextButton(onClick = { editBookmark = null }) { Text("Cancel") } },
             )
         }
     } else {
@@ -3044,6 +3192,7 @@ private fun SettingsScreen(
     onSetSearchEngine: (SearchEngine) -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetHomepage: (String) -> Unit,
+    onClearSitePermissions: () -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
     onSetVerticalTabs: (Boolean) -> Unit,
     dnsOverHttpsEnabled: Boolean,
@@ -3171,6 +3320,12 @@ private fun SettingsScreen(
             checked = verticalTabs,
             onCheckedChange = onSetVerticalTabs,
         )
+        Spacer(Modifier.height(14.dp))
+        TextButton(onClick = onClearSitePermissions) {
+            Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Clear site permissions")
+        }
     }
     SettingSection("Network") {
         Row(

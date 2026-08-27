@@ -58,6 +58,7 @@ data class SavedTab(
     val isPrivate: Boolean = false,
     val pinned: Boolean = false,
     val groupId: String? = null,
+    val id: String? = null,
 )
 
 data class SavedTabGroup(
@@ -250,7 +251,8 @@ class SettingsRepository(private val context: Context) {
                             .put("url", tab.url)
                             .put("private", tab.isPrivate)
                             .put("pinned", tab.pinned)
-                            .put("groupId", tab.groupId),
+                            .put("groupId", tab.groupId)
+                            .put("id", tab.id),
                     )
                 }
             }
@@ -344,6 +346,7 @@ class SettingsRepository(private val context: Context) {
                 isPrivate = tab.optBoolean("private"),
                 pinned = tab.optBoolean("pinned"),
                 groupId = tab.optString("groupId").takeIf(String::isNotBlank),
+                id = tab.optString("id").takeIf(String::isNotBlank),
             )
         }
     }.getOrDefault(emptyList())

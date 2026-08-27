@@ -37,6 +37,14 @@ data class Bookmark(
     val folder: String? = null,
 )
 
+@Entity(tableName = "site_permissions", primaryKeys = ["origin", "permission"])
+data class SitePermission(
+    val origin: String,
+    val permission: String,
+    val decision: String,
+    val updatedAt: Long,
+)
+
 @Entity(tableName = "downloads")
 data class DownloadEntry(
     @PrimaryKey val downloadId: Long,
@@ -64,7 +72,7 @@ enum class DownloadStatus(val label: String) {
 
 @Dao
 interface BrowserDao {
-    @Query("SELECT * FROM history ORDER BY visitedAt DESC LIMIT 100")
+    @Query("SELECT * FROM history ORDER BY visitedAt DESC LIMIT 500")
     fun observeHistory(): Flow<List<HistoryEntry>>
 
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
@@ -76,6 +84,9 @@ interface BrowserDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertHistory(entry: HistoryEntry)
 
+    @Query("DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY visitedAt DESC LIMIT 500)")
+    suspend fun trimHistory()
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertBookmark(bookmark: Bookmark)
 
@@ -85,6 +96,9 @@ interface BrowserDao {
     @Query("UPDATE bookmarks SET folder = :folder WHERE url = :url")
     suspend fun updateBookmarkFolder(url: String, folder: String?)
 
+    @Query("UPDATE bookmarks SET title = :title, folder = :folder WHERE url = :url")
+    suspend fun updateBookmark(url: String, title: String, folder: String?)
+
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
     suspend fun getBookmarks(): List<Bookmark>
 
@@ -93,6 +107,15 @@ interface BrowserDao {
 
     @Query("DELETE FROM history WHERE id = :id")
     suspend fun deleteHistory(id: Long)
+
+    @Query("SELECT * FROM site_permissions WHERE origin = :origin AND permission = :permission LIMIT 1")
+    suspend fun getSitePermission(origin: String, permission: String): SitePermission?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSitePermission(permission: SitePermission)
+
+    @Query("DELETE FROM site_permissions")
+    suspend fun clearSitePermissions()
 
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
     fun observeDownloads(): Flow<List<DownloadEntry>>
@@ -110,7 +133,7 @@ interface BrowserDao {
     suspend fun deleteDownload(downloadId: Long)
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class], version = 5, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class], version = 6, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -123,7 +146,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -163,6 +186,22 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE bookmarks ADD COLUMN folder TEXT")
+            }
+        }
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS site_permissions (
+                        origin TEXT NOT NULL,
+                        permission TEXT NOT NULL,
+                        decision TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(origin, permission)
+                    )
+                    """.trimIndent(),
+                )
             }
         }
     }

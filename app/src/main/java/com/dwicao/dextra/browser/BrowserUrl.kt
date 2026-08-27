@@ -9,9 +9,10 @@ object BrowserUrl {
     fun resolve(input: String, searchEngine: SearchEngine): String {
         val value = input.trim()
         if (value.isEmpty()) return ""
+        if (!NavigationPolicy.isSafeUserInput(value)) return ""
 
         val scheme = runCatching { URI(value).scheme?.lowercase() }.getOrNull()
-        if (scheme in setOf("http", "https", "about", "file", "data")) {
+        if (scheme in setOf("http", "https", "about")) {
             return value
         }
 
