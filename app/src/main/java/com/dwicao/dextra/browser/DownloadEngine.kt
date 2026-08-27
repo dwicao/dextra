@@ -6,9 +6,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -18,7 +15,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
-import kotlin.math.min
 
 data class DownloadUpdate(
     val status: String,
@@ -31,7 +27,7 @@ data class DownloadUpdate(
 
 class DownloadEngine(
     private val scope: CoroutineScope,
-    private val onUpdate: (Long, DownloadUpdate) -> Unit,
+    private val onUpdate: suspend (Long, DownloadUpdate) -> Unit,
 ) {
     private val jobs = ConcurrentHashMap<Long, Job>()
     private val cancelRequests = ConcurrentHashMap.newKeySet<Long>()
@@ -86,7 +82,9 @@ class DownloadEngine(
 
     fun pause(download: DownloadEntry) {
         jobs[download.downloadId]?.cancel()
-            ?: onUpdate(download.downloadId, DownloadUpdate(DownloadStatus.PAUSED.label))
+            ?: scope.launch {
+                onUpdate(download.downloadId, DownloadUpdate(DownloadStatus.PAUSED.label))
+            }
     }
 
     fun cancel(download: DownloadEntry) {
@@ -94,10 +92,12 @@ class DownloadEngine(
         jobs[download.downloadId]?.cancel()
         cleanupParts(download)
         if (!jobs.containsKey(download.downloadId)) {
-            onUpdate(
-                download.downloadId,
-                DownloadUpdate(DownloadStatus.CANCELED.label, reason = "Canceled by user"),
-            )
+            scope.launch {
+                onUpdate(
+                    download.downloadId,
+                    DownloadUpdate(DownloadStatus.CANCELED.label, reason = "Canceled by user"),
+                )
+            }
         }
     }
 
@@ -113,148 +113,74 @@ class DownloadEngine(
         jobs.clear()
     }
 
-    private suspend fun downloadFile(download: DownloadEntry): Long = coroutineScope {
+    private suspend fun downloadFile(download: DownloadEntry): Long {
+        if (!NavigationPolicy.isWebUrl(download.url)) {
+            throw IOException("Unsupported download URL")
+        }
         val output = File(download.filePath ?: error("Download path is missing"))
         output.parentFile?.mkdirs()
-        val probe = probe(download.url, download.totalBytes)
-        val totalBytes = probe.totalBytes
+        val knownTotalBytes = download.totalBytes.takeIf { it > 0 }
+        val existing = output.length().let { length ->
+            if (knownTotalBytes != null && length > knownTotalBytes) {
+                output.delete()
+                0L
+            } else {
+                length
+            }
+        }
         onUpdate(
             download.downloadId,
             DownloadUpdate(
                 status = DownloadStatus.DOWNLOADING.label,
-                bytesDownloaded = existingBytes(download, totalBytes),
-                totalBytes = totalBytes,
+                bytesDownloaded = existing,
+                totalBytes = knownTotalBytes ?: -1,
             ),
         )
-
-        if (totalBytes > 0 && probe.supportsRanges) {
-            try {
-                downloadInParts(download, output, totalBytes)
-            } catch (_: RangeUnsupportedException) {
-                cleanupPartsOnly(output)
-                downloadInOneStream(download, output, totalBytes)
-            }
-        } else {
-            downloadInOneStream(download, output, totalBytes)
-        }
-        totalBytes.takeIf { it > 0 } ?: output.length()
+        return downloadInOneStream(download, output, knownTotalBytes)
     }
 
-    private suspend fun downloadInParts(download: DownloadEntry, output: File, totalBytes: Long) {
-        val partCount = min(MAX_CONNECTIONS.toLong(), totalBytes).toInt()
-        val partSize = (totalBytes + partCount - 1) / partCount
-        val parts = (0 until partCount).map { index ->
-            val start = index * partSize
-            val end = min(totalBytes, start + partSize) - 1
-            Part(index, start, end, File("${output.path}.part$index"))
-        }
-        val progressLock = Any()
-        var lastReportedBytes = existingBytes(download, totalBytes)
-        var lastReportedAt = System.nanoTime()
-        var smoothedSpeed = 0L
-        val reportProgress = {
-            val progress = synchronized(progressLock) {
-                val bytes = parts.sumOf { part -> part.file.length().coerceAtMost(part.size) }
-                val now = System.nanoTime()
-                val elapsedNanos = now - lastReportedAt
-                val instantSpeed = if (elapsedNanos > 0) {
-                    ((bytes - lastReportedBytes) * 1_000_000_000L / elapsedNanos).coerceAtLeast(0)
-                } else {
-                    0L
-                }
-                if (instantSpeed > 0) {
-                    smoothedSpeed = if (smoothedSpeed == 0L) instantSpeed else {
-                        (smoothedSpeed * 80L + instantSpeed * 20L) / 100L
-                    }
-                }
-                lastReportedBytes = bytes
-                lastReportedAt = now
-                bytes to smoothedSpeed
-            }
-            onUpdate(
-                download.downloadId,
-                DownloadUpdate(
-                    status = DownloadStatus.DOWNLOADING.label,
-                    bytesDownloaded = progress.first,
-                    totalBytes = totalBytes,
-                    speedBytesPerSecond = progress.second,
-                ),
-            )
-        }
+    private suspend fun downloadInOneStream(
+        download: DownloadEntry,
+        output: File,
+        knownTotalBytes: Long?,
+    ): Long {
+        val existing = output.length()
+        if (knownTotalBytes != null && existing == knownTotalBytes) return existing
 
-        coroutineScope {
-            parts.map { part ->
-                async(Dispatchers.IO) {
-                    downloadPart(download.url, part, reportProgress)
-                }
-            }.awaitAll()
-        }
-
-        FileOutputStream(output, false).use { destination ->
-            parts.forEach { part ->
-                coroutineContext.ensureActive()
-                part.file.inputStream().use { input -> input.copyTo(destination) }
-                part.file.delete()
-            }
-        }
-    }
-
-    private suspend fun downloadPart(url: String, part: Part, reportProgress: () -> Unit) {
-        val existing = part.file.takeIf { it.exists() }?.length()?.coerceAtMost(part.size) ?: 0
-        if (existing >= part.size) {
-            reportProgress()
-            return
-        }
-        val connection = openConnection(url).apply {
-            setRequestProperty("Range", "bytes=${part.start + existing}-${part.end}")
-        }
-        try {
-            if (connection.responseCode != HttpURLConnection.HTTP_PARTIAL) {
-                throw RangeUnsupportedException()
-            }
-            val contentRange = connection.getHeaderField("Content-Range")
-            val expectedStart = part.start + existing
-            if (!validContentRange(contentRange, expectedStart, part.end)) {
-                throw RangeUnsupportedException()
-            }
-            part.file.parentFile?.mkdirs()
-            FileOutputStream(part.file, existing > 0).use { output ->
-                connection.inputStream.use { input ->
-                    val buffer = ByteArray(BUFFER_SIZE)
-                    var lastReport = existing
-                    var position = existing
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        position += read
-                        if (position - lastReport >= REPORT_STEP) {
-                            lastReport = position
-                            reportProgress()
-                        }
-                    }
-                    if (position < part.size) throw IOException("Incomplete download")
-                }
-            }
-            reportProgress()
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private suspend fun downloadInOneStream(download: DownloadEntry, output: File, totalBytes: Long) {
-        val existing = output.takeIf { it.exists() }?.length() ?: 0
         val connection = openConnection(download.url).apply {
             if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
         }
         try {
-            val append = existing > 0 && connection.responseCode == HttpURLConnection.HTTP_PARTIAL
-            if (!append && connection.responseCode != HttpURLConnection.HTTP_OK) {
-                throw IOException("Server returned HTTP ${connection.responseCode}")
+            val responseCode = connection.responseCode
+            if (download.url.startsWith("https://", ignoreCase = true) &&
+                connection.url.protocol.lowercase() != "https"
+            ) {
+                throw IOException("Refusing an insecure download redirect")
             }
-            val startingBytes = if (append) existing else 0
-            output.parentFile?.mkdirs()
+            if (existing > 0 && responseCode == HTTP_RANGE_NOT_SATISFIABLE && knownTotalBytes != null && existing == knownTotalBytes) {
+                return existing
+            }
+            val append = existing > 0 && responseCode == HttpURLConnection.HTTP_PARTIAL
+            if (!append && responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("Server returned HTTP $responseCode")
+            }
+
+            val startingBytes = if (append) existing else 0L
+            val responseTotal = connection.contentLengthLong.takeIf { it >= 0 }?.let { length ->
+                length + startingBytes
+            }
+            val expectedTotal = knownTotalBytes ?: responseTotal
+            if (append) validateContentRange(connection.getHeaderField("Content-Range"), existing)
+
+            onUpdate(
+                download.downloadId,
+                DownloadUpdate(
+                    status = DownloadStatus.DOWNLOADING.label,
+                    bytesDownloaded = startingBytes,
+                    totalBytes = expectedTotal ?: -1,
+                ),
+            )
+
             FileOutputStream(output, append).use { outputStream ->
                 connection.inputStream.use { input ->
                     val buffer = ByteArray(BUFFER_SIZE)
@@ -288,29 +214,18 @@ class DownloadEngine(
                                 DownloadUpdate(
                                     status = DownloadStatus.DOWNLOADING.label,
                                     bytesDownloaded = position,
-                                    totalBytes = totalBytes,
+                                    totalBytes = expectedTotal ?: -1,
                                     speedBytesPerSecond = smoothedSpeed,
                                 ),
                             )
                         }
                     }
+                    if (expectedTotal != null && position != expectedTotal) {
+                        throw IOException("Incomplete download: received $position of $expectedTotal bytes")
+                    }
+                    return position
                 }
             }
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun probe(url: String, knownTotalBytes: Long): Probe {
-        val connection = openConnection(url).apply { requestMethod = "HEAD" }
-        return try {
-            val responseCode = connection.responseCode
-            val total = connection.contentLengthLong.takeIf { it > 0 } ?: knownTotalBytes
-            Probe(
-                totalBytes = total,
-                supportsRanges = responseCode in 200..299 &&
-                    connection.getHeaderField("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true,
-            )
         } finally {
             connection.disconnect()
         }
@@ -321,48 +236,30 @@ class DownloadEngine(
             connectTimeout = CONNECTION_TIMEOUT
             readTimeout = READ_TIMEOUT
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Dextra/0.1")
+            setRequestProperty("User-Agent", BrowserClientIdentity.userAgent)
         }
 
-    private fun existingBytes(download: DownloadEntry, totalBytes: Long): Long =
-        download.filePath?.let { output ->
-            val file = File(output)
-            if (totalBytes > 0) {
-                (0 until MAX_CONNECTIONS).sumOf { File("$output.part$it").length() }.coerceAtMost(totalBytes)
-            } else {
-                file.length()
-            }
-        } ?: 0
-
-    private fun validContentRange(header: String?, expectedStart: Long, expectedEnd: Long): Boolean {
-        val match = Regex("bytes\\s+(\\d+)-(\\d+)/(?:\\d+|\\*)", RegexOption.IGNORE_CASE).matchEntire(header.orEmpty())
-            ?: return false
-        return match.groupValues[1].toLongOrNull() == expectedStart && match.groupValues[2].toLongOrNull() == expectedEnd
+    private fun validateContentRange(header: String?, expectedStart: Long) {
+        val match = Regex("bytes\\s+(\\d+)-(\\d+)/(?:\\d+|\\*)", RegexOption.IGNORE_CASE)
+            .matchEntire(header.orEmpty())
+            ?: throw IOException("Server returned an invalid Content-Range")
+        if (match.groupValues[1].toLongOrNull() != expectedStart) {
+            throw IOException("Server returned an unexpected range start")
+        }
     }
 
     private fun cleanupParts(download: DownloadEntry) {
         val output = download.filePath?.let(::File) ?: return
-        cleanupPartsOnly(output)
+        (0 until LEGACY_PART_FILE_COUNT).forEach { index -> File("${output.path}.part$index").delete() }
         output.delete()
     }
 
-    private fun cleanupPartsOnly(output: File) {
-        (0 until MAX_CONNECTIONS).forEach { File("${output.path}.part$it").delete() }
-    }
-
-    private data class Probe(val totalBytes: Long, val supportsRanges: Boolean)
-
-    private data class Part(val index: Int, val start: Long, val end: Long, val file: File) {
-        val size: Long get() = end - start + 1
-    }
-
-    private class RangeUnsupportedException : IOException("Server does not support ranged downloads")
-
     private companion object {
-        const val MAX_CONNECTIONS = 6
         const val BUFFER_SIZE = 32 * 1024
         const val REPORT_STEP = 256 * 1024
         const val CONNECTION_TIMEOUT = 15_000
         const val READ_TIMEOUT = 30_000
+        const val LEGACY_PART_FILE_COUNT = 6
+        const val HTTP_RANGE_NOT_SATISFIABLE = 416
     }
 }

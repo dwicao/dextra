@@ -1,4 +1,12 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.FileInputStream
+import java.util.Properties
+
+val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
+val releaseKeystoreProperties = Properties()
+if (releaseKeystorePropertiesFile.exists()) {
+    releaseKeystoreProperties.load(FileInputStream(releaseKeystorePropertiesFile))
+}
 
 plugins {
     id("com.android.application")
@@ -17,13 +25,26 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if (releaseKeystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = rootProject.file(releaseKeystoreProperties.getProperty("storeFile"))
+                    storePassword = releaseKeystoreProperties.getProperty("storePassword")
+                    keyAlias = releaseKeystoreProperties.getProperty("keyAlias")
+                    keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+                }
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

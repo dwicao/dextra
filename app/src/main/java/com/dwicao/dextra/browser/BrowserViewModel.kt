@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
 import android.os.Build
+import android.os.SystemClock
 import android.text.Html
 import android.util.Log
 import android.webkit.MimeTypeMap
@@ -223,6 +224,7 @@ private const val MAX_EXTENSION_PACKAGE_BYTES = 64L * 1024L * 1024L
 private const val MAX_OPEN_TABS = 64
 private const val DOWNLOAD_CHANNEL_ID = "dextra_downloads"
 private const val MAX_BOOKMARK_IMPORT_BYTES = 5 * 1024 * 1024
+private const val PROGRESS_UPDATE_INTERVAL_MS = 100L
 
 data class ExtensionUpdatePrompt(
     val id: String,
@@ -271,6 +273,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val queuedAndroidPermissions = ArrayDeque<AndroidPermissionPrompt>()
     private val queuedMediaPermissions = ArrayDeque<MediaPermissionPrompt>()
     private val pageZoomByTab = mutableMapOf<String, Int>()
+    private val lastProgressUpdateAt = mutableMapOf<String, Long>()
     private val restoringExtensionIds = ConcurrentHashMap.newKeySet<String>()
     private var restoredSavedTabs = false
     private var persistJob: Job? = null
@@ -434,9 +437,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val userScriptsChanged = _state.value.settings.userScriptUrls != settings.userScriptUrls ||
                     _state.value.settings.disabledUserScriptUrls != settings.disabledUserScriptUrls
                 _state.update { current -> current.copy(settings = settings) }
+                applyDnsOverHttps(settings.dnsOverHttpsEnabled, settings.dnsProvider)
+                applyContentColorScheme(settings.themeMode)
                 if (!restoredSavedTabs) {
                     restoredSavedTabs = true
                     restoreSavedTabs(settings.openTabs, settings.activeTabIndex)
+                    if (_state.value.tabs.isEmpty()) createTab()
                     pendingIncomingUri?.let { uri ->
                         pendingIncomingUri = null
                         openIncomingUri(uri)
@@ -448,8 +454,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     if (adBlockingChanged && tab.hasPage) tab.session.reload()
                     if (userScriptsChanged && tab.hasPage) tab.session.reload()
                 }
-                applyDnsOverHttps(settings.dnsOverHttpsEnabled, settings.dnsProvider)
-                applyContentColorScheme(settings.themeMode)
                 syncAdBlockSettings(settings)
                 syncUserScripts(settings)
             }
@@ -475,7 +479,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             restoreOfflineExtensions()
         }
         restoreDownloads()
-        createTab()
     }
 
     fun handleIncomingIntent(intent: Intent?) {
@@ -600,6 +603,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val closing = current.tabs.firstOrNull { it.id == id } ?: return
         rejectPermissionsForTab(id)
         pageZoomByTab.remove(id)
+        lastProgressUpdateAt.remove(id)
         rememberClosedTab(closing)
         if (closing.id == current.activeTabId) {
             closeExtensionPopup()
@@ -1074,10 +1078,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.COPY_TEXT -> menu.textContent?.takeIf(String::isNotBlank)?.let { copyToClipboard("Text", it) }
             ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB -> menu.resourceUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
             ContextMenuAction.COPY_MEDIA_URL -> menu.resourceUri?.let { copyToClipboard("Media URL", it) }
-            ContextMenuAction.SAVE_MEDIA -> menu.resourceUri?.let(::downloadUrl)
+            ContextMenuAction.SAVE_MEDIA -> menu.resourceUri?.let { downloadUrl(it, isPrivateTab(menu.tabId)) }
             ContextMenuAction.COPY_PAGE_URL -> menu.pageUrl.takeIf(String::isNotBlank)?.let { copyToClipboard("Page URL", it) }
             ContextMenuAction.TOGGLE_BOOKMARK -> if (menu.tabId == _state.value.activeTabId) toggleBookmark()
-            ContextMenuAction.SAVE_PAGE -> menu.pageUrl.takeIf(String::isNotBlank)?.let(::downloadUrl)
+            ContextMenuAction.SAVE_PAGE -> menu.pageUrl.takeIf(String::isNotBlank)?.let { downloadUrl(it, isPrivateTab(menu.tabId)) }
             ContextMenuAction.OPEN_IN_SPLIT -> openTabInSplit(menu.tabId)
             ContextMenuAction.CLOSE_SPLIT -> closeSplit()
             ContextMenuAction.SWAP_SPLIT -> swapSplit()
@@ -1295,7 +1299,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun downloadUrl(url: String) {
+    private fun isPrivateTab(tabId: String): Boolean =
+        _state.value.tabs.firstOrNull { it.id == tabId }?.isPrivate == true
+
+    private fun downloadUrl(url: String, privateMode: Boolean = false) {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: run {
             showSnackbar("This resource cannot be downloaded")
             return
@@ -1326,6 +1333,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 reason = null,
                 speedBytesPerSecond = 0,
                 createdAt = System.currentTimeMillis(),
+                isPrivate = privateMode,
             )
             viewModelScope.launch {
                 dao.upsertDownload(download)
@@ -1384,8 +1392,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun addAdBlockFilter(url: String) {
         val normalized = url.trim()
-        if (!normalized.startsWith("https://") && !normalized.startsWith("http://")) {
-            showSnackbar("Enter a valid http(s) filter URL")
+        if (!normalized.startsWith("https://", ignoreCase = true)) {
+            showSnackbar("Filter lists must use HTTPS")
             return
         }
         viewModelScope.launch { settingsRepository.addAdBlockFilter(normalized) }
@@ -1397,8 +1405,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun addUserScript(url: String) {
         val normalized = url.trim()
-        if (!normalized.startsWith("https://") && !normalized.startsWith("http://")) {
-            showSnackbar("Enter a valid http(s) userscript URL")
+        if (!normalized.startsWith("https://", ignoreCase = true)) {
+            showSnackbar("Userscripts must use HTTPS")
             return
         }
         viewModelScope.launch { settingsRepository.addUserScript(normalized) }
@@ -1799,6 +1807,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             GeckoSessionSettings.Builder()
                 .usePrivateMode(privateMode)
                 .allowJavascript(true)
+                .useTrackingProtection(true)
                 .userAgentMode(if (desktopViewport) {
                     GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
                 } else {
@@ -2286,6 +2295,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             readTimeout = 8_000
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", BrowserClientIdentity.userAgent)
         }
         return try {
             if (connection.responseCode !in 200..299) return null
@@ -2320,10 +2330,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             instanceFollowRedirects = true
             requestMethod = "GET"
             setRequestProperty("Accept", "application/x-xpinstall,application/octet-stream")
-            setRequestProperty("User-Agent", "Dextra/${android.os.Build.VERSION.SDK_INT}")
+            setRequestProperty("User-Agent", BrowserClientIdentity.userAgent)
         }
         try {
             if (connection.responseCode !in 200..299 || connection.contentLengthLong > MAX_EXTENSION_PACKAGE_BYTES) {
+                temporary.delete()
+                return@withContext null
+            }
+            if (connection.url.protocol.lowercase() != "https") {
                 temporary.delete()
                 return@withContext null
             }
@@ -2469,6 +2483,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 connection.connectTimeout = 4_000
                 connection.readTimeout = 4_000
                 connection.instanceFollowRedirects = true
+                connection.setRequestProperty("User-Agent", BrowserClientIdentity.userAgent)
                 try {
                     if (connection.responseCode !in 200..299) return@runCatching null
                     connection.inputStream.use(BitmapFactory::decodeStream)
@@ -2492,7 +2507,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }.onFailure { showSnackbar("No app can open this link") }
     }
 
-    private fun download(response: WebResponse) {
+    private fun download(response: WebResponse, privateMode: Boolean) {
         if (response.uri.isBlank()) return
         runCatching {
             val fileName = downloadName(response)
@@ -2514,6 +2529,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 reason = null,
                 speedBytesPerSecond = 0,
                 createdAt = System.currentTimeMillis(),
+                isPrivate = privateMode,
             )
             viewModelScope.launch {
                 dao.upsertDownload(download)
@@ -2623,6 +2639,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private inner class ProgressDelegate(private val tabId: String) : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
             attachAdBlockContentDelegate(session)
+            lastProgressUpdateAt.remove(tabId)
             if (url == "about:blank") {
                 updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0, favicon = null) }
             } else {
@@ -2639,6 +2656,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onProgressChange(session: GeckoSession, progress: Int) {
+            val now = SystemClock.uptimeMillis()
+            if (progress < 100 && now - (lastProgressUpdateAt[tabId] ?: 0L) < PROGRESS_UPDATE_INTERVAL_MS) return
+            lastProgressUpdateAt[tabId] = now
             updateTab(tabId) { it.copy(progress = progress, isLoading = progress < 100) }
         }
 
@@ -2660,7 +2680,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (FirefoxAddons.isAmoUrl(response.uri) && FirefoxAddons.isXpiDownload(response.uri, contentType)) {
                 installExtensionPackageFromUrl(response.uri)
             } else {
-                download(response)
+                download(response, isPrivateTab(tabId))
             }
         }
 

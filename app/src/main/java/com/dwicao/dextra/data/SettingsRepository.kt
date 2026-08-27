@@ -32,7 +32,7 @@ data class BrowserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,
     val homepage: String = "https://www.google.com/",
-    val desktopSites: Boolean = true,
+    val desktopSites: Boolean = false,
     val tabBarWithAddressBar: Boolean = true,
     val verticalTabs: Boolean = true,
     val dnsOverHttpsEnabled: Boolean = false,
@@ -153,6 +153,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun addAdBlockFilter(url: String) {
+        if (!url.startsWith("https://", ignoreCase = true)) return
         context.settingsDataStore.edit { preferences ->
             val urls = preferences.filterUrls()
             preferences[Keys.adBlockFilters] = (urls + url).distinct().joinToString("\n")
@@ -185,6 +186,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun addUserScript(url: String) {
+        if (!url.startsWith("https://", ignoreCase = true)) return
         context.settingsDataStore.edit { preferences ->
             val urls = preferences.userScripts()
             preferences[Keys.userScriptUrls] = (urls + url).distinct().joinToString("\n")
@@ -280,7 +282,7 @@ class SettingsRepository(private val context: Context) {
             runCatching { SearchEngine.valueOf(it) }.getOrNull()
         } ?: SearchEngine.GOOGLE,
         homepage = get(Keys.homepage) ?: "https://www.google.com/",
-        desktopSites = get(Keys.desktopSites) ?: true,
+        desktopSites = get(Keys.desktopSites) ?: defaultDesktopSites(),
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
         verticalTabs = get(Keys.verticalTabs) ?: true,
         dnsOverHttpsEnabled = get(Keys.dnsOverHttpsEnabled) ?: false,
@@ -301,6 +303,7 @@ class SettingsRepository(private val context: Context) {
         ?.split('\n')
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
+        ?.filter { it.startsWith("https://", ignoreCase = true) }
         ?.filterNot { it in RemovedDefaultAdBlockFilterUrls }
         ?: emptyList()
 
@@ -314,6 +317,7 @@ class SettingsRepository(private val context: Context) {
         ?.split('\n')
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
+        ?.filter { it.startsWith("https://", ignoreCase = true) }
         ?: emptyList()
 
     private fun Preferences.disabledUserScripts(): List<String> = get(Keys.disabledUserScripts)
@@ -367,4 +371,9 @@ class SettingsRepository(private val context: Context) {
 
     private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter =
         AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url, enabled)
+
+    private fun defaultDesktopSites(): Boolean {
+        val configuration = context.resources.configuration
+        return configuration.screenWidthDp >= 600 || configuration.smallestScreenWidthDp >= 600
+    }
 }

@@ -20,7 +20,6 @@ import com.dwicao.dextra.MainActivity
 import com.dwicao.dextra.data.BrowserDatabase
 import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import java.io.File
@@ -43,8 +42,7 @@ class DownloadWorker(
         setForeground(createForegroundInfo(download))
 
         val engine = DownloadEngine(CoroutineScope(currentCoroutineContext())) { id, update ->
-            runBlocking {
-                val current = dao.getDownload(id) ?: return@runBlocking
+            dao.getDownload(id)?.let { current ->
                 dao.upsertDownload(
                     current.copy(
                         status = update.status,

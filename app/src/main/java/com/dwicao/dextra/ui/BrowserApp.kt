@@ -2039,13 +2039,21 @@ private class ContextMenuGeckoView(
     backgroundColor: Int,
 ) : GeckoView(context) {
     private var lastSecondaryClick = 0L
+    private var currentBackgroundColor = backgroundColor
 
     init {
         setBackgroundColor(backgroundColor)
     }
 
     fun setTabId(id: String) {
-        tabId = id
+        if (tabId != id) tabId = id
+    }
+
+    fun updateBackgroundColor(color: Int) {
+        if (currentBackgroundColor == color) return
+        currentBackgroundColor = color
+        setBackgroundColor(color)
+        session?.compositorController?.setClearColor(color)
     }
 
     private fun dispatchSecondaryClick(event: MotionEvent): Boolean {
@@ -2262,16 +2270,16 @@ private fun BrowserViewport(
                         tab.session.compositorController.setClearColor(pageBackground)
                     }
                 },
-                update = { view ->
-                    view.setBackgroundColor(pageBackground)
+                    update = { view ->
+                    view.updateBackgroundColor(pageBackground)
                     view.setTabId(tab.id)
                     if (view.session !== tab.session) {
                         view.coverUntilFirstPaint(pageBackground)
                         view.releaseSession()
                         view.setSession(tab.session)
+                        view.setOnFocusChangeListener { _, focused -> if (focused) onFocus?.invoke() }
+                        view.session?.compositorController?.setClearColor(pageBackground)
                     }
-                    view.setOnFocusChangeListener { _, focused -> if (focused) onFocus?.invoke() }
-                    view.session?.compositorController?.setClearColor(pageBackground)
                 },
                 modifier = Modifier.fillMaxSize(),
                 onRelease = { it.releaseSession() },
@@ -2910,6 +2918,14 @@ private fun DownloadsSheet(
     var pendingDelete by remember { mutableStateOf<DownloadEntry?>(null) }
     val activeCount = downloads.count { it.status in setOf(DownloadStatus.QUEUED.label, DownloadStatus.DOWNLOADING.label, DownloadStatus.PAUSED.label) }
     SheetHeader("Downloads", if (activeCount == 0) "Files saved by Dextra" else "$activeCount active")
+    if (downloads.any { it.isPrivate }) {
+        Text(
+            "Downloads from private tabs are still saved to device storage.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+        )
+    }
     if (downloads.isEmpty()) {
         EmptyLibrary("Files you download will appear here.", Icons.Outlined.Download)
     } else {
@@ -3002,7 +3018,7 @@ private fun DownloadsSheet(
 }
 
 private fun buildDownloadSummary(download: DownloadEntry): String {
-    val status = download.status
+    val status = if (download.isPrivate) "${download.status}  •  Private tab" else download.status
     val size = if (download.totalBytes > 0) {
         "${formatBytes(download.bytesDownloaded)} / ${formatBytes(download.totalBytes)}"
     } else if (download.bytesDownloaded > 0) {
@@ -3301,8 +3317,8 @@ private fun SettingsScreen(
         }
         Spacer(Modifier.height(14.dp))
         SettingToggle(
-            title = "Show desktop sites",
-            summary = "Request desktop layouts by default",
+            title = "Request desktop sites",
+            summary = "Use desktop layouts for the current DeX or tablet profile",
             checked = desktopSites,
             onCheckedChange = onSetDesktopSites,
         )
@@ -3347,6 +3363,123 @@ private fun SettingsScreen(
             checked = dnsOverHttpsEnabled,
             onCheckedChange = onSetDnsOverHttpsEnabled,
         )
+    }
+    SettingSection("Privacy") {
+        Text(
+            "Dextra uses GeckoView tracking protection. Filter lists and userscripts are fetched over HTTPS only.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        SettingToggle(
+            title = "Ad blocking",
+            summary = "Block third-party hosts listed by your enabled filter lists",
+            checked = adBlockingEnabled,
+            onCheckedChange = onSetAdBlockingEnabled,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Filter lists", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = onRefreshAdBlockFilters) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Refresh")
+            }
+        }
+        var filterUrl by rememberSaveable { mutableStateOf("") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = filterUrl,
+                onValueChange = { filterUrl = it },
+                modifier = Modifier.weight(1f),
+                label = { Text("HTTPS filter URL") },
+                singleLine = true,
+            )
+            Button(
+                onClick = {
+                    onAddAdBlockFilter(filterUrl)
+                    filterUrl = ""
+                },
+                enabled = filterUrl.startsWith("https://", ignoreCase = true),
+            ) { Text("Add") }
+        }
+        adBlockFilters.forEach { filter ->
+            ListItem(
+                headlineContent = { Text(filter.name, maxLines = 1) },
+                supportingContent = { Text(filter.url, maxLines = 1) },
+                trailingContent = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = filter.enabled,
+                            onCheckedChange = { onSetAdBlockFilterEnabled(filter, it) },
+                        )
+                        IconButton(onClick = { onRemoveAdBlockFilter(filter) }) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove ${filter.name}")
+                        }
+                    }
+                },
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("Userscripts", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Userscripts can change page content and behavior. Keep them disabled unless you trust the source.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        var userScriptUrl by rememberSaveable { mutableStateOf("") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = userScriptUrl,
+                onValueChange = { userScriptUrl = it },
+                modifier = Modifier.weight(1f),
+                label = { Text("HTTPS userscript URL") },
+                singleLine = true,
+            )
+            Button(
+                onClick = {
+                    onAddUserScript(userScriptUrl)
+                    userScriptUrl = ""
+                },
+                enabled = userScriptUrl.startsWith("https://", ignoreCase = true),
+            ) { Text("Add") }
+        }
+        userScriptUrls.forEach { url ->
+            ListItem(
+                headlineContent = { Text(url, maxLines = 1) },
+                trailingContent = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = url !in disabledUserScriptUrls,
+                            onCheckedChange = { onSetUserScriptEnabled(url, it) },
+                        )
+                        IconButton(onClick = { onRemoveUserScript(url) }) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove userscript")
+                        }
+                    }
+                },
+            )
+        }
+        if (userScriptUrls.isNotEmpty()) {
+            TextButton(onClick = onRefreshUserScripts) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Reload userscripts")
+            }
+        }
     }
     SettingSection("Firefox extensions") {
         var extensionUrl by rememberSaveable { mutableStateOf("") }

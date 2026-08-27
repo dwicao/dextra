@@ -23,12 +23,6 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["contextmenu-unblock.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
       "all_frames": true,
       "matches": ["http://*/*", "https://*/*"],
       "js": ["content.js"],

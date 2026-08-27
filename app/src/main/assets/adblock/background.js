@@ -4,13 +4,9 @@
   const filterRules = new Map();
   const userScripts = [];
   const injectedScripts = new Set();
+  const MAX_FILTER_BYTES = 8 * 1024 * 1024;
+  const MAX_SCRIPT_BYTES = 512 * 1024;
   let filterLoadGeneration = 0;
-  const hardBlockedHosts = new Set([
-    "adservice.google.com",
-    "browser.sentry-cdn.com",
-    "udc.yahoo.com",
-    "ads.tiktok.com",
-  ]);
   let enabled = true;
 
   const addHostRule = (value, thirdParty, rules) => {
@@ -44,38 +40,14 @@
 
   const isSameSite = (left, right) => left === right || left.endsWith(`.${right}`) || right.endsWith(`.${left}`);
 
-  const matchesHost = (hostname, host) => hostname === host || hostname.endsWith(`.${host}`);
-
-  const isHardBlocked = (url) => {
-    if ([...hardBlockedHosts].some((host) => matchesHost(url.hostname, host))) return true;
-    if (url.hostname === "d3ward.github.io") {
-      return url.pathname === "/pagead.js" || url.pathname.startsWith("/widget/ads");
-    }
-    return false;
-  };
-
-  const isExplicitTestBlocked = (request) => {
-    if (!enabled || request.type === "main_frame") return false;
-    try {
-      const url = new URL(request.url);
-      if (url.hostname === "d3ward.github.io") {
-        return url.pathname === "/pagead.js" || url.pathname.startsWith("/widget/ads");
-      }
-      return [...hardBlockedHosts].some((host) => matchesHost(url.hostname, host));
-    } catch (_) {
-      return false;
-    }
-  };
-
   const shouldBlock = (request) => {
-    if (!enabled || request.type === "main_frame") return false;
+    if (!enabled || filterRules.size === 0 || request.type === "main_frame") return false;
     let target;
     try {
       target = new URL(request.url);
     } catch (_) {
       return false;
     }
-    if (isHardBlocked(target)) return true;
     if (!request.documentUrl) return false;
 
     let documentHost;
@@ -99,10 +71,12 @@
     const generation = ++filterLoadGeneration;
     const nextRules = new Map();
     for (const url of urls) {
+      if (!/^https:\/\//i.test(url)) continue;
       try {
         const response = await fetch(url);
-        if (!response.ok) continue;
+        if (!response.ok || !/^https:\/\//i.test(response.url)) continue;
         const text = await response.text();
+        if (text.length > MAX_FILTER_BYTES) continue;
         text.split(/\r?\n/).forEach((line) => parseFilterLine(line, nextRules));
       } catch (_) {
         // Keep the blocker fail-open when a remote list cannot be fetched.
@@ -138,7 +112,7 @@
         if (key === "match") metadata.matches.push(value);
         if (key === "exclude") metadata.excludes.push(value);
         if (key === "include") metadata.includes.push(value);
-        if (key === "require" && /^https?:\/\/\S+$/i.test(value)) metadata.requires.push(value);
+         if (key === "require" && /^https:\/\/\S+$/i.test(value)) metadata.requires.push(value);
         if (key === "run-at" && ["document-start", "document-end", "document-idle"].includes(value)) metadata.runAt = value.replace("-", "_");
         if (key === "noframes") metadata.noframes = true;
       }
@@ -164,7 +138,7 @@
   };
 
   const injectUserScripts = async (tabId, url, phase) => {
-    if (!url || !/^https?:\/\//i.test(url)) return;
+    if (!url || !/^https:\/\//i.test(url)) return;
     for (const script of userScripts) {
       if (script.runAt !== phase || !matchesUserScript(script, url)) continue;
       const key = `${tabId}|${url}|${script.sourceUrl}|${phase}`;
@@ -199,15 +173,21 @@
   const loadUserScripts = async (urls) => {
     const loaded = [];
     for (const url of urls) {
+      if (!/^https:\/\//i.test(url)) continue;
       try {
         const response = await fetch(url);
-        if (!response.ok) continue;
+        if (!response.ok || !/^https:\/\//i.test(response.url)) continue;
         const source = await response.text();
+        if (source.length > MAX_SCRIPT_BYTES) continue;
         const script = parseUserScript(source, url);
         const dependencies = [];
         for (const dependencyUrl of script.requires) {
+          if (!/^https:\/\//i.test(dependencyUrl)) continue;
           const dependencyResponse = await fetch(dependencyUrl);
-          if (dependencyResponse.ok) dependencies.push(await dependencyResponse.text());
+          if (dependencyResponse.ok && /^https:\/\//i.test(dependencyResponse.url)) {
+            const dependency = await dependencyResponse.text();
+            if (dependency.length <= MAX_SCRIPT_BYTES) dependencies.push(dependency);
+          }
         }
         loaded.push({ ...script, code: `${dependencies.join("\n")}\n${source}` });
       } catch (_) {
@@ -272,22 +252,4 @@
     ["blocking"],
   );
 
-  browser.webRequest.onBeforeRequest.addListener(
-    (request) => (isExplicitTestBlocked(request) ? { cancel: true } : {}),
-    {
-      urls: [
-        "*://d3ward.github.io/pagead.js*",
-        "*://d3ward.github.io/widget/ads*",
-        "*://adservice.google.com/*",
-        "*://*.adservice.google.com/*",
-        "*://browser.sentry-cdn.com/*",
-        "*://*.browser.sentry-cdn.com/*",
-        "*://udc.yahoo.com/*",
-        "*://*.udc.yahoo.com/*",
-        "*://ads.tiktok.com/*",
-        "*://*.ads.tiktok.com/*",
-      ],
-    },
-    ["blocking"],
-  );
 })();
