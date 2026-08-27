@@ -107,6 +107,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -139,6 +140,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
@@ -1191,6 +1193,9 @@ private fun ExtensionPopupView(
     onClose: () -> Unit,
 ) {
     val popupBackground = MaterialTheme.colorScheme.surface.toArgb()
+    val configuration = LocalConfiguration.current
+    val popupWidth = (configuration.screenWidthDp - 24).coerceIn(300, 480).dp
+    val popupHeight = (configuration.screenHeightDp - 96).coerceIn(360, 680).dp
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1199,14 +1204,13 @@ private fun ExtensionPopupView(
     ) {
         Surface(
             modifier = Modifier
-                .widthIn(min = 240.dp, max = 360.dp)
-                .fillMaxWidth()
-                .heightIn(max = 520.dp),
+                .width(popupWidth)
+                .height(popupHeight),
             shape = RoundedCornerShape(16.dp),
             tonalElevation = 8.dp,
             shadowElevation = 10.dp,
         ) {
-            Column(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxSize()) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1221,16 +1225,23 @@ private fun ExtensionPopupView(
                         Icon(Icons.Outlined.Close, contentDescription = "Close extension popup")
                     }
                 }
-                AndroidView(
-                    factory = { context ->
-                        GeckoView(context).apply {
-                            setBackgroundColor(popupBackground)
-                            setSession(popup.session)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().height(420.dp),
-                    onRelease = { it.releaseSession() },
-                )
+                key(popup.extensionId, popup.session) {
+                    AndroidView(
+                        factory = { context ->
+                            GeckoView(context).apply {
+                                setBackgroundColor(popupBackground)
+                                setSession(popup.session)
+                                popup.session.compositorController.setClearColor(popupBackground)
+                            }
+                        },
+                        update = { view ->
+                            view.setBackgroundColor(popupBackground)
+                            view.session?.compositorController?.setClearColor(popupBackground)
+                        },
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        onRelease = { it.releaseSession() },
+                    )
+                }
             }
         }
     }
@@ -1261,15 +1272,22 @@ private fun BrowserViewport(
                         tabId = tab.id,
                         onSecondaryClick = onShowContextMenu,
                         backgroundColor = pageBackground,
-                    ).apply { setSession(tab.session) }
+                    ).apply {
+                        setBackgroundColor(pageBackground)
+                        coverUntilFirstPaint(pageBackground)
+                        setSession(tab.session)
+                        tab.session.compositorController.setClearColor(pageBackground)
+                    }
                 },
                 update = { view ->
                     view.setBackgroundColor(pageBackground)
                     view.setTabId(tab.id)
                     if (view.session !== tab.session) {
+                        view.coverUntilFirstPaint(pageBackground)
                         view.releaseSession()
                         view.setSession(tab.session)
                     }
+                    view.session?.compositorController?.setClearColor(pageBackground)
                 },
                 modifier = Modifier.fillMaxSize(),
                 onRelease = { it.releaseSession() },

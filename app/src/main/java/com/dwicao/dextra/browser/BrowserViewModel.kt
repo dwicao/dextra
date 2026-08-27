@@ -424,6 +424,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         openSession: Boolean = true,
     ): String {
         val id = UUID.randomUUID().toString()
+        val previousActiveTabId = _state.value.activeTabId
         val session = createSession(id, privateMode, openSession)
         val resolvedInitialUri = initialUri
             ?.let { BrowserUrl.resolve(it, _state.value.settings.searchEngine) }
@@ -444,6 +445,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 overlay = BrowserOverlay.NONE,
             )
         }
+        updateExtensionActiveTab(previousActiveTabId, id)
         if (resolvedInitialUri != null && openSession) session.loadUri(resolvedInitialUri)
         return id
     }
@@ -451,8 +453,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun createPrivateTab() = createTab(privateMode = true)
 
     fun selectTab(id: String) {
-        if (_state.value.tabs.any { it.id == id }) {
+        val current = _state.value
+        if (current.tabs.any { it.id == id }) {
+            if (current.activeTabId == id) {
+                _state.update { it.copy(overlay = BrowserOverlay.NONE) }
+                return
+            }
+            val previousActiveTabId = current.activeTabId
             _state.update { it.copy(activeTabId = id, overlay = BrowserOverlay.NONE) }
+            updateExtensionActiveTab(previousActiveTabId, id)
         }
     }
 
@@ -460,10 +469,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val current = _state.value
         val closing = current.tabs.firstOrNull { it.id == id } ?: return
         if (current.tabs.size == 1) {
+            val previousActiveTabId = current.activeTabId
             val replacementId = UUID.randomUUID().toString()
             val replacementSession = createSession(replacementId, privateMode = false)
             val replacement = BrowserTabState(id = replacementId, session = replacementSession)
+            setExtensionTabActive(previousActiveTabId, false)
             _state.update { it.copy(tabs = listOf(replacement), activeTabId = replacementId, overlay = BrowserOverlay.NONE) }
+            setExtensionTabActive(replacementId, true)
             runCatching { closing.session.close() }
             return
         }
@@ -474,7 +486,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         } else {
             current.activeTabId
         }
+        if (current.activeTabId != newActive) {
+            setExtensionTabActive(current.activeTabId, false)
+        }
         _state.update { it.copy(tabs = remaining, activeTabId = newActive) }
+        if (current.activeTabId != newActive) {
+            setExtensionTabActive(newActive, true)
+        }
         runCatching { closing.session.close() }
     }
 
@@ -1019,18 +1037,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { dao.deleteDownload(download.downloadId) }
     }
 
-    private fun createSession(tabId: String, privateMode: Boolean, openSession: Boolean = true): GeckoSession {
+    private fun createSession(
+        tabId: String,
+        privateMode: Boolean,
+        openSession: Boolean = true,
+        extensionPopup: Boolean = false,
+    ): GeckoSession {
         val settings = _state.value.settings
+        val desktopViewport = extensionPopup || settings.desktopSites
         val session = GeckoSession(
             GeckoSessionSettings.Builder()
                 .usePrivateMode(privateMode)
                 .allowJavascript(true)
-                .userAgentMode(if (settings.desktopSites) {
+                .userAgentMode(if (desktopViewport) {
                     GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
                 } else {
                     GeckoSessionSettings.USER_AGENT_MODE_MOBILE
                 })
-                .viewportMode(if (settings.desktopSites) {
+                .viewportMode(if (desktopViewport) {
                     GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
                 } else {
                     GeckoSessionSettings.VIEWPORT_MODE_MOBILE
@@ -1070,6 +1094,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun updateTab(tabId: String, transform: (BrowserTabState) -> BrowserTabState) {
         _state.update { current ->
             current.copy(tabs = current.tabs.map { tab -> if (tab.id == tabId) transform(tab) else tab })
+        }
+    }
+
+    private fun updateExtensionActiveTab(previousId: String?, activeId: String?) {
+        if (previousId == activeId) return
+        setExtensionTabActive(previousId, false)
+        setExtensionTabActive(activeId, true)
+    }
+
+    private fun setExtensionTabActive(tabId: String?, active: Boolean) {
+        _state.value.tabs.firstOrNull { it.id == tabId }?.session?.let { session ->
+            runtime.webExtensionController.setTabActive(session, active)
         }
     }
 
@@ -1347,6 +1383,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         extensionActions = it.extensionActions.filter { action -> action.extensionId in installedExtensionObjects },
                     )
                 }
+                setExtensionTabActive(_state.value.activeTabId, true)
             },
             { error -> Log.e("Dextra", "Could not list Firefox extensions", error) },
         )
@@ -1414,7 +1451,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun openExtensionPopup(extension: WebExtension): GeckoResult<GeckoSession>? {
         closeExtensionPopup()
-        val session = createSession("extension-popup-${extension.id}", privateMode = false)
+        val session = createSession("extension-popup-${extension.id}", privateMode = false, extensionPopup = true)
         _state.update {
             it.copy(
                 extensionPopup = ExtensionPopupState(
