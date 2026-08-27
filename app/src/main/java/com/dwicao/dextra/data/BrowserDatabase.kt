@@ -34,6 +34,7 @@ data class Bookmark(
     val url: String,
     val title: String,
     val createdAt: Long,
+    val folder: String? = null,
 )
 
 @Entity(tableName = "downloads")
@@ -81,8 +82,17 @@ interface BrowserDao {
     @Query("DELETE FROM bookmarks WHERE url = :url")
     suspend fun deleteBookmark(url: String)
 
+    @Query("UPDATE bookmarks SET folder = :folder WHERE url = :url")
+    suspend fun updateBookmarkFolder(url: String, folder: String?)
+
+    @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
+    suspend fun getBookmarks(): List<Bookmark>
+
     @Query("DELETE FROM history")
     suspend fun clearHistory()
+
+    @Query("DELETE FROM history WHERE id = :id")
+    suspend fun deleteHistory(id: Long)
 
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
     fun observeDownloads(): Flow<List<DownloadEntry>>
@@ -100,7 +110,7 @@ interface BrowserDao {
     suspend fun deleteDownload(downloadId: Long)
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class], version = 4, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class], version = 5, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -113,7 +123,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).fallbackToDestructiveMigration().build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -147,6 +157,12 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE downloads ADD COLUMN speedBytesPerSecond INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE bookmarks ADD COLUMN folder TEXT")
             }
         }
     }

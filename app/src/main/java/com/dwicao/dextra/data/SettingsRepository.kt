@@ -44,6 +44,7 @@ data class BrowserSettings(
     val extensionInstallRecords: Map<String, ExtensionInstallRecord> = emptyMap(),
     val openTabs: List<SavedTab> = emptyList(),
     val activeTabIndex: Int = 0,
+    val tabGroups: List<SavedTabGroup> = emptyList(),
 )
 
 data class ExtensionInstallRecord(
@@ -56,6 +57,14 @@ data class SavedTab(
     val url: String,
     val isPrivate: Boolean = false,
     val pinned: Boolean = false,
+    val groupId: String? = null,
+)
+
+data class SavedTabGroup(
+    val id: String,
+    val title: String,
+    val color: Long = 0xFF4E4BB5L,
+    val collapsed: Boolean = false,
 )
 
 enum class DnsProvider(val label: String, val dohUri: String) {
@@ -97,6 +106,7 @@ class SettingsRepository(private val context: Context) {
         val extensionInstallRecords = stringPreferencesKey("extension_install_records")
         val openTabs = stringPreferencesKey("open_tabs")
         val activeTabIndex = intPreferencesKey("active_tab_index")
+        val tabGroups = stringPreferencesKey("tab_groups")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -115,6 +125,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setDesktopSites(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.desktopSites] = enabled }
+    }
+
+    suspend fun setHomepage(homepage: String) {
+        context.settingsDataStore.edit { it[Keys.homepage] = homepage }
     }
 
     suspend fun setTabBarWithAddressBar(enabled: Boolean) {
@@ -223,7 +237,11 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    suspend fun saveOpenTabs(tabs: List<SavedTab>, activeTabIndex: Int) {
+    suspend fun saveOpenTabs(
+        tabs: List<SavedTab>,
+        activeTabIndex: Int,
+        groups: List<SavedTabGroup> = emptyList(),
+    ) {
         context.settingsDataStore.edit { preferences ->
             val payload = JSONArray().apply {
                 tabs.forEach { tab ->
@@ -231,11 +249,24 @@ class SettingsRepository(private val context: Context) {
                         JSONObject()
                             .put("url", tab.url)
                             .put("private", tab.isPrivate)
-                            .put("pinned", tab.pinned),
+                            .put("pinned", tab.pinned)
+                            .put("groupId", tab.groupId),
+                    )
+                }
+            }
+            val groupPayload = JSONArray().apply {
+                groups.forEach { group ->
+                    put(
+                        JSONObject()
+                            .put("id", group.id)
+                            .put("title", group.title)
+                            .put("color", group.color)
+                            .put("collapsed", group.collapsed),
                     )
                 }
             }
             preferences[Keys.openTabs] = payload.toString()
+            preferences[Keys.tabGroups] = groupPayload.toString()
             preferences[Keys.activeTabIndex] = activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
         }
     }
@@ -261,6 +292,7 @@ class SettingsRepository(private val context: Context) {
         extensionInstallRecords = extensionInstallRecords(),
         openTabs = savedTabs(),
         activeTabIndex = get(Keys.activeTabIndex) ?: 0,
+        tabGroups = savedTabGroups(),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -311,6 +343,21 @@ class SettingsRepository(private val context: Context) {
                 url = url,
                 isPrivate = tab.optBoolean("private"),
                 pinned = tab.optBoolean("pinned"),
+                groupId = tab.optString("groupId").takeIf(String::isNotBlank),
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    private fun Preferences.savedTabGroups(): List<SavedTabGroup> = runCatching {
+        val groups = JSONArray(get(Keys.tabGroups).orEmpty())
+        (0 until groups.length()).mapNotNull { index ->
+            val group = groups.optJSONObject(index) ?: return@mapNotNull null
+            val id = group.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            SavedTabGroup(
+                id = id,
+                title = group.optString("title").ifBlank { "Tab group" },
+                color = group.optLong("color", 0xFF4E4BB5L),
+                collapsed = group.optBoolean("collapsed"),
             )
         }
     }.getOrDefault(emptyList())

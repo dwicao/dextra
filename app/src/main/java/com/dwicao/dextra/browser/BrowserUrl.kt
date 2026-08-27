@@ -23,11 +23,12 @@ object BrowserUrl {
 
     fun displayValue(url: String): String = url
         .removePrefix("https://")
-        .removePrefix("http://")
         .removeSuffix("/")
 
-    private fun looksLikeHost(value: String): Boolean =
-        !value.any(Char::isWhitespace) &&
-            value.contains('.') &&
-            !value.contains("/")
+    private fun looksLikeHost(value: String): Boolean {
+        if (value.any(Char::isWhitespace)) return false
+        val candidate = runCatching { URI("https://$value") }.getOrNull() ?: return false
+        val host = candidate.host ?: return false
+        return host.contains('.') || host.equals("localhost", ignoreCase = true) || host.all { it.isDigit() || it == '.' }
+    }
 }

@@ -37,4 +37,20 @@ class BrowserUrlTest {
             BrowserUrl.resolve("gecko browser", SearchEngine.BRAVE),
         )
     }
+
+    @Test
+    fun addsHttpsToHostWithPathAndPort() {
+        assertEquals(
+            "https://localhost:8080/docs",
+            BrowserUrl.resolve("localhost:8080/docs", SearchEngine.GOOGLE),
+        )
+    }
+
+    @Test
+    fun preservesHttpUrlsInAddressBarInput() {
+        assertEquals(
+            "http://example.com/docs",
+            BrowserUrl.resolve("http://example.com/docs", SearchEngine.GOOGLE),
+        )
+    }
 }
