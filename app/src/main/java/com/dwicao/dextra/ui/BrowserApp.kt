@@ -464,8 +464,9 @@ private fun BrowserScreen(
                     onNewTab = { onNewTab() },
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
-                    onToggleBookmark = onToggleBookmark,
-                    onMenu = { menuExpanded = true },
+                     onToggleBookmark = onToggleBookmark,
+                     onShowDownloads = { onSetOverlay(BrowserOverlay.DOWNLOADS) },
+                     onMenu = { menuExpanded = true },
                     addressFocusRequester = addressFocusRequester,
                     showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                 )
@@ -610,6 +611,7 @@ private fun DesktopBrowserLayout(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onToggleBookmark: () -> Unit,
+    onShowDownloads: () -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
     showTabBarWithAddressBar: Boolean,
@@ -629,6 +631,7 @@ private fun DesktopBrowserLayout(
             onForward = onForward,
             onReload = onReload,
             onToggleBookmark = onToggleBookmark,
+            onShowDownloads = onShowDownloads,
             extensionActions = extensionActions,
             onClickExtensionAction = onClickExtensionAction,
             onMenu = onMenu,
@@ -738,6 +741,7 @@ private fun DesktopToolbar(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onToggleBookmark: () -> Unit,
+    onShowDownloads: () -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
     onMenu: () -> Unit,
@@ -792,10 +796,144 @@ private fun DesktopToolbar(
                 enabled = activeTab?.hasPage == true,
                 onClick = onToggleBookmark,
             )
+            Box {
+                var allTabsExpanded by remember { mutableStateOf(false) }
+                BrowserNavButton(Icons.Outlined.Tab, "All tabs", enabled = true) {
+                    allTabsExpanded = true
+                }
+                AllTabsDropdown(
+                    expanded = allTabsExpanded,
+                    tabs = tabs,
+                    activeTabId = activeTabId,
+                    onDismiss = { allTabsExpanded = false },
+                    onSelectTab = { id ->
+                        allTabsExpanded = false
+                        onSelectTab(id)
+                    },
+                    onCloseTab = onCloseTab,
+                )
+            }
+            BrowserNavButton(Icons.Outlined.Download, "Downloads", enabled = true, onClick = onShowDownloads)
             extensionActions.forEach { action ->
                 ExtensionActionButton(action, onClickExtensionAction)
             }
             BrowserNavButton(Icons.Outlined.MoreVert, "More", enabled = true, onClick = onMenu)
+        }
+    }
+}
+
+@Composable
+private fun AllTabsDropdown(
+    expanded: Boolean,
+    tabs: List<BrowserTabState>,
+    activeTabId: String?,
+    onDismiss: () -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(expanded) {
+        if (!expanded) query = ""
+    }
+    val filteredTabs = tabs.filter { tab ->
+        query.isBlank() || tab.title.contains(query, ignoreCase = true) || tab.url.contains(query, ignoreCase = true)
+    }
+    if (!expanded) return
+    Popup(
+        popupPositionProvider = BelowAnchorPositionProvider(),
+        properties = PopupProperties(focusable = true),
+        onDismissRequest = onDismiss,
+    ) {
+        Surface(
+            modifier = Modifier.size(width = 360.dp, height = 560.dp),
+            shape = RoundedCornerShape(12.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+        ) {
+            Column(Modifier.fillMaxSize().padding(8.dp)) {
+            BasicTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .padding(horizontal = 10.dp),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                decorationBox = { innerTextField ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                            if (query.isBlank()) {
+                                Text("Search tabs", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            innerTextField()
+                        }
+                    }
+                },
+            )
+            Spacer(Modifier.height(6.dp))
+            if (filteredTabs.isEmpty()) {
+                Text(
+                    "No matching tabs",
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxWidth().height(460.dp)) {
+                    items(filteredTabs, key = { it.id }) { tab ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (tab.id == activeTabId) MaterialTheme.colorScheme.primaryContainer
+                                    else Color.Transparent,
+                                )
+                                .clickable { onSelectTab(tab.id) }
+                                .padding(start = 8.dp, end = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (tab.favicon != null && !tab.isPrivate) {
+                                Image(
+                                    bitmap = tab.favicon.asImageBitmap(),
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                )
+                            } else {
+                                Icon(
+                                    if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                            ) {
+                                Text(tab.title.ifBlank { "New tab" }, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    tab.url.ifBlank { "Start browsing" },
+                                    maxLines = 1,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            BrowserNavButton(Icons.Outlined.Close, "Close tab", enabled = true) {
+                                onCloseTab(tab.id)
+                            }
+                        }
+                    }
+                }
+            }
+            }
         }
     }
 }
@@ -1448,6 +1586,22 @@ private class ContextMenuPositionProvider(
         return IntOffset(
             x.coerceIn(8, maxX),
             (y + 8).coerceIn(8, maxY),
+        )
+    }
+}
+
+private class BelowAnchorPositionProvider : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val maxX = (windowSize.width - popupContentSize.width - 8).coerceAtLeast(8)
+        val maxY = (windowSize.height - popupContentSize.height - 8).coerceAtLeast(8)
+        return IntOffset(
+            (anchorBounds.right - popupContentSize.width).coerceIn(8, maxX),
+            (anchorBounds.bottom + 4).coerceIn(8, maxY),
         )
     }
 }
