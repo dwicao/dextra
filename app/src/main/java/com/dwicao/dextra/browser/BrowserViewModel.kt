@@ -1044,7 +1044,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         extensionPopup: Boolean = false,
     ): GeckoSession {
         val settings = _state.value.settings
-        val desktopViewport = extensionPopup || settings.desktopSites
+        // Extension popups use a device-width viewport so their CSS is not scaled down from 980px.
+        val desktopViewport = settings.desktopSites && !extensionPopup
         val session = GeckoSession(
             GeckoSessionSettings.Builder()
                 .usePrivateMode(privateMode)
