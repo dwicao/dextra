@@ -657,6 +657,7 @@ private fun DesktopBrowserLayout(
                 onClickExtensionAction = onClickExtensionAction,
                 onMenu = onMenu,
                 addressFocusRequester = addressFocusRequester,
+                stretchAddressBar = verticalTabs,
             )
             activeTab?.takeIf { it.isLoading }?.let {
                 LinearProgressIndicator(
@@ -768,6 +769,7 @@ private fun DesktopToolbar(
     onClickExtensionAction: (String) -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
+    stretchAddressBar: Boolean = false,
 ) {
     BoxWithConstraints(
         modifier = modifier
@@ -792,7 +794,7 @@ private fun DesktopToolbar(
             )
             AddressBar(
                 tab = activeTab,
-                modifier = Modifier.width(addressBarWidth),
+                modifier = if (stretchAddressBar) Modifier.weight(1f) else Modifier.width(addressBarWidth),
                 onNavigate = onNavigate,
                 onToggleBookmark = onToggleBookmark,
                 focusRequester = addressFocusRequester,
