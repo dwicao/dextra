@@ -222,6 +222,16 @@
     try {
       const port = browser.runtime.connectNative("dextra");
       port.onMessage.addListener((message) => {
+        if (message?.type === "setZoom") {
+          const zoomFactor = Number(message.zoomFactor);
+          if (!Number.isFinite(zoomFactor)) return;
+          browser.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+            const tabId = tabs[0]?.id;
+            if (typeof tabId !== "number") return;
+            return browser.tabs.setZoom(tabId, Math.min(2, Math.max(0.5, zoomFactor)));
+          }).catch(() => {});
+          return;
+        }
         if (message?.type === "updateUserscripts") {
           loadUserScripts(Array.isArray(message.urls) ? message.urls : []);
           return;

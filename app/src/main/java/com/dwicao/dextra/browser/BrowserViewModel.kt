@@ -24,6 +24,7 @@ import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.ExtensionInstallRecord
 import com.dwicao.dextra.data.HistoryEntry
 import com.dwicao.dextra.data.SearchEngine
+import com.dwicao.dextra.data.SavedTab
 import com.dwicao.dextra.data.SettingsRepository
 import com.dwicao.dextra.data.ThemeMode
 import kotlinx.coroutines.flow.Flow
@@ -159,6 +160,17 @@ data class ExtensionPopupState(
     val session: GeckoSession,
 )
 
+data class FindInPageState(
+    val query: String = "",
+    val current: Int = 0,
+    val total: Int = 0,
+)
+
+private data class ClosedTabEntry(
+    val url: String,
+    val isPrivate: Boolean,
+)
+
 data class ExtensionInstallPrompt(
     val id: String,
     val extensionId: String,
@@ -199,6 +211,8 @@ data class BrowserUiState(
     val lastCrashReport: String? = null,
     val extensionActions: List<ExtensionToolbarAction> = emptyList(),
     val extensionPopup: ExtensionPopupState? = null,
+    val findInPage: FindInPageState? = null,
+    val addressFocusRequest: Long = 0,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -210,7 +224,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val removedDownloadIds = ConcurrentHashMap.newKeySet<Long>()
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val extensionActionObjects = mutableMapOf<String, WebExtension.Action>()
+    private val recentlyClosedTabs = ArrayDeque<ClosedTabEntry>()
+    private val pageZoomByTab = mutableMapOf<String, Int>()
     private val restoringExtensionIds = ConcurrentHashMap.newKeySet<String>()
+    private var restoredSavedTabs = false
+    private var pendingIncomingUri: String? = null
     @Volatile
     private var pendingExtensionPackagePath: String? = null
     @Volatile
@@ -235,6 +253,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             })
             syncAdBlockSettings(_state.value.settings)
             syncUserScripts(_state.value.settings)
+            syncActiveTabZoom()
         }
     }
 
@@ -369,6 +388,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val userScriptsChanged = _state.value.settings.userScriptUrls != settings.userScriptUrls ||
                     _state.value.settings.disabledUserScriptUrls != settings.disabledUserScriptUrls
                 _state.update { current -> current.copy(settings = settings) }
+                if (!restoredSavedTabs) {
+                    restoredSavedTabs = true
+                    restoreSavedTabs(settings.openTabs, settings.activeTabIndex)
+                    pendingIncomingUri?.let { uri ->
+                        pendingIncomingUri = null
+                        openIncomingUri(uri)
+                    }
+                }
                 _state.value.tabs.forEach { tab ->
                     applyDesktopSiteSetting(tab.session, settings.desktopSites)
                     if (desktopSitesChanged && tab.hasPage) tab.session.reload()
@@ -408,6 +435,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun handleIncomingIntent(intent: Intent?) {
         val uri = intent?.dataString ?: return
         if (!uri.startsWith("http://") && !uri.startsWith("https://")) return
+        if (!restoredSavedTabs) {
+            pendingIncomingUri = uri
+            return
+        }
+        openIncomingUri(uri)
+    }
+
+    private fun openIncomingUri(uri: String) {
         val active = activeTab() ?: return
         if (active.hasPage) {
             createTab(initialUri = uri)
@@ -446,6 +481,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
         }
         updateExtensionActiveTab(previousActiveTabId, id)
+        persistOpenTabs()
         if (resolvedInitialUri != null && openSession) session.loadUri(resolvedInitialUri)
         return id
     }
@@ -459,15 +495,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 _state.update { it.copy(overlay = BrowserOverlay.NONE) }
                 return
             }
+            closeExtensionPopup()
+            closeFindInPage()
             val previousActiveTabId = current.activeTabId
             _state.update { it.copy(activeTabId = id, overlay = BrowserOverlay.NONE) }
             updateExtensionActiveTab(previousActiveTabId, id)
+            persistOpenTabs()
         }
+    }
+
+    fun cycleTab(forward: Boolean) {
+        val current = _state.value
+        if (current.tabs.size < 2) return
+        val currentIndex = current.tabs.indexOfFirst { it.id == current.activeTabId }
+        if (currentIndex < 0) return
+        val offset = if (forward) 1 else -1
+        val nextIndex = (currentIndex + offset + current.tabs.size) % current.tabs.size
+        selectTab(current.tabs[nextIndex].id)
+    }
+
+    fun reopenClosedTab() {
+        val closed = recentlyClosedTabs.removeFirstOrNull() ?: return
+        createTab(privateMode = closed.isPrivate, initialUri = closed.url.takeIf(String::isNotBlank))
     }
 
     fun closeTab(id: String) {
         val current = _state.value
         val closing = current.tabs.firstOrNull { it.id == id } ?: return
+        pageZoomByTab.remove(id)
+        rememberClosedTab(closing)
+        if (closing.id == current.activeTabId) {
+            closeExtensionPopup()
+            closeFindInPage()
+        }
         if (current.tabs.size == 1) {
             val previousActiveTabId = current.activeTabId
             val replacementId = UUID.randomUUID().toString()
@@ -476,6 +536,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             setExtensionTabActive(previousActiveTabId, false)
             _state.update { it.copy(tabs = listOf(replacement), activeTabId = replacementId, overlay = BrowserOverlay.NONE) }
             setExtensionTabActive(replacementId, true)
+            syncActiveTabZoom()
+            persistOpenTabs()
             runCatching { closing.session.close() }
             return
         }
@@ -492,7 +554,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(tabs = remaining, activeTabId = newActive) }
         if (current.activeTabId != newActive) {
             setExtensionTabActive(newActive, true)
+            syncActiveTabZoom()
         }
+        persistOpenTabs()
         runCatching { closing.session.close() }
     }
 
@@ -505,6 +569,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     .sortedWith(compareByDescending { tab -> tab.pinned }),
             )
         }
+        persistOpenTabs()
     }
 
     fun navigateActive(input: String) {
@@ -518,6 +583,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateTab(tabId) {
             it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false)
         }
+        persistOpenTabs()
         tab.session.loadUri(url)
     }
 
@@ -530,6 +596,87 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun goForward() {
         activeTab()?.takeIf { it.canGoForward }?.session?.goForward(true)
+    }
+
+    fun adjustPageZoom(step: Int) {
+        val tab = activeTab() ?: return
+        val current = pageZoomByTab[tab.id] ?: 100
+        val next = (current + step).coerceIn(50, 200)
+        if (next == current) return
+        pageZoomByTab[tab.id] = next
+        syncActiveTabZoom()
+        showSnackbar("Zoom ${next}%")
+    }
+
+    fun resetPageZoom() {
+        val tab = activeTab() ?: return
+        pageZoomByTab.remove(tab.id)
+        syncActiveTabZoom()
+        showSnackbar("Zoom 100%")
+    }
+
+    fun openFindInPage() {
+        if (activeTab()?.hasPage != true) return
+        _state.update { it.copy(findInPage = it.findInPage ?: FindInPageState()) }
+    }
+
+    fun focusAddressBar() {
+        _state.update { it.copy(addressFocusRequest = it.addressFocusRequest + 1) }
+    }
+
+    fun updateFindInPage(query: String) {
+        val tab = activeTab() ?: return
+        _state.update { it.copy(findInPage = FindInPageState(query = query)) }
+        if (query.isBlank()) {
+            tab.session.finder.clear()
+            return
+        }
+        tab.session.finder.setDisplayFlags(GeckoSession.FINDER_DISPLAY_HIGHLIGHT_ALL)
+        tab.session.finder.find(query, 0).accept(
+            { result ->
+                if (_state.value.findInPage?.query == query) {
+                    _state.update {
+                        it.copy(
+                            findInPage = it.findInPage?.copy(
+                                current = result?.current?.plus(1) ?: 0,
+                                total = result?.total ?: 0,
+                            ),
+                        )
+                    }
+                }
+            },
+            {},
+        )
+    }
+
+    fun findNext(forward: Boolean) {
+        val tab = activeTab() ?: return
+        val query = _state.value.findInPage?.query?.takeIf(String::isNotBlank) ?: return
+        tab.session.finder.find(
+            query,
+            if (forward) GeckoSession.FINDER_FIND_FORWARD else GeckoSession.FINDER_FIND_BACKWARDS,
+        ).accept(
+            { result ->
+                _state.update {
+                    it.copy(findInPage = it.findInPage?.copy(
+                        current = result?.current?.plus(1) ?: 0,
+                        total = result?.total ?: 0,
+                    ))
+                }
+            },
+            {},
+        )
+    }
+
+    fun closeFindInPage() {
+        activeTab()?.session?.finder?.clear()
+        _state.update { it.copy(findInPage = null) }
+    }
+
+    fun dismissTransientUi() {
+        dismissContextMenu()
+        closeExtensionPopup()
+        closeFindInPage()
     }
 
     fun reloadOrStop() {
@@ -1098,16 +1245,83 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun rememberClosedTab(tab: BrowserTabState) {
+        if (tab.url.isBlank() || !tab.hasPage) return
+        recentlyClosedTabs.addFirst(ClosedTabEntry(tab.url, tab.isPrivate))
+        while (recentlyClosedTabs.size > 10) recentlyClosedTabs.removeLast()
+    }
+
+    private fun restoreSavedTabs(savedTabs: List<SavedTab>, activeIndex: Int) {
+        val tabsToRestore = savedTabs
+            .filter { !it.isPrivate && it.url.isNotBlank() && it.url != "about:blank" }
+            .take(32)
+        if (tabsToRestore.isEmpty()) return
+
+        val current = _state.value
+        setExtensionTabActive(current.activeTabId, false)
+        current.tabs.forEach { tab -> runCatching { tab.session.close() } }
+        val restored = tabsToRestore.map { saved ->
+            val id = UUID.randomUUID().toString()
+            val session = createSession(id, saved.isPrivate)
+            BrowserTabState(
+                id = id,
+                session = session,
+                title = "Loading...",
+                url = saved.url,
+                isLoading = true,
+                isSecure = saved.url.startsWith("https://"),
+                hasPage = true,
+                isPrivate = saved.isPrivate,
+                pinned = saved.pinned,
+            )
+        }
+        val activeTab = restored.getOrNull(activeIndex.coerceIn(0, restored.lastIndex)) ?: restored.first()
+        _state.update {
+            it.copy(
+                tabs = restored,
+                activeTabId = activeTab.id,
+                overlay = BrowserOverlay.NONE,
+            )
+        }
+        setExtensionTabActive(activeTab.id, true)
+        restored.forEach { tab -> tab.session.loadUri(tab.url) }
+    }
+
+    private fun persistOpenTabs() {
+        if (!restoredSavedTabs) return
+        val current = _state.value
+        val pageTabs = current.tabs.filter {
+            !it.isPrivate && it.hasPage && it.url.isNotBlank() && it.url != "about:blank"
+        }
+        val activeIndex = pageTabs.indexOfFirst { it.id == current.activeTabId }
+        viewModelScope.launch {
+            settingsRepository.saveOpenTabs(
+                tabs = pageTabs.map { tab -> SavedTab(tab.url, tab.isPrivate, tab.pinned) },
+                activeTabIndex = activeIndex.coerceAtLeast(0),
+            )
+        }
+    }
+
     private fun updateExtensionActiveTab(previousId: String?, activeId: String?) {
         if (previousId == activeId) return
         setExtensionTabActive(previousId, false)
         setExtensionTabActive(activeId, true)
+        syncActiveTabZoom()
     }
 
     private fun setExtensionTabActive(tabId: String?, active: Boolean) {
         _state.value.tabs.firstOrNull { it.id == tabId }?.session?.let { session ->
             runtime.webExtensionController.setTabActive(session, active)
         }
+    }
+
+    private fun syncActiveTabZoom() {
+        val zoom = pageZoomByTab[_state.value.activeTabId] ?: 100
+        adBlockPort?.postMessage(
+            JSONObject()
+                .put("type", "setZoom")
+                .put("zoomFactor", zoom / 100.0),
+        )
     }
 
     private fun showSnackbar(message: String) {
@@ -1185,7 +1399,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runtime.webExtensionController.list().accept(
             { extensions ->
                 val staleExtensions = extensions.orEmpty().filter {
-                    it.id == "adblock@dextra" && it.metaData.version != "2.5.0"
+                    it.id == "adblock@dextra" && it.metaData.version != "2.6.0"
                 }
                 removeStaleAdBlockers(staleExtensions)
             },
@@ -1744,6 +1958,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://"), crashed = false) }
             }
+            persistOpenTabs()
         }
 
         override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {

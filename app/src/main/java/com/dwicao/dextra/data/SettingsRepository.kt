@@ -5,11 +5,14 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.IOException
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
@@ -38,12 +41,20 @@ data class BrowserSettings(
     val userScriptUrls: List<String> = emptyList(),
     val disabledUserScriptUrls: Set<String> = emptySet(),
     val extensionInstallRecords: Map<String, ExtensionInstallRecord> = emptyMap(),
+    val openTabs: List<SavedTab> = emptyList(),
+    val activeTabIndex: Int = 0,
 )
 
 data class ExtensionInstallRecord(
     val filePath: String,
     val allowInPrivateBrowsing: Boolean,
     val allowDataCollection: Boolean,
+)
+
+data class SavedTab(
+    val url: String,
+    val isPrivate: Boolean = false,
+    val pinned: Boolean = false,
 )
 
 enum class DnsProvider(val label: String, val dohUri: String) {
@@ -82,6 +93,8 @@ class SettingsRepository(private val context: Context) {
         val userScriptUrls = stringPreferencesKey("user_script_urls")
         val disabledUserScripts = stringPreferencesKey("disabled_user_scripts")
         val extensionInstallRecords = stringPreferencesKey("extension_install_records")
+        val openTabs = stringPreferencesKey("open_tabs")
+        val activeTabIndex = intPreferencesKey("active_tab_index")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -204,6 +217,23 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun saveOpenTabs(tabs: List<SavedTab>, activeTabIndex: Int) {
+        context.settingsDataStore.edit { preferences ->
+            val payload = JSONArray().apply {
+                tabs.forEach { tab ->
+                    put(
+                        JSONObject()
+                            .put("url", tab.url)
+                            .put("private", tab.isPrivate)
+                            .put("pinned", tab.pinned),
+                    )
+                }
+            }
+            preferences[Keys.openTabs] = payload.toString()
+            preferences[Keys.activeTabIndex] = activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
+        }
+    }
+
     private fun Preferences.toBrowserSettings(): BrowserSettings = BrowserSettings(
         themeMode = get(Keys.theme)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
             ?: ThemeMode.SYSTEM,
@@ -222,6 +252,8 @@ class SettingsRepository(private val context: Context) {
         userScriptUrls = userScripts(),
         disabledUserScriptUrls = disabledUserScripts().intersect(userScripts().toSet()),
         extensionInstallRecords = extensionInstallRecords(),
+        openTabs = savedTabs(),
+        activeTabIndex = get(Keys.activeTabIndex) ?: 0,
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -262,6 +294,19 @@ class SettingsRepository(private val context: Context) {
         }
         ?.toMap()
         ?: emptyMap()
+
+    private fun Preferences.savedTabs(): List<SavedTab> = runCatching {
+        val tabs = JSONArray(get(Keys.openTabs).orEmpty())
+        (0 until tabs.length()).mapNotNull { index ->
+            val tab = tabs.optJSONObject(index) ?: return@mapNotNull null
+            val url = tab.optString("url").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            SavedTab(
+                url = url,
+                isPrivate = tab.optBoolean("private"),
+                pinned = tab.optBoolean("pinned"),
+            )
+        }
+    }.getOrDefault(emptyList())
 
     private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter =
         AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url, enabled)

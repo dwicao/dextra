@@ -133,6 +133,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -168,6 +169,7 @@ import com.dwicao.dextra.browser.ExtensionInstallPrompt
 import com.dwicao.dextra.browser.ExtensionPopupState
 import com.dwicao.dextra.browser.ExtensionToolbarAction
 import com.dwicao.dextra.browser.ExtensionUpdatePrompt
+import com.dwicao.dextra.browser.FindInPageState
 import com.dwicao.dextra.browser.InstalledExtension
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
@@ -274,13 +276,17 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onResolveExtensionInstall = viewModel::resolveExtensionInstall,
                 extensionUpdatePrompt = state.extensionUpdatePrompt,
                 onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
-                 onContextMenuAction = viewModel::handleContextMenuAction,
-                 onDismissContextMenu = viewModel::dismissContextMenu,
-                 onShowContextMenu = viewModel::showContextMenu,
-                 onTabContextMenu = viewModel::showTabContextMenu,
-                 extensionPopup = state.extensionPopup,
-                 onCloseExtensionPopup = viewModel::closeExtensionPopup,
-            )
+                  onContextMenuAction = viewModel::handleContextMenuAction,
+                  onDismissContextMenu = viewModel::dismissContextMenu,
+                  onShowContextMenu = viewModel::showContextMenu,
+                  onTabContextMenu = viewModel::showTabContextMenu,
+                  extensionPopup = state.extensionPopup,
+                  onCloseExtensionPopup = viewModel::closeExtensionPopup,
+                  findInPage = state.findInPage,
+                  onUpdateFindInPage = viewModel::updateFindInPage,
+                  onFindNext = viewModel::findNext,
+                  onCloseFindInPage = viewModel::closeFindInPage,
+             )
             state.lastCrashReport?.let { report ->
                 CrashReportDialog(
                     report = report,
@@ -360,6 +366,10 @@ private fun BrowserScreen(
     onTabContextMenu: (String, Int, Int) -> Unit,
     extensionPopup: ExtensionPopupState?,
     onCloseExtensionPopup: () -> Unit,
+    findInPage: FindInPageState?,
+    onUpdateFindInPage: (String) -> Unit,
+    onFindNext: (Boolean) -> Unit,
+    onCloseFindInPage: () -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
     var menuExpanded by remember { mutableStateOf(false) }
@@ -395,7 +405,7 @@ private fun BrowserScreen(
             },
     ) {
         LaunchedEffect(Unit) { rootFocusRequester.requestFocus() }
-        LaunchedEffect(activeTab?.id) {
+        LaunchedEffect(state.addressFocusRequest) {
             runCatching { addressFocusRequester.requestFocus() }
         }
         if (state.overlay == BrowserOverlay.SETTINGS) {
@@ -437,7 +447,7 @@ private fun BrowserScreen(
                 onUninstallExtension = onUninstallExtension,
             )
         } else {
-            val expanded = maxWidth >= 840.dp
+            val expanded = maxWidth >= 600.dp
             if (expanded) {
                 DesktopBrowserLayout(
                     state = state,
@@ -562,6 +572,14 @@ private fun BrowserScreen(
         }
         extensionPopup?.let { popup ->
             ExtensionPopupView(popup, onCloseExtensionPopup)
+        }
+        findInPage?.let { find ->
+            FindInPageBar(
+                find = find,
+                onQueryChange = onUpdateFindInPage,
+                onFindNext = onFindNext,
+                onClose = onCloseFindInPage,
+            )
         }
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -730,7 +748,7 @@ private fun DesktopToolbar(
             .fillMaxWidth()
             .height(52.dp),
     ) {
-        val addressBarWidth = (maxWidth * 0.2f).coerceIn(220.dp, 420.dp)
+        val addressBarWidth = (maxWidth * 0.32f).coerceIn(280.dp, 560.dp)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1039,8 +1057,9 @@ private fun TabStrip(
                                     while (true) {
                                         val event = awaitPointerEvent(PointerEventPass.Initial)
                                         val motionEvent = event.motionEvent
+                                        val buttonState = motionEvent?.buttonState ?: 0
                                         if (event.type == PointerEventType.Press &&
-                                            ((motionEvent?.buttonState ?: 0) and MotionEvent.BUTTON_SECONDARY) != 0
+                                            buttonState and MotionEvent.BUTTON_SECONDARY != 0
                                         ) {
                                             val position = event.changes.firstOrNull()?.position ?: continue
                                             event.changes.forEach { change -> change.consume() }
@@ -1050,6 +1069,11 @@ private fun TabStrip(
                                                 origin.x + position.x.toInt(),
                                                 origin.y + position.y.toInt(),
                                             )
+                                        } else if (event.type == PointerEventType.Press &&
+                                            buttonState and MotionEvent.BUTTON_TERTIARY != 0
+                                        ) {
+                                            event.changes.forEach { change -> change.consume() }
+                                            onCloseTab(tab.id)
                                         }
                                     }
                                 }
@@ -1241,6 +1265,93 @@ private fun ExtensionPopupView(
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         onRelease = { it.releaseSession() },
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FindInPageBar(
+    find: FindInPageState,
+    onQueryChange: (String) -> Unit,
+    onFindNext: (Boolean) -> Unit,
+    onClose: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(top = 16.dp, end = 16.dp),
+        contentAlignment = Alignment.TopEnd,
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .widthIn(min = 300.dp, max = 480.dp),
+            shape = RoundedCornerShape(12.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Search, contentDescription = "Find in page", modifier = Modifier.size(20.dp))
+                BasicTextField(
+                    value = find.query,
+                    onValueChange = onQueryChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 10.dp, vertical = 14.dp)
+                        .focusRequester(focusRequester)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.Enter -> {
+                                    onFindNext(!event.isShiftPressed)
+                                    true
+                                }
+                                Key.Escape -> {
+                                    keyboardController?.hide()
+                                    onClose()
+                                    true
+                                }
+                                else -> false
+                            }
+                        },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { onFindNext(true) }),
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (find.query.isEmpty()) {
+                                Text("Find in page", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            innerTextField()
+                        }
+                    },
+                )
+                Text(
+                    text = if (find.total == 0) "0/0" else "${find.current}/${find.total}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                BrowserNavButton(Icons.Outlined.ArrowBack, "Previous match", enabled = find.total > 0) {
+                    onFindNext(false)
+                }
+                BrowserNavButton(Icons.Outlined.ArrowForward, "Next match", enabled = find.total > 0) {
+                    onFindNext(true)
+                }
+                BrowserNavButton(Icons.Outlined.Close, "Close find bar", enabled = true) {
+                    keyboardController?.hide()
+                    onClose()
                 }
             }
         }

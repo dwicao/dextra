@@ -45,19 +45,88 @@ class MainActivity : ComponentActivity() {
 
     @Suppress("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN && event.isCtrlPressed) {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            if (event.isCtrlPressed) {
+                when {
+                    event.keyCode == KeyEvent.KEYCODE_TAB -> {
+                        browserViewModel.cycleTab(forward = !event.isShiftPressed)
+                        return true
+                    }
+                    event.isShiftPressed && event.keyCode == KeyEvent.KEYCODE_T -> {
+                        browserViewModel.reopenClosedTab()
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_T -> {
+                        browserViewModel.createTab()
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_W -> {
+                        browserViewModel.activeTab()?.let { browserViewModel.closeTab(it.id) }
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_R -> {
+                        browserViewModel.reloadOrStop()
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_F -> {
+                        browserViewModel.openFindInPage()
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_D -> {
+                        browserViewModel.toggleBookmark()
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_L -> {
+                        browserViewModel.focusAddressBar()
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_PAGE_UP -> {
+                        browserViewModel.cycleTab(forward = false)
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_PAGE_DOWN -> {
+                        browserViewModel.cycleTab(forward = true)
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_0 || event.keyCode == KeyEvent.KEYCODE_NUMPAD_0 -> {
+                        browserViewModel.resetPageZoom()
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_MINUS || event.keyCode == KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> {
+                        browserViewModel.adjustPageZoom(-10)
+                        return true
+                    }
+                    event.keyCode == KeyEvent.KEYCODE_PLUS ||
+                        event.keyCode == KeyEvent.KEYCODE_EQUALS ||
+                        event.keyCode == KeyEvent.KEYCODE_NUMPAD_ADD -> {
+                        browserViewModel.adjustPageZoom(10)
+                        return true
+                    }
+                }
+            }
+            if (event.isAltPressed) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        browserViewModel.goBack()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        browserViewModel.goForward()
+                        return true
+                    }
+                }
+            }
             when (event.keyCode) {
-                KeyEvent.KEYCODE_T -> {
-                    browserViewModel.createTab()
-                    return true
-                }
-                KeyEvent.KEYCODE_W -> {
-                    browserViewModel.activeTab()?.let { browserViewModel.closeTab(it.id) }
-                    return true
-                }
-                KeyEvent.KEYCODE_R -> {
+                KeyEvent.KEYCODE_F5 -> {
                     browserViewModel.reloadOrStop()
                     return true
+                }
+                KeyEvent.KEYCODE_ESCAPE -> {
+                    val state = browserViewModel.state.value
+                    if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null) {
+                        browserViewModel.dismissTransientUi()
+                        return true
+                    }
                 }
             }
         }
