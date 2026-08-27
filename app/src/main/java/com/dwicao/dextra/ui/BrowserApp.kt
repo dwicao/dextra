@@ -10,7 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.verticalScroll
@@ -52,6 +52,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
@@ -266,6 +267,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onMoveTabToGroup = viewModel::moveTabToGroup,
                  onRenameTabGroup = viewModel::renameTabGroup,
                  onToggleTabGroup = viewModel::toggleTabGroup,
+                 onDeleteTabGroup = viewModel::deleteTabGroup,
                  onToggleTabSleeping = viewModel::toggleTabSleeping,
                  onHibernateInactiveTabs = viewModel::hibernateInactiveTabs,
                  onToggleBookmark = viewModel::toggleBookmark,
@@ -370,6 +372,7 @@ private fun BrowserScreen(
     onMoveTabToGroup: (String, String?) -> Unit,
     onRenameTabGroup: (String, String) -> Unit,
     onToggleTabGroup: (String) -> Unit,
+    onDeleteTabGroup: (String) -> Unit,
     onToggleTabSleeping: (String) -> Unit,
     onHibernateInactiveTabs: () -> Unit,
     onToggleBookmark: () -> Unit,
@@ -532,8 +535,9 @@ private fun BrowserScreen(
                      onCreateTabGroup = onCreateTabGroup,
                      onMoveTabToGroup = onMoveTabToGroup,
                      onRenameTabGroup = onRenameTabGroup,
-                     onToggleTabGroup = onToggleTabGroup,
-                     onToggleTabSleeping = onToggleTabSleeping,
+                 onToggleTabGroup = onToggleTabGroup,
+                 onDeleteTabGroup = onDeleteTabGroup,
+                 onToggleTabSleeping = onToggleTabSleeping,
                      onHibernateInactiveTabs = onHibernateInactiveTabs,
                      onToggleBookmark = onToggleBookmark,
                      onShowDownloads = { onSetOverlay(BrowserOverlay.DOWNLOADS) },
@@ -694,6 +698,7 @@ private fun DesktopBrowserLayout(
     onMoveTabToGroup: (String, String?) -> Unit,
     onRenameTabGroup: (String, String) -> Unit,
     onToggleTabGroup: (String) -> Unit,
+    onDeleteTabGroup: (String) -> Unit,
     onToggleTabSleeping: (String) -> Unit,
     onHibernateInactiveTabs: () -> Unit,
     onToggleBookmark: () -> Unit,
@@ -717,6 +722,7 @@ private fun DesktopBrowserLayout(
                 onMoveTabToGroup = onMoveTabToGroup,
                 onRenameTabGroup = onRenameTabGroup,
                 onToggleTabGroup = onToggleTabGroup,
+                onDeleteTabGroup = onDeleteTabGroup,
                 onToggleTabSleeping = onToggleTabSleeping,
                 onHibernateInactiveTabs = onHibernateInactiveTabs,
                 onTabContextMenu = onTabContextMenu,
@@ -1074,6 +1080,7 @@ private fun GroupedVerticalTabStrip(
     onMoveTabToGroup: (String, String?) -> Unit,
     onRenameTabGroup: (String, String) -> Unit,
     onToggleTabGroup: (String) -> Unit,
+    onDeleteTabGroup: (String) -> Unit,
     onToggleTabSleeping: (String) -> Unit,
     onHibernateInactiveTabs: () -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
@@ -1081,6 +1088,7 @@ private fun GroupedVerticalTabStrip(
     var collapsed by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var renameGroup by remember { mutableStateOf<SavedTabGroup?>(null) }
+    var deleteGroup by remember { mutableStateOf<SavedTabGroup?>(null) }
     var renameText by rememberSaveable { mutableStateOf("") }
     var dragDistance by remember { mutableStateOf(0f) }
     val listState = rememberLazyListState()
@@ -1122,7 +1130,7 @@ private fun GroupedVerticalTabStrip(
                         )
                     }
                     BrowserNavButton(Icons.Outlined.Add, "New tab", true, onNewTab)
-                    BrowserNavButton(Icons.Outlined.Add, "New tab group", true) { onCreateTabGroup(null) }
+                    BrowserNavButton(Icons.Outlined.CreateNewFolder, "New tab group", true) { onCreateTabGroup(null) }
                     BrowserNavButton(Icons.Outlined.Pause, "Hibernate inactive tabs", true, onHibernateInactiveTabs)
                     BrowserNavButton(Icons.Outlined.ChevronLeft, "Collapse vertical tabs", true) { collapsed = true }
                 }
@@ -1223,6 +1231,13 @@ private fun GroupedVerticalTabStrip(
                                                 renameText = group.title
                                             },
                                         )
+                                        DropdownMenuItem(
+                                            text = { Text("Delete group") },
+                                            onClick = {
+                                                groupMenuExpanded = false
+                                                deleteGroup = group
+                                            },
+                                        )
                                     }
                                 }
                             }
@@ -1319,6 +1334,22 @@ private fun GroupedVerticalTabStrip(
             dismissButton = { TextButton(onClick = { renameGroup = null }) { Text("Cancel") } },
         )
     }
+    deleteGroup?.let { group ->
+        AlertDialog(
+            onDismissRequest = { deleteGroup = null },
+            title = { Text("Delete ${group.title}?") },
+            text = { Text("The group will be removed, but its tabs will stay open.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteTabGroup(group.id)
+                        deleteGroup = null
+                    },
+                ) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deleteGroup = null }) { Text("Cancel") } },
+        )
+    }
 }
 
 @Composable
@@ -1382,21 +1413,32 @@ private fun VerticalTabRow(
                 }
             }
             .pointerInput(tab.id, tabIds) {
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { onDragStart() },
-                    onDragCancel = onDragEnd,
-                    onDragEnd = onDragEnd,
+                var accumulatedDistance = 0f
+                detectDragGestures(
+                    onDragStart = {
+                        accumulatedDistance = 0f
+                        onDragStart()
+                    },
+                    onDragCancel = {
+                        accumulatedDistance = 0f
+                        onDragEnd()
+                    },
+                    onDragEnd = {
+                        accumulatedDistance = 0f
+                        onDragEnd()
+                    },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        val nextDistance = dragDistance + dragAmount.y
-                        onDragDistance(nextDistance)
-                        val currentItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == tab.id } ?: return@detectDragGesturesAfterLongPress
-                        val center = currentItem.offset + currentItem.size / 2 + nextDistance.toInt()
+                        accumulatedDistance += dragAmount.y
+                        onDragDistance(accumulatedDistance)
+                        val currentItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == tab.id } ?: return@detectDragGestures
+                        val center = currentItem.offset + currentItem.size / 2 + accumulatedDistance.toInt()
                         val target = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
                             item.key != tab.id && item.key in tabIds && center in item.offset..(item.offset + item.size)
                         }
                         if (target != null) {
                             onMoveTabBefore(tab.id, target.key as String)
+                            accumulatedDistance = 0f
                             onDragDistance(0f)
                         }
                     },
@@ -1763,28 +1805,34 @@ private fun TabStrip(
                                 }
                             }
                             .pointerInput(tab.id, tabIds) {
-                                detectDragGesturesAfterLongPress(
+                                var accumulatedDistance = 0f
+                                detectDragGestures(
                                     onDragStart = {
+                                        accumulatedDistance = 0f
                                         dragDistance = 0f
                                     },
                                     onDragCancel = {
+                                        accumulatedDistance = 0f
                                         dragDistance = 0f
                                     },
                                     onDragEnd = {
+                                        accumulatedDistance = 0f
                                         dragDistance = 0f
                                     },
                                     onDrag = { change, dragAmount ->
                                         change.consume()
-                                        dragDistance += dragAmount.x
+                                        accumulatedDistance += dragAmount.x
+                                        dragDistance = accumulatedDistance
                                         val currentItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == tab.id }
-                                            ?: return@detectDragGesturesAfterLongPress
-                                        val center = currentItem.offset + currentItem.size / 2 + dragDistance.toInt()
+                                            ?: return@detectDragGestures
+                                        val center = currentItem.offset + currentItem.size / 2 + accumulatedDistance.toInt()
                                         val target = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
                                             item.key != tab.id && item.key in tabIds &&
                                                 center in item.offset..(item.offset + item.size)
                                         }
                                         if (target != null) {
                                             onMoveTabBefore(tab.id, target.key as String)
+                                            accumulatedDistance = 0f
                                             dragDistance = 0f
                                         }
                                     },
@@ -2246,6 +2294,11 @@ private fun BrowserContextMenuPopup(
                 onClick = { onAction(ContextMenuAction.CLOSE_OTHER_TABS) },
             )
             DropdownMenuItem(
+                text = { Text("Close tabs to the left") },
+                leadingIcon = { Icon(Icons.Outlined.ChevronLeft, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.CLOSE_TABS_TO_LEFT) },
+            )
+            DropdownMenuItem(
                 text = { Text("Close tabs to the right") },
                 leadingIcon = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.CLOSE_TABS_TO_RIGHT) },
@@ -2290,7 +2343,7 @@ private fun BrowserContextMenuPopup(
                 onClick = { onAction(ContextMenuAction.COPY_MEDIA_URL) },
             )
         }
-        if (menu.linkUri.isNullOrBlank() && !menu.textContent.isNullOrBlank()) {
+        if (!menu.textContent.isNullOrBlank()) {
             DropdownMenuItem(
                 text = { Text("Copy text") },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },

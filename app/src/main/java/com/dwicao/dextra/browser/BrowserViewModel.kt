@@ -102,6 +102,7 @@ enum class ContextMenuAction {
     TOGGLE_TAB_SLEEPING,
     CLOSE_TAB,
     CLOSE_OTHER_TABS,
+    CLOSE_TABS_TO_LEFT,
     CLOSE_TABS_TO_RIGHT,
     BACK,
     FORWARD,
@@ -312,13 +313,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         "audio" -> GeckoSession.ContentDelegate.ContextElement.TYPE_AUDIO
                         else -> GeckoSession.ContentDelegate.ContextElement.TYPE_NONE
                     }
+                    val contextText = json.optString("selectedText")
+                        .takeIf(String::isNotBlank)
+                        ?: json.optString("textContent").takeIf(String::isNotBlank)
                     showContextMenu(
                         tabId = tabId,
                         x = json.optInt("x"),
                         y = json.optInt("y"),
                         linkUri = json.optString("linkUrl").takeIf(String::isNotBlank),
-                        linkText = json.optString("textContent").takeIf(String::isNotBlank),
-                        textContent = json.optString("textContent").takeIf(String::isNotBlank),
+                        linkText = contextText,
+                        textContent = contextText,
                         resourceUri = json.optString("resourceUri").takeIf(String::isNotBlank),
                         resourceType = resourceType,
                     )
@@ -695,6 +699,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistOpenTabs()
     }
 
+    fun deleteTabGroup(groupId: String) {
+        if (_state.value.settings.tabGroups.none { it.id == groupId }) return
+        _state.update { state ->
+            state.copy(
+                settings = state.settings.copy(
+                    tabGroups = state.settings.tabGroups.filterNot { it.id == groupId },
+                ),
+                tabs = state.tabs.map { tab ->
+                    if (tab.groupId == groupId) tab.copy(groupId = null) else tab
+                },
+            )
+        }
+        persistOpenTabs()
+    }
+
     fun toggleTabSleeping(id: String) {
         val current = _state.value
         if (id == current.activeTabId) {
@@ -913,6 +932,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.TOGGLE_TAB_SLEEPING -> toggleTabSleeping(menu.tabId)
             ContextMenuAction.CLOSE_TAB -> closeTab(menu.tabId)
             ContextMenuAction.CLOSE_OTHER_TABS -> closeOtherTabs(menu.tabId)
+            ContextMenuAction.CLOSE_TABS_TO_LEFT -> closeTabsToLeft(menu.tabId)
             ContextMenuAction.CLOSE_TABS_TO_RIGHT -> closeTabsToRight(menu.tabId)
             ContextMenuAction.BACK -> if (menu.canGoBack) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goBack(true)
             ContextMenuAction.FORWARD -> if (menu.canGoForward) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goForward(true)
@@ -959,6 +979,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update {
             it.copy(
                 tabs = current.tabs.take(index + 1),
+                activeTabId = newActive,
+                overlay = BrowserOverlay.NONE,
+            )
+        }
+        if (newActive != null) {
+            _state.update { state ->
+                state.copy(tabs = state.tabs.map { tab -> if (tab.id == newActive) tab.copy(isSleeping = false) else tab })
+            }
+        }
+        if (newActive != current.activeTabId) updateExtensionActiveTab(current.activeTabId, newActive)
+        updateSessionActivity(newActive)
+        persistOpenTabs()
+        closing.forEach { tab -> runCatching { tab.session.close() } }
+    }
+
+    private fun closeTabsToLeft(id: String) {
+        val current = _state.value
+        val index = current.tabs.indexOfFirst { it.id == id }
+        if (index <= 0) return
+        val closing = current.tabs.take(index)
+        val newActive = if (closing.any { it.id == current.activeTabId }) id else current.activeTabId
+        _state.update {
+            it.copy(
+                tabs = current.tabs.drop(index),
                 activeTabId = newActive,
                 overlay = BrowserOverlay.NONE,
             )
@@ -1756,7 +1800,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runtime.webExtensionController.list().accept(
             { extensions ->
                 val staleExtensions = extensions.orEmpty().filter {
-                    it.id == "adblock@dextra" && it.metaData.version != "2.6.0"
+                    it.id == "adblock@dextra" && it.metaData.version != "2.6.1"
                 }
                 removeStaleAdBlockers(staleExtensions)
             },

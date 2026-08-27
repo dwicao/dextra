@@ -39,6 +39,7 @@
       x: Math.round(event.clientX),
       y: Math.round(event.clientY),
       linkUrl: link?.href || null,
+      selectedText: window.getSelection()?.toString()?.trim() || null,
       textContent: link?.textContent?.trim() || target?.textContent?.trim() || null,
       resourceUri: media?.currentSrc || media?.src || null,
       resourceType: media?.tagName?.toLowerCase() || null,
