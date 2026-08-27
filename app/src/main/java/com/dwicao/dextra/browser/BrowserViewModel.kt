@@ -67,6 +67,7 @@ data class BrowserTabState(
     val isBookmarked: Boolean = false,
     val favicon: Bitmap? = null,
     val crashed: Boolean = false,
+    val pinned: Boolean = false,
 )
 
 enum class BrowserOverlay {
@@ -134,6 +135,20 @@ data class InstalledExtension(
     val optionsPageUrl: String?,
 )
 
+data class ExtensionToolbarAction(
+    val extensionId: String,
+    val title: String,
+    val enabled: Boolean,
+    val badgeText: String?,
+    val icon: Bitmap?,
+)
+
+data class ExtensionPopupState(
+    val extensionId: String,
+    val extensionName: String,
+    val session: GeckoSession,
+)
+
 data class ExtensionInstallPrompt(
     val id: String,
     val extensionId: String,
@@ -172,6 +187,8 @@ data class BrowserUiState(
     val extensionInstallInProgress: Boolean = false,
     val contextMenu: BrowserContextMenu? = null,
     val lastCrashReport: String? = null,
+    val extensionActions: List<ExtensionToolbarAction> = emptyList(),
+    val extensionPopup: ExtensionPopupState? = null,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -182,6 +199,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val _state = MutableStateFlow(BrowserUiState())
     private val removedDownloadIds = ConcurrentHashMap.newKeySet<Long>()
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
+    private val extensionActionObjects = mutableMapOf<String, WebExtension.Action>()
     private val restoringExtensionIds = ConcurrentHashMap.newKeySet<String>()
     @Volatile
     private var pendingExtensionPackagePath: String? = null
@@ -294,6 +312,36 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private val extensionActionDelegate = object : WebExtension.ActionDelegate {
+        override fun onBrowserAction(
+            extension: WebExtension,
+            session: GeckoSession?,
+            action: WebExtension.Action,
+        ) = updateExtensionAction(extension, action)
+
+        override fun onPageAction(
+            extension: WebExtension,
+            session: GeckoSession?,
+            action: WebExtension.Action,
+        ) = updateExtensionAction(extension, action)
+
+        override fun onOpenPopup(
+            extension: WebExtension,
+            action: WebExtension.Action,
+        ): GeckoResult<GeckoSession>? = openExtensionPopup(extension)
+
+        override fun onTogglePopup(
+            extension: WebExtension,
+            action: WebExtension.Action,
+        ): GeckoResult<GeckoSession>? {
+            if (_state.value.extensionPopup?.extensionId == extension.id) {
+                closeExtensionPopup()
+                return GeckoResult.fromValue(null)
+            }
+            return openExtensionPopup(extension)
+        }
+    }
+
     val state: StateFlow<BrowserUiState> = _state.asStateFlow()
     val history: Flow<List<HistoryEntry>> = dao.observeHistory()
     val bookmarks: Flow<List<Bookmark>> = dao.observeBookmarks()
@@ -318,6 +366,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     if (userScriptsChanged && tab.hasPage) tab.session.reload()
                 }
                 applyDnsOverHttps(settings.dnsOverHttpsEnabled, settings.dnsProvider)
+                applyContentColorScheme(settings.themeMode)
                 syncAdBlockSettings(settings)
                 syncUserScripts(settings)
             }
@@ -366,7 +415,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     ): String {
         val id = UUID.randomUUID().toString()
         val session = createSession(id, privateMode, openSession)
-        val tab = BrowserTabState(id = id, session = session, isPrivate = privateMode)
+        val resolvedInitialUri = initialUri
+            ?.let { BrowserUrl.resolve(it, _state.value.settings.searchEngine) }
+            ?.takeIf(String::isNotBlank)
+        val tab = BrowserTabState(
+            id = id,
+            session = session,
+            title = if (resolvedInitialUri == null) "New tab" else "Loading...",
+            url = resolvedInitialUri.orEmpty(),
+            isLoading = resolvedInitialUri != null,
+            hasPage = resolvedInitialUri != null,
+            isPrivate = privateMode,
+        )
         _state.update { current ->
             current.copy(
                 tabs = current.tabs + tab,
@@ -374,7 +434,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 overlay = BrowserOverlay.NONE,
             )
         }
-        if (initialUri != null && openSession) navigate(id, initialUri)
+        if (resolvedInitialUri != null && openSession) session.loadUri(resolvedInitialUri)
         return id
     }
 
@@ -389,10 +449,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun closeTab(id: String) {
         val current = _state.value
         val closing = current.tabs.firstOrNull { it.id == id } ?: return
-        closing.session.close()
         if (current.tabs.size == 1) {
-            _state.update { it.copy(tabs = emptyList(), activeTabId = null) }
-            createTab()
+            val replacementId = UUID.randomUUID().toString()
+            val replacementSession = createSession(replacementId, privateMode = false)
+            val replacement = BrowserTabState(id = replacementId, session = replacementSession)
+            _state.update { it.copy(tabs = listOf(replacement), activeTabId = replacementId, overlay = BrowserOverlay.NONE) }
+            runCatching { closing.session.close() }
             return
         }
 
@@ -403,6 +465,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.activeTabId
         }
         _state.update { it.copy(tabs = remaining, activeTabId = newActive) }
+        runCatching { closing.session.close() }
+    }
+
+    fun toggleTabPinned(id: String) {
+        if (_state.value.tabs.none { it.id == id }) return
+        _state.update {
+            it.copy(tabs = it.tabs.map { tab -> if (tab.id == id) tab.copy(pinned = !tab.pinned) else tab })
+        }
     }
 
     fun navigateActive(input: String) {
@@ -702,6 +772,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    fun clickExtensionAction(id: String) {
+        extensionActionObjects[id]?.let { action ->
+            runCatching { action.click() }
+                .onFailure { showSnackbar("Could not open extension action") }
+        }
+    }
+
+    fun closeExtensionPopup() {
+        val popup = _state.value.extensionPopup ?: return
+        _state.update { it.copy(extensionPopup = null) }
+        runCatching { popup.session.close() }
+    }
+
     fun openExtensionOptions(id: String) {
         val extension = installedExtensionObjects[id] ?: return
         val declaredUrl = extension.metaData.optionsPageUrl?.takeIf(String::isNotBlank)
@@ -896,6 +979,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (openSession) {
             session.open(runtime)
             attachAdBlockContentDelegate(session)
+            attachExtensionActionDelegates(session)
         }
         return session
     }
@@ -1084,6 +1168,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    private fun applyContentColorScheme(themeMode: ThemeMode) {
+        runtime.settings.setPreferredColorScheme(
+            when (themeMode) {
+                ThemeMode.SYSTEM -> org.mozilla.geckoview.GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM
+                ThemeMode.LIGHT -> org.mozilla.geckoview.GeckoRuntimeSettings.COLOR_SCHEME_LIGHT
+                ThemeMode.DARK -> org.mozilla.geckoview.GeckoRuntimeSettings.COLOR_SCHEME_DARK
+            },
+        )
+    }
+
+    private fun attachExtensionActionDelegates(session: GeckoSession) {
+        installedExtensionObjects.values.forEach { extension ->
+            session.webExtensionController.setActionDelegate(extension, extensionActionDelegate)
+        }
+    }
+
     private fun syncUserScripts(settings: BrowserSettings) {
         val port = adBlockPort ?: return
         val urls = JSONArray()
@@ -1169,9 +1269,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     it.isBuiltIn || it.id == "adblock@dextra"
                 }
                 installedExtensionObjects.clear()
+                extensionActionObjects.keys.retainAll(userExtensions.mapTo(hashSetOf()) { it.id })
                 userExtensions.forEach { installedExtensionObjects[it.id] = it }
+                userExtensions.forEach { it.setActionDelegate(extensionActionDelegate) }
+                _state.value.tabs.filter { it.session.isOpen }.forEach { tab ->
+                    attachExtensionActionDelegates(tab.session)
+                }
                 _state.update {
-                    it.copy(installedExtensions = userExtensions.map(::installedExtensionState))
+                    it.copy(
+                        installedExtensions = userExtensions.map(::installedExtensionState),
+                        extensionActions = it.extensionActions.filter { action -> action.extensionId in installedExtensionObjects },
+                    )
                 }
             },
             { error -> Log.e("Dextra", "Could not list Firefox extensions", error) },
@@ -1208,6 +1316,50 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             amoListingUrl = extension.metaData.amoListingUrl,
             optionsPageUrl = extension.metaData.optionsPageUrl,
         )
+
+    private fun updateExtensionAction(extension: WebExtension, action: WebExtension.Action) {
+        extensionActionObjects[extension.id] = action
+        val toolbarAction = ExtensionToolbarAction(
+            extensionId = extension.id,
+            title = action.title?.takeIf(String::isNotBlank) ?: extension.metaData.name ?: extension.id,
+            enabled = action.enabled != false,
+            badgeText = action.badgeText,
+            icon = null,
+        )
+        _state.update { current ->
+            current.copy(
+                extensionActions = (current.extensionActions.filterNot { it.extensionId == extension.id } + toolbarAction)
+                    .sortedBy { it.title.lowercase() },
+            )
+        }
+        action.icon?.getBitmap(32)?.accept(
+            { bitmap ->
+                _state.update { current ->
+                    current.copy(
+                        extensionActions = current.extensionActions.map { item ->
+                            if (item.extensionId == extension.id) item.copy(icon = bitmap) else item
+                        },
+                    )
+                }
+            },
+            {},
+        )
+    }
+
+    private fun openExtensionPopup(extension: WebExtension): GeckoResult<GeckoSession>? {
+        closeExtensionPopup()
+        val session = createSession("extension-popup-${extension.id}", privateMode = false)
+        _state.update {
+            it.copy(
+                extensionPopup = ExtensionPopupState(
+                    extensionId = extension.id,
+                    extensionName = extension.metaData.name ?: extension.id,
+                    session = session,
+                ),
+            )
+        }
+        return GeckoResult.fromValue(session)
+    }
 
     private fun resolveExtensionPackageUrl(input: String): String? {
         if (FirefoxAddons.isXpiUrl(input)) return input
@@ -1522,10 +1674,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 return GeckoResult.fromValue<GeckoSession>(null)
             }
             // GeckoView opens the returned session itself; it must still be unopened here.
-            val newTabId = createTab(openSession = false)
+            val newTabId = createTab(initialUri = popupUri, openSession = false)
             val newSession = _state.value.tabs.firstOrNull { it.id == newTabId }?.session
                 ?: return GeckoResult.fromValue<GeckoSession>(null)
-            updateTab(newTabId) { it.copy(url = popupUri, hasPage = true, isLoading = true, crashed = false) }
             return GeckoResult.fromValue(newSession)
         }
     }
@@ -1721,6 +1872,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         downloadEngine.shutdown()
+        _state.value.extensionPopup?.session?.close()
         _state.value.tabs.forEach { it.session.close() }
         super.onCleared()
     }
