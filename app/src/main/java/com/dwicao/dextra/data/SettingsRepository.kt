@@ -34,7 +34,7 @@ data class BrowserSettings(
     val homepage: String = "https://www.google.com/",
     val desktopSites: Boolean = true,
     val tabBarWithAddressBar: Boolean = true,
-    val verticalTabs: Boolean = false,
+    val verticalTabs: Boolean = true,
     val dnsOverHttpsEnabled: Boolean = false,
     val dnsProvider: DnsProvider = DnsProvider.CLOUDFLARE,
     val adBlockingEnabled: Boolean = true,
@@ -280,7 +280,7 @@ class SettingsRepository(private val context: Context) {
         homepage = get(Keys.homepage) ?: "https://www.google.com/",
         desktopSites = get(Keys.desktopSites) ?: true,
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
-        verticalTabs = get(Keys.verticalTabs) ?: false,
+        verticalTabs = get(Keys.verticalTabs) ?: true,
         dnsOverHttpsEnabled = get(Keys.dnsOverHttpsEnabled) ?: false,
         dnsProvider = get(Keys.dnsProvider)?.let {
             runCatching { DnsProvider.valueOf(it) }.getOrNull()

@@ -263,6 +263,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onSelectTab = viewModel::selectTab,
                  onCloseTab = viewModel::closeTab,
                  onMoveTabBefore = viewModel::moveTabBefore,
+                 onMoveTabAfter = viewModel::moveTabAfter,
                  onCreateTabGroup = viewModel::createTabGroup,
                  onMoveTabToGroup = viewModel::moveTabToGroup,
                  onRenameTabGroup = viewModel::renameTabGroup,
@@ -368,6 +369,7 @@ private fun BrowserScreen(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
+    onMoveTabAfter: (String, String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
     onMoveTabToGroup: (String, String?) -> Unit,
     onRenameTabGroup: (String, String) -> Unit,
@@ -532,6 +534,7 @@ private fun BrowserScreen(
                      onSelectTab = onSelectTab,
                      onCloseTab = onCloseTab,
                      onMoveTabBefore = onMoveTabBefore,
+                     onMoveTabAfter = onMoveTabAfter,
                      onCreateTabGroup = onCreateTabGroup,
                      onMoveTabToGroup = onMoveTabToGroup,
                      onRenameTabGroup = onRenameTabGroup,
@@ -564,6 +567,7 @@ private fun BrowserScreen(
                      onSelectTab = onSelectTab,
                      onCloseTab = onCloseTab,
                      onMoveTabBefore = onMoveTabBefore,
+                     onMoveTabAfter = onMoveTabAfter,
                      onToggleBookmark = onToggleBookmark,
                     onMenu = { menuExpanded = true },
                     addressFocusRequester = addressFocusRequester,
@@ -694,6 +698,7 @@ private fun DesktopBrowserLayout(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
+    onMoveTabAfter: (String, String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
     onMoveTabToGroup: (String, String?) -> Unit,
     onRenameTabGroup: (String, String) -> Unit,
@@ -718,6 +723,7 @@ private fun DesktopBrowserLayout(
                 onCloseTab = onCloseTab,
                 groups = state.settings.tabGroups,
                 onMoveTabBefore = onMoveTabBefore,
+                onMoveTabAfter = onMoveTabAfter,
                 onCreateTabGroup = onCreateTabGroup,
                 onMoveTabToGroup = onMoveTabToGroup,
                 onRenameTabGroup = onRenameTabGroup,
@@ -748,6 +754,7 @@ private fun DesktopBrowserLayout(
                 onForward = onForward,
                 onReload = onReload,
                 onMoveTabBefore = onMoveTabBefore,
+                onMoveTabAfter = onMoveTabAfter,
                 onToggleBookmark = onToggleBookmark,
                 onShowDownloads = onShowDownloads,
                 extensionActions = extensionActions,
@@ -787,6 +794,7 @@ private fun CompactBrowserLayout(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
+    onMoveTabAfter: (String, String) -> Unit,
     onToggleBookmark: () -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
@@ -826,7 +834,8 @@ private fun CompactBrowserLayout(
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
                     onMoveTabBefore = onMoveTabBefore,
-                onTabContextMenu = onTabContextMenu,
+                    onMoveTabAfter = onMoveTabAfter,
+                    onTabContextMenu = onTabContextMenu,
             )
         }
         activeTab?.takeIf { it.isLoading }?.let {
@@ -866,6 +875,7 @@ private fun DesktopToolbar(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
+    onMoveTabAfter: (String, String) -> Unit,
     onToggleBookmark: () -> Unit,
     onShowDownloads: () -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
@@ -915,6 +925,7 @@ private fun DesktopToolbar(
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
                     onMoveTabBefore = onMoveTabBefore,
+                    onMoveTabAfter = onMoveTabAfter,
                     onTabContextMenu = onTabContextMenu,
                 )
             }
@@ -1076,6 +1087,7 @@ private fun GroupedVerticalTabStrip(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
+    onMoveTabAfter: (String, String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
     onMoveTabToGroup: (String, String?) -> Unit,
     onRenameTabGroup: (String, String) -> Unit,
@@ -1260,6 +1272,7 @@ private fun GroupedVerticalTabStrip(
                                         dragDistance = 0f
                                     },
                                     onMoveTabBefore = onMoveTabBefore,
+                                    onMoveTabAfter = onMoveTabAfter,
                                     onSelectTab = onSelectTab,
                                     onCloseTab = onCloseTab,
                                     onCreateTabGroup = onCreateTabGroup,
@@ -1299,6 +1312,7 @@ private fun GroupedVerticalTabStrip(
                             dragDistance = 0f
                         },
                         onMoveTabBefore = onMoveTabBefore,
+                        onMoveTabAfter = onMoveTabAfter,
                         onSelectTab = onSelectTab,
                         onCloseTab = onCloseTab,
                         onCreateTabGroup = onCreateTabGroup,
@@ -1365,6 +1379,7 @@ private fun VerticalTabRow(
     onDragDistance: (Float) -> Unit,
     onDragEnd: () -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
+    onMoveTabAfter: (String, String) -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
@@ -1437,7 +1452,11 @@ private fun VerticalTabRow(
                             item.key != tab.id && item.key in tabIds && center in item.offset..(item.offset + item.size)
                         }
                         if (target != null) {
-                            onMoveTabBefore(tab.id, target.key as String)
+                            if (accumulatedDistance > 0) {
+                                onMoveTabAfter(tab.id, target.key as String)
+                            } else {
+                                onMoveTabBefore(tab.id, target.key as String)
+                            }
                             accumulatedDistance = 0f
                             onDragDistance(0f)
                         }
@@ -1725,6 +1744,7 @@ private fun TabStrip(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
+    onMoveTabAfter: (String, String) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
 ) {
     val listState = rememberLazyListState()
@@ -1831,7 +1851,11 @@ private fun TabStrip(
                                                 center in item.offset..(item.offset + item.size)
                                         }
                                         if (target != null) {
-                                            onMoveTabBefore(tab.id, target.key as String)
+                                            if (accumulatedDistance > 0) {
+                                                onMoveTabAfter(tab.id, target.key as String)
+                                            } else {
+                                                onMoveTabBefore(tab.id, target.key as String)
+                                            }
                                             accumulatedDistance = 0f
                                             dragDistance = 0f
                                         }

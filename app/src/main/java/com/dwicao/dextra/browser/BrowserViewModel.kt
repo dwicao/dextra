@@ -645,6 +645,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistOpenTabs()
     }
 
+    fun moveTabAfter(tabId: String, targetId: String) {
+        val current = _state.value
+        val moving = current.tabs.firstOrNull { it.id == tabId } ?: return
+        val target = current.tabs.firstOrNull { it.id == targetId } ?: return
+        if (moving.id == target.id || moving.pinned != target.pinned) return
+        val reordered = current.tabs.toMutableList().apply {
+            removeAll { it.id == moving.id }
+            add(indexOfFirst { it.id == target.id }.plus(1).coerceAtMost(size), moving)
+        }
+        _state.update { it.copy(tabs = reordered) }
+        persistOpenTabs()
+    }
+
     fun createTabGroup(tabId: String? = null) {
         val current = _state.value
         val group = SavedTabGroup(
