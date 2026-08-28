@@ -32,6 +32,10 @@ class MainActivity : ComponentActivity() {
                     browserViewModel.dismissTransientUi()
                     return
                 }
+                state.tabs.firstOrNull { it.isFullScreen }?.let { tab ->
+                    tab.session.exitFullScreen()
+                    return
+                }
                 if (browserViewModel.goBack()) return
                 val active = browserViewModel.activeTab()
                 if (active != null && browserViewModel.state.value.tabs.size > 1) {

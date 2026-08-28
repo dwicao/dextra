@@ -84,6 +84,7 @@ data class BrowserTabState(
     val pinned: Boolean = false,
     val groupId: String? = null,
     val isSleeping: Boolean = false,
+    val isFullScreen: Boolean = false,
 )
 
 enum class BrowserOverlay {
@@ -798,15 +799,28 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun openTabInSplit(tabId: String) {
         val current = _state.value
         val primaryId = current.activeTabId ?: return
-        if (tabId == primaryId || current.tabs.none { it.id == tabId }) return
+        if (current.tabs.none { it.id == tabId }) return
+        val secondaryId = if (tabId == primaryId) {
+            current.splitSecondaryTabId?.takeIf { it != primaryId }
+                ?: current.tabs.firstOrNull { it.id != primaryId }?.id
+        } else {
+            tabId
+        }
+        if (secondaryId == null) {
+            showSnackbar("Open another tab before using split view")
+            return
+        }
         _state.update {
             it.copy(
                 splitPrimaryTabId = primaryId,
-                splitSecondaryTabId = tabId,
+                splitSecondaryTabId = secondaryId,
                 splitPaneFocused = false,
+                tabs = it.tabs.map { tab ->
+                    if (tab.id == primaryId || tab.id == secondaryId) tab.copy(isSleeping = false) else tab
+                },
             )
         }
-        updateSessionActivity(primaryId, tabId)
+        updateSessionActivity(primaryId, secondaryId)
     }
 
     fun closeSplit() {
@@ -2688,6 +2702,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             closeTab(tabId)
         }
 
+        override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+            val current = _state.value
+            if (fullScreen) {
+                _state.update { state ->
+                    state.copy(
+                        activeTabId = tabId,
+                        tabs = state.tabs.map { tab ->
+                            if (tab.id == tabId) tab.copy(isFullScreen = true) else tab.copy(isFullScreen = false)
+                        },
+                    )
+                }
+                updateSessionActivity(tabId)
+            } else {
+                _state.update { state ->
+                    state.copy(tabs = state.tabs.map { tab -> if (tab.id == tabId) tab.copy(isFullScreen = false) else tab })
+                }
+                updateSessionActivity(current.splitPrimaryTabId ?: current.activeTabId, current.splitSecondaryTabId)
+            }
+        }
+
         override fun onContextMenu(
             session: GeckoSession,
             screenX: Int,
@@ -2717,7 +2751,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         private fun markTabCrashed(message: String) {
             val tab = _state.value.tabs.firstOrNull { it.id == tabId }
             val url = tab?.takeIf { !it.isPrivate }?.url.orEmpty()
-            updateTab(tabId) { it.copy(crashed = true, isLoading = false, progress = 0) }
+            updateTab(tabId) { it.copy(crashed = true, isLoading = false, progress = 0, isFullScreen = false) }
             recordGeckoCrash(tabId, url, message)
             showSnackbar(message)
         }

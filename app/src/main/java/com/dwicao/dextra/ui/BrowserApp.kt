@@ -1,5 +1,6 @@
 package com.dwicao.dextra.ui
 
+import android.app.Activity
 import android.content.Context
 import android.os.Build
 import android.view.MotionEvent
@@ -164,6 +165,9 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.foundation.Image
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.mozilla.geckoview.GeckoSession
 import com.dwicao.dextra.browser.BrowserTabState
@@ -215,6 +219,19 @@ fun DextraApp(viewModel: BrowserViewModel) {
         ActivityResultContracts.RequestPermission(),
     ) { }
     val appContext = LocalContext.current
+    val activity = appContext as? Activity
+    val isWebFullScreen = state.tabs.any { it.isFullScreen }
+
+    LaunchedEffect(activity, isWebFullScreen) {
+        val window = activity?.window ?: return@LaunchedEffect
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (isWebFullScreen) {
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            insetsController.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
 
     LaunchedEffect(state.snackbar) {
         state.snackbar?.let {
@@ -265,9 +282,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onReloadCrashedTab = viewModel::reloadCrashedTab,
                 onNewTab = { viewModel.createTab() },
                 onNewPrivateTab = viewModel::createPrivateTab,
-                 onSelectTab = viewModel::selectTab,
-                 onCloseTab = viewModel::closeTab,
-                 onMoveTabBefore = viewModel::moveTabBefore,
+                  onSelectTab = viewModel::selectTab,
+                  onCloseTab = viewModel::closeTab,
+                  onOpenTabInSplit = viewModel::openTabInSplit,
+                  onMoveTabBefore = viewModel::moveTabBefore,
                  onMoveTabAfter = viewModel::moveTabAfter,
                  onCreateTabGroup = viewModel::createTabGroup,
                  onMoveTabToGroup = viewModel::moveTabToGroup,
@@ -379,6 +397,7 @@ private fun BrowserScreen(
     onNewPrivateTab: () -> String,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
+    onOpenTabInSplit: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
     onMoveTabAfter: (String, String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
@@ -450,13 +469,14 @@ private fun BrowserScreen(
     onCloseFindInPage: () -> Unit,
 ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
+    val fullScreenTab = state.tabs.firstOrNull { it.isFullScreen }
     var menuExpanded by remember { mutableStateOf(false) }
     val addressFocusRequester = remember { FocusRequester() }
     val rootFocusRequester = remember { FocusRequester() }
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .padding(top = 8.dp)
+            .padding(top = if (fullScreenTab == null) 8.dp else 0.dp)
             .focusRequester(rootFocusRequester)
             .focusable()
             .onPreviewKeyEvent { event ->
@@ -530,8 +550,17 @@ private fun BrowserScreen(
                 onUninstallExtension = onUninstallExtension,
             )
         } else {
-            val expanded = maxWidth >= 600.dp
-            if (expanded) {
+            if (fullScreenTab != null) {
+                BrowserViewport(
+                    tab = fullScreenTab,
+                    onNavigate = onNavigate,
+                    onReloadCrashedTab = onReloadCrashedTab,
+                    onShowContextMenu = onShowContextMenu,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                val expanded = maxWidth >= 600.dp
+                if (expanded) {
                 DesktopBrowserLayout(
                     state = state,
                     activeTab = activeTab,
@@ -548,10 +577,11 @@ private fun BrowserScreen(
                     onTabContextMenu = onTabContextMenu,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
-                    onNewTab = { onNewTab() },
-                     onSelectTab = onSelectTab,
-                     onCloseTab = onCloseTab,
-                     onMoveTabBefore = onMoveTabBefore,
+                 onNewTab = { onNewTab() },
+                  onSelectTab = onSelectTab,
+                  onCloseTab = onCloseTab,
+                  onOpenTabInSplit = onOpenTabInSplit,
+                  onMoveTabBefore = onMoveTabBefore,
                      onMoveTabAfter = onMoveTabAfter,
                      onCreateTabGroup = onCreateTabGroup,
                      onMoveTabToGroup = onMoveTabToGroup,
@@ -567,8 +597,8 @@ private fun BrowserScreen(
                      showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                      verticalTabs = state.settings.verticalTabs,
                  )
-            } else {
-                CompactBrowserLayout(
+                } else {
+                    CompactBrowserLayout(
                     state = state,
                     activeTab = activeTab,
                      onNavigate = onNavigate,
@@ -591,10 +621,11 @@ private fun BrowserScreen(
                     addressFocusRequester = addressFocusRequester,
                     onShowTabs = { onSetOverlay(BrowserOverlay.TABS) },
                     showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
-                )
+                    )
+                }
             }
 
-            BrowserMenu(
+            if (fullScreenTab == null) BrowserMenu(
                 expanded = menuExpanded,
                 onDismiss = { menuExpanded = false },
                 onNewPrivateTab = {
@@ -732,6 +763,7 @@ private fun DesktopBrowserLayout(
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
+    onOpenTabInSplit: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
     onMoveTabAfter: (String, String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
@@ -755,10 +787,11 @@ private fun DesktopBrowserLayout(
             GroupedVerticalTabStrip(
                 tabs = state.tabs,
                 activeTabId = state.activeTabId,
-                onNewTab = onNewTab,
-                onSelectTab = onSelectTab,
-                onCloseTab = onCloseTab,
-                groups = state.settings.tabGroups,
+                 onNewTab = onNewTab,
+                 onSelectTab = onSelectTab,
+                 onCloseTab = onCloseTab,
+                 onOpenTabInSplit = onOpenTabInSplit,
+                 groups = state.settings.tabGroups,
                 onMoveTabBefore = onMoveTabBefore,
                 onMoveTabAfter = onMoveTabAfter,
                 onCreateTabGroup = onCreateTabGroup,
@@ -1166,6 +1199,7 @@ private fun GroupedVerticalTabStrip(
     onNewTab: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
+    onOpenTabInSplit: (String) -> Unit,
     onMoveTabBefore: (String, String) -> Unit,
     onMoveTabAfter: (String, String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
@@ -1353,9 +1387,10 @@ private fun GroupedVerticalTabStrip(
                                     },
                                     onMoveTabBefore = onMoveTabBefore,
                                     onMoveTabAfter = onMoveTabAfter,
-                                    onSelectTab = onSelectTab,
-                                    onCloseTab = onCloseTab,
-                                    onCreateTabGroup = onCreateTabGroup,
+                                     onSelectTab = onSelectTab,
+                                     onCloseTab = onCloseTab,
+                                     onOpenTabInSplit = onOpenTabInSplit,
+                                     onCreateTabGroup = onCreateTabGroup,
                                     onMoveTabToGroup = onMoveTabToGroup,
                                     onToggleTabSleeping = onToggleTabSleeping,
                                     onTabContextMenu = onTabContextMenu,
@@ -1395,6 +1430,7 @@ private fun GroupedVerticalTabStrip(
                         onMoveTabAfter = onMoveTabAfter,
                         onSelectTab = onSelectTab,
                         onCloseTab = onCloseTab,
+                        onOpenTabInSplit = onOpenTabInSplit,
                         onCreateTabGroup = onCreateTabGroup,
                         onMoveTabToGroup = onMoveTabToGroup,
                         onToggleTabSleeping = onToggleTabSleeping,
@@ -1462,6 +1498,7 @@ private fun VerticalTabRow(
     onMoveTabAfter: (String, String) -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
+    onOpenTabInSplit: (String) -> Unit,
     onCreateTabGroup: (String?) -> Unit,
     onMoveTabToGroup: (String, String?) -> Unit,
     onToggleTabSleeping: (String) -> Unit,
@@ -1613,6 +1650,13 @@ private fun VerticalTabRow(
                         onClick = {
                             menuExpanded = false
                             onToggleTabSleeping(tab.id)
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Open in split view") },
+                        onClick = {
+                            menuExpanded = false
+                            onOpenTabInSplit(tab.id)
                         },
                     )
                 }
