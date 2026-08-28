@@ -8,6 +8,9 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.dwicao.dextra.browser.BrowserCommandId
+import com.dwicao.dextra.browser.DefaultKeyboardShortcuts
+import com.dwicao.dextra.browser.KeyChord
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -45,6 +48,7 @@ data class BrowserSettings(
     val openTabs: List<SavedTab> = emptyList(),
     val activeTabIndex: Int = 0,
     val tabGroups: List<SavedTabGroup> = emptyList(),
+    val shortcutBindings: Map<BrowserCommandId, KeyChord> = DefaultKeyboardShortcuts.bindings,
 )
 
 data class ExtensionInstallRecord(
@@ -59,6 +63,8 @@ data class SavedTab(
     val pinned: Boolean = false,
     val groupId: String? = null,
     val id: String? = null,
+    val title: String? = null,
+    val sessionState: String? = null,
 )
 
 data class SavedTabGroup(
@@ -108,6 +114,7 @@ class SettingsRepository(private val context: Context) {
         val openTabs = stringPreferencesKey("open_tabs")
         val activeTabIndex = intPreferencesKey("active_tab_index")
         val tabGroups = stringPreferencesKey("tab_groups")
+        val shortcutBindings = stringPreferencesKey("shortcut_bindings")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -138,6 +145,16 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setVerticalTabs(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.verticalTabs] = enabled }
+    }
+
+    suspend fun setShortcut(command: BrowserCommandId, chord: KeyChord?) {
+        context.settingsDataStore.edit { preferences ->
+            val bindings = preferences.shortcutBindings().toMutableMap()
+            if (chord == null) bindings.remove(command) else bindings[command] = chord
+            preferences[Keys.shortcutBindings] = bindings.entries.joinToString("\n") { (id, value) ->
+                "${id.name}\t${value.encode()}"
+            }
+        }
     }
 
     suspend fun setDnsOverHttpsEnabled(enabled: Boolean) {
@@ -253,8 +270,10 @@ class SettingsRepository(private val context: Context) {
                             .put("url", tab.url)
                             .put("private", tab.isPrivate)
                             .put("pinned", tab.pinned)
-                            .put("groupId", tab.groupId)
-                            .put("id", tab.id),
+                             .put("groupId", tab.groupId)
+                             .put("id", tab.id)
+                             .put("title", tab.title)
+                             .put("sessionState", tab.sessionState),
                     )
                 }
             }
@@ -297,6 +316,7 @@ class SettingsRepository(private val context: Context) {
         openTabs = savedTabs(),
         activeTabIndex = get(Keys.activeTabIndex) ?: 0,
         tabGroups = savedTabGroups(),
+        shortcutBindings = DefaultKeyboardShortcuts.bindings + shortcutBindings(),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -351,6 +371,8 @@ class SettingsRepository(private val context: Context) {
                 pinned = tab.optBoolean("pinned"),
                 groupId = tab.optString("groupId").takeIf(String::isNotBlank),
                 id = tab.optString("id").takeIf(String::isNotBlank),
+                title = tab.optString("title").takeIf(String::isNotBlank),
+                sessionState = tab.optString("sessionState").takeIf(String::isNotBlank),
             )
         }
     }.getOrDefault(emptyList())
@@ -368,6 +390,17 @@ class SettingsRepository(private val context: Context) {
             )
         }
     }.getOrDefault(emptyList())
+
+    private fun Preferences.shortcutBindings(): Map<BrowserCommandId, KeyChord> = get(Keys.shortcutBindings)
+        ?.split('\n')
+        ?.mapNotNull { line ->
+            val values = line.split('\t')
+            val id = values.getOrNull(0)?.let { runCatching { BrowserCommandId.valueOf(it) }.getOrNull() }
+            val chord = values.getOrNull(1)?.let(KeyChord::decode)
+            if (id == null || chord == null) null else id to chord
+        }
+        ?.toMap()
+        ?: emptyMap()
 
     private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter =
         AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url, enabled)

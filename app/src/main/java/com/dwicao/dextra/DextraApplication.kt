@@ -107,6 +107,7 @@ object GeckoRuntimeHolder {
                 .globalPrivacyControlEnabled(true)
                 .extensionsProcessEnabled(true)
                 .extensionsWebAPIEnabled(true)
+                .webManifest(true)
                 .build(),
         ).also { runtime = it }
     }

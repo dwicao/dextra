@@ -1,7 +1,11 @@
 package com.dwicao.dextra.ui
 
 import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.MotionEvent
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -165,12 +169,20 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dwicao.dextra.MainActivity
 import com.dwicao.dextra.browser.BrowserTabState
 import com.dwicao.dextra.browser.BrowserContextMenu
 import com.dwicao.dextra.browser.BrowserUrl
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
+import com.dwicao.dextra.browser.BrowserCommand
+import com.dwicao.dextra.browser.BrowserCommandId
+import com.dwicao.dextra.browser.KeyChord
+import com.dwicao.dextra.browser.QrCodeGenerator
+import com.dwicao.dextra.browser.BrowserCommands
+import com.dwicao.dextra.browser.CommandPaletteState
 import com.dwicao.dextra.browser.ContextMenuAction
+import com.dwicao.dextra.browser.DefaultKeyboardShortcuts
 import com.dwicao.dextra.browser.ExtensionInstallPrompt
 import com.dwicao.dextra.browser.ExtensionPopupState
 import com.dwicao.dextra.browser.ExtensionToolbarAction
@@ -178,17 +190,22 @@ import com.dwicao.dextra.browser.ExtensionUpdatePrompt
 import com.dwicao.dextra.browser.FindInPageState
 import com.dwicao.dextra.browser.InstalledExtension
 import com.dwicao.dextra.browser.MediaPermissionPrompt
+import com.dwicao.dextra.browser.OfflineArticle
+import com.dwicao.dextra.browser.TabSwitcherState
 import com.dwicao.dextra.data.SavedTabGroup
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.HistoryEntry
 import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
+import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.ThemeMode
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.ScreenLength
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -198,6 +215,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val history by viewModel.history.collectAsStateWithLifecycle(initialValue = emptyList())
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle(initialValue = emptyList())
     val downloads by viewModel.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val readingList by viewModel.readingList.collectAsStateWithLifecycle(initialValue = emptyList())
     val snackbarHostState = remember { SnackbarHostState() }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -210,11 +228,15 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val bookmarkImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(viewModel::importBookmarks) }
+    val pdfExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/pdf"),
+    ) { uri -> uri?.let(viewModel::exportPdf) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
     val appContext = LocalContext.current
     val activity = appContext as? Activity
+    val mainActivity = activity as? MainActivity
     val isWebFullScreen = state.tabs.any { it.isFullScreen }
 
     LaunchedEffect(activity, isWebFullScreen) {
@@ -259,7 +281,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
             snackbarHost = {},
             containerColor = MaterialTheme.colorScheme.surface,
         ) { padding ->
-            BrowserScreen(
+             BrowserScreen(
                 modifier = Modifier.padding(padding),
                 snackbarHostState = snackbarHostState,
                 state = state,
@@ -307,6 +329,11 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    onClearSitePermissions = viewModel::clearSitePermissions,
                   onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
                   onSetVerticalTabs = viewModel::setVerticalTabs,
+                  shortcutBindings = state.settings.shortcutBindings,
+                  onSetKeyboardShortcut = { command, chord -> viewModel.setKeyboardShortcut(command, chord) },
+                  capturingShortcut = state.capturingShortcut,
+                  onBeginKeyboardShortcutCapture = viewModel::beginKeyboardShortcutCapture,
+                  onCancelKeyboardShortcutCapture = viewModel::cancelKeyboardShortcutCapture,
                  onSetDnsOverHttpsEnabled = viewModel::setDnsOverHttpsEnabled,
                  onSetDnsProvider = viewModel::setDnsProvider,
                  onSetAdBlockingEnabled = viewModel::setAdBlockingEnabled,
@@ -315,9 +342,34 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onAddAdBlockFilter = viewModel::addAdBlockFilter,
                  onRemoveAdBlockFilter = viewModel::removeAdBlockFilter,
                  onAddUserScript = viewModel::addUserScript,
-                 onSetUserScriptEnabled = viewModel::setUserScriptEnabled,
-                 onRefreshUserScripts = viewModel::refreshUserScripts,
-                 onRemoveUserScript = viewModel::removeUserScript,
+                  onSetUserScriptEnabled = viewModel::setUserScriptEnabled,
+                  onRefreshUserScripts = viewModel::refreshUserScripts,
+                  onRemoveUserScript = viewModel::removeUserScript,
+                  readingList = readingList,
+                  onToggleReadingList = viewModel::toggleReadingList,
+                  onDeleteReadingListEntry = viewModel::deleteReadingListEntry,
+                  onSetReadingListRead = viewModel::setReadingListRead,
+                  onOpenSiteSettings = viewModel::openSiteSettings,
+                  onOpenCommandPalette = viewModel::openCommandPalette,
+                  onOpenTabSwitcher = viewModel::openTabSwitcher,
+                  onCloseSiteSettings = viewModel::closeSiteSettings,
+                  onSetSiteDesktopOverride = viewModel::setCurrentSiteDesktopOverride,
+                  onSetSiteAdBlockingOverride = viewModel::setCurrentSiteAdBlockingOverride,
+                  onSetSiteUserScriptsOverride = viewModel::setCurrentSiteUserScriptsOverride,
+                  onSetSiteZoomOverride = viewModel::setCurrentSiteZoomOverride,
+                  onClearSiteSettings = viewModel::clearCurrentSiteSettings,
+                  onOpenQrCode = viewModel::openQrCode,
+                  onSharePage = viewModel::shareActiveUrl,
+                  onExportPdf = { pdfExportLauncher.launch("dextra-page.pdf") },
+                  onSaveScreenshot = viewModel::saveScreenshot,
+                  onInstallWebApp = viewModel::installCurrentWebApp,
+                   onEnterPictureInPicture = {
+                       if (state.tabs.firstOrNull { it.id == state.activeTabId }?.let { it.hasActiveMedia && !it.isPrivate } == true) {
+                           mainActivity?.enterBrowserPictureInPicture()
+                       }
+                   },
+                   onSaveOffline = viewModel::saveCurrentPageOffline,
+                   onOpenOffline = viewModel::openOfflineArticle,
                 installedExtensions = state.installedExtensions,
                 extensionInstallInProgress = state.extensionInstallInProgress,
                 onInstallExtension = viewModel::installExtension,
@@ -348,8 +400,37 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onUpdateFindInPage = viewModel::updateFindInPage,
                   onFindNext = viewModel::findNext,
                   onCloseFindInPage = viewModel::closeFindInPage,
-             )
-            state.lastCrashReport?.let { report ->
+              )
+             state.commandPalette?.let { palette ->
+                 CommandPaletteDialog(
+                     state = palette,
+                     onQueryChange = viewModel::updateCommandPalette,
+                     onMoveSelection = viewModel::moveCommandSelection,
+                     onExecute = viewModel::executeCommand,
+                     onDismiss = viewModel::closeCommandPalette,
+                 )
+             }
+              state.tabSwitcher?.let { switcher ->
+                 TabSwitcherDialog(
+                     state = switcher,
+                     tabs = state.tabs,
+                     onQueryChange = viewModel::updateTabSwitcher,
+                     onMoveSelection = viewModel::moveTabSelection,
+                     onSelect = viewModel::selectTabFromSwitcher,
+                     onDismiss = viewModel::closeTabSwitcher,
+                  )
+              }
+               state.qrCodeUrl?.let { url ->
+                  QrCodeDialog(
+                      url = url,
+                      onShare = viewModel::shareActiveUrl,
+                      onDismiss = viewModel::closeQrCode,
+                   )
+               }
+               state.offlineArticle?.let { article ->
+                   OfflineArticleDialog(article, viewModel::closeOfflineArticle)
+               }
+             state.lastCrashReport?.let { report ->
                 CrashReportDialog(
                     report = report,
                     onCopy = viewModel::copyCrashReport,
@@ -419,6 +500,11 @@ private fun BrowserScreen(
      onClearSitePermissions: () -> Unit,
      onSetTabBarWithAddressBar: (Boolean) -> Unit,
      onSetVerticalTabs: (Boolean) -> Unit,
+     shortcutBindings: Map<BrowserCommandId, KeyChord>,
+     onSetKeyboardShortcut: (BrowserCommandId, KeyChord?) -> Unit,
+     capturingShortcut: BrowserCommandId?,
+     onBeginKeyboardShortcutCapture: (BrowserCommandId) -> Unit,
+     onCancelKeyboardShortcutCapture: () -> Unit,
     onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
     onSetDnsProvider: (DnsProvider) -> Unit,
     onSetAdBlockingEnabled: (Boolean) -> Unit,
@@ -429,7 +515,28 @@ private fun BrowserScreen(
     onAddUserScript: (String) -> Unit,
     onSetUserScriptEnabled: (String, Boolean) -> Unit,
     onRefreshUserScripts: () -> Unit,
-    onRemoveUserScript: (String) -> Unit,
+     onRemoveUserScript: (String) -> Unit,
+     readingList: List<com.dwicao.dextra.data.ReadingListEntry>,
+     onToggleReadingList: () -> Unit,
+     onDeleteReadingListEntry: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
+     onSetReadingListRead: (com.dwicao.dextra.data.ReadingListEntry, Boolean) -> Unit,
+      onOpenSiteSettings: () -> Unit,
+      onOpenCommandPalette: () -> Unit,
+      onOpenTabSwitcher: () -> Unit,
+     onCloseSiteSettings: () -> Unit,
+     onSetSiteDesktopOverride: (Boolean?) -> Unit,
+     onSetSiteAdBlockingOverride: (Boolean?) -> Unit,
+     onSetSiteUserScriptsOverride: (Boolean?) -> Unit,
+     onSetSiteZoomOverride: (Int?) -> Unit,
+     onClearSiteSettings: () -> Unit,
+     onOpenQrCode: () -> Unit,
+     onSharePage: () -> Unit,
+       onExportPdf: () -> Unit,
+       onSaveScreenshot: (android.graphics.Bitmap) -> Unit,
+       onInstallWebApp: () -> Unit,
+       onEnterPictureInPicture: () -> Unit,
+       onSaveOffline: () -> Unit,
+       onOpenOffline: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
     installedExtensions: List<InstalledExtension>,
     extensionInstallInProgress: Boolean,
     onInstallExtension: (String) -> Unit,
@@ -464,7 +571,63 @@ private fun BrowserScreen(
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
     val fullScreenTab = state.tabs.firstOrNull { it.isFullScreen }
     var menuExpanded by remember { mutableStateOf(false) }
+    var screenshotView by remember { mutableStateOf<GeckoView?>(null) }
     val addressFocusRequester = remember { FocusRequester() }
+    val captureScreenshot = {
+        screenshotView?.capturePixels()?.accept(
+            { bitmap -> bitmap?.let(onSaveScreenshot) },
+            {},
+        )
+    }
+    val captureLongScreenshot = {
+        val view = screenshotView
+        if (view != null) {
+            val tiles = mutableListOf<Bitmap>()
+            fun captureTile(index: Int) {
+                view.capturePixels().accept(
+                    { bitmap ->
+                        if (bitmap == null) return@accept
+                        tiles += bitmap
+                        if (index < 3) {
+                            view.session?.panZoomController?.scrollBy(
+                                ScreenLength.zero(),
+                                ScreenLength.fromVisualViewportHeight(0.85),
+                                org.mozilla.geckoview.PanZoomController.SCROLL_BEHAVIOR_AUTO,
+                            )
+                            Handler(Looper.getMainLooper()).postDelayed({ captureTile(index + 1) }, 350L)
+                        } else {
+                            view.session?.panZoomController?.scrollTo(ScreenLength.zero(), ScreenLength.zero())
+                            val overlap = (tiles.first().height * 0.15f).toInt()
+                            val height = (tiles.sumOf { it.height } - overlap * (tiles.size - 1)).coerceAtMost(12_000)
+                            val stitched = Bitmap.createBitmap(tiles.first().width, height, Bitmap.Config.ARGB_8888)
+                            Canvas(stitched).apply {
+                                var top = 0f
+                                tiles.forEach { tile ->
+                                    drawBitmap(tile, 0f, top, null)
+                                    top += (tile.height - overlap).toFloat()
+                                    if (tile !== tiles.last()) tile.recycle()
+                                }
+                            }
+                            onSaveScreenshot(stitched)
+                        }
+                    },
+                    {},
+                )
+            }
+            view.session?.panZoomController?.scrollTo(ScreenLength.zero(), ScreenLength.zero())
+            Handler(Looper.getMainLooper()).postDelayed({ captureTile(0) }, 250L)
+        }
+    }
+    if (state.isPictureInPictureMode) {
+        BrowserViewport(
+            tab = activeTab,
+            onNavigate = onNavigate,
+            onReloadCrashedTab = onReloadCrashedTab,
+            onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
+            modifier = modifier,
+        )
+        return
+    }
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
@@ -488,7 +651,12 @@ private fun BrowserScreen(
                    onSetHomepage = onSetHomepage,
                    onClearSitePermissions = onClearSitePermissions,
                  onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
-                 onSetVerticalTabs = onSetVerticalTabs,
+                  onSetVerticalTabs = onSetVerticalTabs,
+                  shortcutBindings = shortcutBindings,
+                  onSetKeyboardShortcut = onSetKeyboardShortcut,
+                  capturingShortcut = capturingShortcut,
+                  onBeginKeyboardShortcutCapture = onBeginKeyboardShortcutCapture,
+                  onCancelKeyboardShortcutCapture = onCancelKeyboardShortcutCapture,
                 dnsOverHttpsEnabled = state.settings.dnsOverHttpsEnabled,
                 onSetDnsOverHttpsEnabled = onSetDnsOverHttpsEnabled,
                 dnsProvider = state.settings.dnsProvider,
@@ -505,8 +673,8 @@ private fun BrowserScreen(
                 onAddUserScript = onAddUserScript,
                 onSetUserScriptEnabled = onSetUserScriptEnabled,
                 onRefreshUserScripts = onRefreshUserScripts,
-                onRemoveUserScript = onRemoveUserScript,
-                installedExtensions = installedExtensions,
+                 onRemoveUserScript = onRemoveUserScript,
+                 installedExtensions = installedExtensions,
                 extensionInstallInProgress = extensionInstallInProgress,
                 onInstallExtension = onInstallExtension,
                 onOpenFirefoxAddons = onOpenFirefoxAddons,
@@ -530,9 +698,10 @@ private fun BrowserScreen(
                      onFocusSplitPane = onFocusSplitPane,
                     onBack = onBack,
                     onForward = onForward,
-                    onReload = onReload,
-                    onReloadCrashedTab = onReloadCrashedTab,
-                     onTabContextMenu = onTabContextMenu,
+                     onReload = onReload,
+                     onReloadCrashedTab = onReloadCrashedTab,
+                     onRegisterViewport = { id, view -> if (id == state.activeTabId) screenshotView = view },
+                      onTabContextMenu = onTabContextMenu,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                  onNewTab = { onNewTab() },
@@ -564,9 +733,10 @@ private fun BrowserScreen(
                      onHome = onHome,
                     onBack = onBack,
                     onForward = onForward,
-                    onReload = onReload,
-                    onReloadCrashedTab = onReloadCrashedTab,
-                     onTabContextMenu = onTabContextMenu,
+                     onReload = onReload,
+                     onReloadCrashedTab = onReloadCrashedTab,
+                     onRegisterViewport = { id, view -> if (id == state.activeTabId) screenshotView = view },
+                      onTabContextMenu = onTabContextMenu,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                     onNewTab = { onNewTab() },
@@ -597,11 +767,59 @@ private fun BrowserScreen(
                     menuExpanded = false
                     onSetOverlay(BrowserOverlay.LIBRARY)
                 },
-                onShowDownloads = {
-                    menuExpanded = false
-                    onSetOverlay(BrowserOverlay.DOWNLOADS)
-                },
-                onShowSettings = {
+                 onShowDownloads = {
+                     menuExpanded = false
+                     onSetOverlay(BrowserOverlay.DOWNLOADS)
+                 },
+                 onShowSiteSettings = {
+                     menuExpanded = false
+                     onOpenSiteSettings()
+                 },
+                 onToggleReadingList = {
+                     menuExpanded = false
+                     onToggleReadingList()
+                 },
+                 onOpenQrCode = {
+                     menuExpanded = false
+                     onOpenQrCode()
+                 },
+                 onSharePage = {
+                     menuExpanded = false
+                     onSharePage()
+                 },
+                  onExportPdf = {
+                      menuExpanded = false
+                      onExportPdf()
+                  },
+                  onCaptureScreenshot = {
+                      menuExpanded = false
+                      captureScreenshot()
+                  },
+                  onCaptureLongScreenshot = {
+                      menuExpanded = false
+                      captureLongScreenshot()
+                  },
+                  onInstallWebApp = {
+                      menuExpanded = false
+                      onInstallWebApp()
+                  },
+                  onEnterPictureInPicture = {
+                      menuExpanded = false
+                      onEnterPictureInPicture()
+                  },
+                  onSaveOffline = {
+                      menuExpanded = false
+                      onSaveOffline()
+                  },
+                  onOpenCommandPalette = {
+                      menuExpanded = false
+                      onOpenCommandPalette()
+                  },
+                  onOpenTabSwitcher = {
+                      menuExpanded = false
+                      onOpenTabSwitcher()
+                  },
+                  onShowSettings = {
                     menuExpanded = false
                     onSetOverlay(BrowserOverlay.SETTINGS)
                 },
@@ -618,18 +836,22 @@ private fun BrowserScreen(
                             onSelectTab = onSelectTab,
                             onCloseTab = onCloseTab,
                         )
-                        BrowserOverlay.LIBRARY -> LibrarySheet(
-                            bookmarks = bookmarks,
-                            history = history,
-                            onOpen = onOpenSavedPage,
+                         BrowserOverlay.LIBRARY -> LibrarySheet(
+                             bookmarks = bookmarks,
+                             history = history,
+                             readingList = readingList,
+                             onOpen = onOpenSavedPage,
                             onClearHistory = onClearHistory,
                             onDeleteHistoryEntry = onDeleteHistoryEntry,
                             onSetBookmarkFolder = onSetBookmarkFolder,
                             onUpdateBookmark = onUpdateBookmark,
                             onDeleteBookmark = onDeleteBookmark,
                             onExportBookmarks = onExportBookmarks,
-                            onImportBookmarks = onImportBookmarks,
-                        )
+                             onImportBookmarks = onImportBookmarks,
+                             onDeleteReadingListEntry = onDeleteReadingListEntry,
+                             onSetReadingListRead = onSetReadingListRead,
+                             onOpenOffline = onOpenOffline,
+                         )
                         BrowserOverlay.DOWNLOADS -> DownloadsSheet(
                             downloads = downloads,
                             onOpen = onOpenDownload,
@@ -680,14 +902,29 @@ private fun BrowserScreen(
         extensionPopup?.let { popup ->
             ExtensionPopupView(popup, onCloseExtensionPopup)
         }
-        findInPage?.let { find ->
-            FindInPageBar(
-                find = find,
-                onQueryChange = onUpdateFindInPage,
-                onFindNext = onFindNext,
-                onClose = onCloseFindInPage,
-            )
-        }
+         findInPage?.let { find ->
+             FindInPageBar(
+                 find = find,
+                 onQueryChange = onUpdateFindInPage,
+                 onFindNext = onFindNext,
+                 onClose = onCloseFindInPage,
+             )
+         }
+         if (state.siteSettingsOpen) {
+             SiteSettingsDialog(
+                 tab = activeTab,
+                 setting = state.siteSetting,
+                 globalDesktopSites = state.settings.desktopSites,
+                 globalAdBlocking = state.settings.adBlockingEnabled,
+                 globalUserScripts = state.settings.userScriptUrls.isNotEmpty(),
+                 onSetDesktopOverride = onSetSiteDesktopOverride,
+                 onSetAdBlockingOverride = onSetSiteAdBlockingOverride,
+                 onSetUserScriptsOverride = onSetSiteUserScriptsOverride,
+                 onSetZoomOverride = onSetSiteZoomOverride,
+                 onClear = onClearSiteSettings,
+                 onDismiss = onCloseSiteSettings,
+             )
+         }
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.TopCenter,
@@ -714,6 +951,7 @@ private fun DesktopBrowserLayout(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
+    onRegisterViewport: (String, GeckoView) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
@@ -817,6 +1055,7 @@ private fun DesktopBrowserLayout(
                         tab = splitPrimaryTab,
                         onNavigate = onNavigate,
                         onReloadCrashedTab = onReloadCrashedTab,
+                        onViewReady = onRegisterViewport,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         onFocus = { onFocusSplitPane(false) },
                     )
@@ -830,6 +1069,7 @@ private fun DesktopBrowserLayout(
                         tab = splitSecondaryTab,
                         onNavigate = onNavigate,
                         onReloadCrashedTab = onReloadCrashedTab,
+                        onViewReady = onRegisterViewport,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         onFocus = { onFocusSplitPane(true) },
                     )
@@ -839,6 +1079,7 @@ private fun DesktopBrowserLayout(
                     tab = fullScreenTab ?: activeTab,
                     onNavigate = onNavigate,
                     onReloadCrashedTab = onReloadCrashedTab,
+                    onViewReady = onRegisterViewport,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
             }
@@ -857,6 +1098,7 @@ private fun CompactBrowserLayout(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
+    onRegisterViewport: (String, GeckoView) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
@@ -920,6 +1162,7 @@ private fun CompactBrowserLayout(
             tab = fullScreenTab ?: activeTab,
             onNavigate = onNavigate,
             onReloadCrashedTab = onReloadCrashedTab,
+            onViewReady = onRegisterViewport,
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
         if (fullScreenTab == null) {
@@ -1472,6 +1715,16 @@ private fun VerticalTabRow(
 ) {
     var tabOrigin by remember(tab.id) { mutableStateOf(IntOffset.Zero) }
     var menuExpanded by remember(tab.id) { mutableStateOf(false) }
+    var hovered by remember(tab.id) { mutableStateOf(false) }
+    var hoverVisible by remember(tab.id) { mutableStateOf(false) }
+    LaunchedEffect(hovered) {
+        hoverVisible = false
+        if (hovered) {
+            delay(450)
+            hoverVisible = hovered
+        }
+    }
+    Box {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1489,6 +1742,17 @@ private fun VerticalTabRow(
                     else -> Color.Transparent
                 },
             )
+            .pointerInput(tab.id) {
+                awaitPointerEventScope {
+                    while (true) {
+                        when (awaitPointerEvent().type) {
+                            PointerEventType.Enter -> hovered = true
+                            PointerEventType.Exit -> hovered = false
+                            else -> Unit
+                        }
+                    }
+                }
+            }
             .pointerInput(tab.id) {
                 awaitPointerEventScope {
                     while (true) {
@@ -1629,6 +1893,32 @@ private fun VerticalTabRow(
             }
             BrowserNavButton(Icons.Outlined.Close, "Close tab", true) { onCloseTab(tab.id) }
         }
+    }
+    if (hoverVisible) {
+        Popup(
+            popupPositionProvider = ContextMenuPositionProvider(tabOrigin.x + 220, tabOrigin.y),
+            properties = PopupProperties(focusable = false),
+        ) {
+            Surface(
+                modifier = Modifier.widthIn(min = 240.dp, max = 360.dp),
+                shape = RoundedCornerShape(12.dp),
+                tonalElevation = 6.dp,
+                shadowElevation = 8.dp,
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(tab.title.ifBlank { "New tab" }, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                    Text(tab.url.ifBlank { "Start browsing" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                    if (tab.isPrivate || tab.isSleeping) {
+                        Text(
+                            listOfNotNull(if (tab.isPrivate) "Private" else null, if (tab.isSleeping) "Sleeping" else null).joinToString("  •  "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        }
+    }
     }
 }
 
@@ -1842,6 +2132,15 @@ private fun TabStrip(
     val orderedTabs = tabs.sortedWith(compareByDescending { it.pinned })
     val tabIds = orderedTabs.mapTo(hashSetOf()) { it.id }
     var dragDistance by remember { mutableStateOf(0f) }
+    var hoveredTabId by remember { mutableStateOf<String?>(null) }
+    var previewTabId by remember { mutableStateOf<String?>(null) }
+    var hoverPosition by remember { mutableStateOf(IntOffset.Zero) }
+    LaunchedEffect(hoveredTabId) {
+        previewTabId = null
+        val id = hoveredTabId ?: return@LaunchedEffect
+        delay(450)
+        if (hoveredTabId == id) previewTabId = id
+    }
     Surface(
         modifier = modifier.pointerInput(listState) {
             awaitPointerEventScope {
@@ -1884,6 +2183,22 @@ private fun TabStrip(
                     val tabOrigin = remember(tab.id) { mutableStateOf(IntOffset.Zero) }
                     Surface(
                         modifier = Modifier
+                            .pointerInput(tab.id) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        when (event.type) {
+                                            PointerEventType.Enter -> {
+                                                hoveredTabId = tab.id
+                                                event.changes.firstOrNull()?.position?.let { position ->
+                                                    hoverPosition = IntOffset(tabOrigin.value.x + position.x.toInt(), tabOrigin.value.y + position.y.toInt())
+                                                }
+                                            }
+                                            PointerEventType.Exit -> if (hoveredTabId == tab.id) hoveredTabId = null
+                                        }
+                                    }
+                                }
+                            }
                             .onGloballyPositioned { coordinates ->
                                 val position = coordinates.positionInWindow()
                                 tabOrigin.value = IntOffset(position.x.toInt(), position.y.toInt())
@@ -2037,6 +2352,33 @@ private fun TabStrip(
             )
             if (showNewTabButton) {
             BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
+            }
+            previewTabId?.let { id ->
+                orderedTabs.firstOrNull { it.id == id }?.let { tab ->
+                    Popup(
+                        popupPositionProvider = ContextMenuPositionProvider(hoverPosition.x, hoverPosition.y + 8),
+                        properties = PopupProperties(focusable = false),
+                    ) {
+                        Surface(
+                            modifier = Modifier.widthIn(min = 240.dp, max = 360.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            tonalElevation = 6.dp,
+                            shadowElevation = 8.dp,
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(tab.title.ifBlank { "New tab" }, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                                Text(tab.url.ifBlank { "Start browsing" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                                if (tab.isPrivate || tab.isSleeping) {
+                                    Text(
+                                        listOfNotNull(if (tab.isPrivate) "Private" else null, if (tab.isSleeping) "Sleeping" else null).joinToString("  •  "),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2194,6 +2536,7 @@ private fun BrowserViewport(
     tab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onReloadCrashedTab: () -> Unit,
+    onViewReady: (String, GeckoView) -> Unit,
     modifier: Modifier = Modifier,
     onFocus: (() -> Unit)? = null,
 ) {
@@ -2214,8 +2557,9 @@ private fun BrowserViewport(
                         setBackgroundColor(pageBackground)
                         coverUntilFirstPaint(pageBackground)
                         setSession(tab.session)
-                        setOnFocusChangeListener { _, focused -> if (focused) onFocus?.invoke() }
-                        tab.session.compositorController.setClearColor(pageBackground)
+                         setOnFocusChangeListener { _, focused -> if (focused) onFocus?.invoke() }
+                         tab.session.compositorController.setClearColor(pageBackground)
+                         onViewReady(tab.id, this)
                     }
                 },
                     update = { view ->
@@ -2228,6 +2572,7 @@ private fun BrowserViewport(
                         view.setOnFocusChangeListener { _, focused -> if (focused) onFocus?.invoke() }
                         view.session?.compositorController?.setClearColor(pageBackground)
                     }
+                    onViewReady(tab.id, view)
                 },
                 modifier = Modifier.fillMaxSize(),
                 onRelease = { it.releaseSession() },
@@ -2319,6 +2664,7 @@ private fun BrowserContextMenuPopup(
                     .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
+            if (menu.isTab) {
             DropdownMenuItem(
                 text = { Text("New tab") },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
@@ -2375,9 +2721,322 @@ private fun BrowserContextMenuPopup(
                 leadingIcon = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.CLOSE_TABS_TO_RIGHT) },
             )
+            } else {
+                if (!menu.linkUri.isNullOrBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Open link") },
+                        leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.OPEN_LINK) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Open link in new tab") },
+                        leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.OPEN_LINK_IN_NEW_TAB) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Open link in private tab") },
+                        leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.OPEN_LINK_IN_PRIVATE_TAB) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy link") },
+                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.COPY_LINK) },
+                    )
+                }
+                if (!menu.resourceUri.isNullOrBlank()) {
+                    val isImage = menu.resourceType == org.mozilla.geckoview.GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE
+                    DropdownMenuItem(
+                        text = { Text(if (isImage) "Open image in new tab" else "Open media in new tab") },
+                        leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (isImage) "Save image" else "Save media") },
+                        leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.SAVE_MEDIA) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy media URL") },
+                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.COPY_MEDIA_URL) },
+                    )
+                }
+                if (!menu.textContent.isNullOrBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Copy text") },
+                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.COPY_TEXT) },
+                    )
+                }
+                Divider()
+                if (menu.canGoBack) {
+                    DropdownMenuItem(
+                        text = { Text("Back") },
+                        leadingIcon = { Icon(Icons.Outlined.ArrowBack, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.BACK) },
+                    )
+                }
+                if (menu.canGoForward) {
+                    DropdownMenuItem(
+                        text = { Text("Forward") },
+                        leadingIcon = { Icon(Icons.Outlined.ArrowForward, contentDescription = null) },
+                        onClick = { onAction(ContextMenuAction.FORWARD) },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Reload") },
+                    leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                    onClick = { onAction(ContextMenuAction.RELOAD) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Copy page URL") },
+                    leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
+                    onClick = { onAction(ContextMenuAction.COPY_PAGE_URL) },
+                )
+                DropdownMenuItem(
+                    text = { Text(if (menu.isBookmarked) "Remove bookmark" else "Bookmark page") },
+                    leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+                    onClick = { onAction(ContextMenuAction.TOGGLE_BOOKMARK) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Save page") },
+                    leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                    onClick = { onAction(ContextMenuAction.SAVE_PAGE) },
+                )
+            }
             }
         }
     }
+}
+
+@Composable
+private fun CommandPaletteDialog(
+    state: CommandPaletteState,
+    onQueryChange: (String) -> Unit,
+    onMoveSelection: (Int) -> Unit,
+    onExecute: (BrowserCommandId) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    val commands = BrowserCommands.all.filter {
+        state.query.isBlank() || it.title.contains(state.query, true) || it.description.contains(state.query, true)
+    }
+    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Command palette") },
+        text = {
+            Column {
+                BasicTextField(
+                    value = state.query,
+                    onValueChange = onQueryChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .focusRequester(focusRequester)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.DirectionDown -> onMoveSelection(1)
+                                Key.DirectionUp -> onMoveSelection(-1)
+                                Key.Enter -> commands.getOrNull(state.selectedIndex)?.id?.let(onExecute)
+                                Key.Escape -> onDismiss()
+                                else -> return@onPreviewKeyEvent false
+                            }
+                            true
+                        }
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (state.query.isBlank()) Text("Type a command", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            innerTextField()
+                        }
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                if (commands.isEmpty()) {
+                    Text("No matching commands", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(commands, key = { it.id.name }) { command ->
+                            val index = commands.indexOf(command)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (index == state.selectedIndex) MaterialTheme.colorScheme.primaryContainer
+                                        else Color.Transparent,
+                                    )
+                                    .clickable { onExecute(command.id) }
+                                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(command.title, style = MaterialTheme.typography.bodyLarge)
+                                    Text(command.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { commands.getOrNull(state.selectedIndex)?.id?.let(onExecute) },
+                enabled = commands.isNotEmpty(),
+            ) { Text("Run") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+@Composable
+private fun TabSwitcherDialog(
+    state: TabSwitcherState,
+    tabs: List<BrowserTabState>,
+    onQueryChange: (String) -> Unit,
+    onMoveSelection: (Int) -> Unit,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    val visibleTabs = tabs.filter {
+        state.query.isBlank() || it.title.contains(state.query, true) || it.url.contains(state.query, true)
+    }
+    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Switch tab") },
+        text = {
+            Column {
+                BasicTextField(
+                    value = state.query,
+                    onValueChange = onQueryChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .focusRequester(focusRequester)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.DirectionDown -> onMoveSelection(1)
+                                Key.DirectionUp -> onMoveSelection(-1)
+                                Key.Enter -> visibleTabs.getOrNull(state.selectedIndex)?.id?.let(onSelect)
+                                Key.Escape -> onDismiss()
+                                else -> return@onPreviewKeyEvent false
+                            }
+                            true
+                        }
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (state.query.isBlank()) Text("Search tabs by title or URL", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            innerTextField()
+                        }
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                if (visibleTabs.isEmpty()) {
+                    Text("No matching tabs", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                        items(visibleTabs, key = { it.id }) { tab ->
+                            val index = visibleTabs.indexOf(tab)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (index == state.selectedIndex) MaterialTheme.colorScheme.primaryContainer
+                                        else Color.Transparent,
+                                    )
+                                    .clickable {
+                                        onSelect(tab.id)
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    if (tab.isPrivate) Icons.Outlined.VisibilityOff else Icons.Outlined.Language,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Column(Modifier.padding(start = 10.dp)) {
+                                    Text(tab.title.ifBlank { "New tab" }, maxLines = 1)
+                                    Text(tab.url.ifBlank { "Start browsing" }, maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { visibleTabs.getOrNull(state.selectedIndex)?.id?.let(onSelect) },
+                enabled = visibleTabs.isNotEmpty(),
+            ) { Text("Switch") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+@Composable
+private fun QrCodeDialog(
+    url: String,
+    onShare: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val bitmap = remember(url) { runCatching { QrCodeGenerator.generate(url, 640) }.getOrNull() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+        title = { Text("Share page") },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                bitmap?.let {
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = "QR code for $url",
+                        modifier = Modifier.size(260.dp),
+                    )
+                } ?: Text("This URL is too long for a QR code.")
+                Spacer(Modifier.height(12.dp))
+                Text(url, style = MaterialTheme.typography.bodySmall, maxLines = 3)
+            }
+        },
+        confirmButton = { TextButton(onClick = onShare) { Text("Share text") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+@Composable
+private fun OfflineArticleDialog(article: OfflineArticle, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+        title = { Text(article.title.ifBlank { "Offline article" }, maxLines = 2) },
+        text = {
+            Text(
+                article.content.ifBlank { "This offline copy has no readable text." },
+                modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+            )
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
 }
 
 @Composable
@@ -2442,6 +3101,18 @@ private fun BrowserMenu(
     onShowTabs: () -> Unit,
     onShowLibrary: () -> Unit,
     onShowDownloads: () -> Unit,
+    onShowSiteSettings: () -> Unit,
+    onOpenCommandPalette: () -> Unit,
+    onOpenTabSwitcher: () -> Unit,
+    onToggleReadingList: () -> Unit,
+    onOpenQrCode: () -> Unit,
+    onSharePage: () -> Unit,
+    onExportPdf: () -> Unit,
+    onCaptureScreenshot: () -> Unit,
+    onCaptureLongScreenshot: () -> Unit,
+    onInstallWebApp: () -> Unit,
+    onEnterPictureInPicture: () -> Unit,
+    onSaveOffline: () -> Unit,
     onShowSettings: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize()) {
@@ -2462,6 +3133,16 @@ private fun BrowserMenu(
                     leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
                     onClick = onShowTabs,
                 )
+                DropdownMenuItem(
+                    text = { Text("Search tabs") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                    onClick = onOpenTabSwitcher,
+                )
+                DropdownMenuItem(
+                    text = { Text("Command palette") },
+                    leadingIcon = { Icon(Icons.Outlined.Menu, contentDescription = null) },
+                    onClick = onOpenCommandPalette,
+                )
         DropdownMenuItem(
             text = { Text("Bookmarks & history") },
             leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
@@ -2472,6 +3153,56 @@ private fun BrowserMenu(
             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
             onClick = onShowDownloads,
         )
+                DropdownMenuItem(
+                    text = { Text("Site settings") },
+                    leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                    onClick = onShowSiteSettings,
+                )
+                DropdownMenuItem(
+                    text = { Text("Save to reading list") },
+                    leadingIcon = { Icon(Icons.Outlined.BookmarkBorder, contentDescription = null) },
+                    onClick = onToggleReadingList,
+                )
+                DropdownMenuItem(
+                    text = { Text("Show QR code") },
+                    leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                    onClick = onOpenQrCode,
+                )
+                DropdownMenuItem(
+                    text = { Text("Share page") },
+                    leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                    onClick = onSharePage,
+                )
+                DropdownMenuItem(
+                    text = { Text("Export as PDF") },
+                    leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                    onClick = onExportPdf,
+                )
+                DropdownMenuItem(
+                    text = { Text("Save screenshot") },
+                    leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                    onClick = onCaptureScreenshot,
+                )
+                DropdownMenuItem(
+                    text = { Text("Save long screenshot") },
+                    leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                    onClick = onCaptureLongScreenshot,
+                )
+                DropdownMenuItem(
+                    text = { Text("Install site as app") },
+                    leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                    onClick = onInstallWebApp,
+                )
+                DropdownMenuItem(
+                    text = { Text("Picture-in-Picture") },
+                    leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                    onClick = onEnterPictureInPicture,
+                )
+                DropdownMenuItem(
+                    text = { Text("Save for offline reading") },
+                    leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                    onClick = onSaveOffline,
+                )
                 DropdownMenuItem(
                     text = { Text("Settings") },
                     leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
@@ -2533,6 +3264,7 @@ private fun TabsSheet(
 private fun LibrarySheet(
     bookmarks: List<Bookmark>,
     history: List<HistoryEntry>,
+    readingList: List<com.dwicao.dextra.data.ReadingListEntry>,
     onOpen: (String) -> Unit,
     onClearHistory: () -> Unit,
     onDeleteHistoryEntry: (HistoryEntry) -> Unit,
@@ -2541,12 +3273,16 @@ private fun LibrarySheet(
     onDeleteBookmark: (Bookmark) -> Unit,
     onExportBookmarks: () -> Unit,
     onImportBookmarks: () -> Unit,
+    onDeleteReadingListEntry: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
+    onSetReadingListRead: (com.dwicao.dextra.data.ReadingListEntry, Boolean) -> Unit,
+    onOpenOffline: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     SheetHeader("Library", "Keep the useful parts close")
     ScrollableTabRow(selectedTabIndex = selectedTab, edgePadding = 20.dp) {
         Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Bookmarks") }, icon = { Icon(Icons.Outlined.Bookmark, null) })
         Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("History") }, icon = { Icon(Icons.Outlined.History, null) })
+        Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("Reading list") }, icon = { Icon(Icons.Outlined.BookmarkBorder, null) })
     }
     if (selectedTab == 0) {
         var selectedFolder by rememberSaveable { mutableStateOf("") }
@@ -2723,7 +3459,7 @@ private fun LibrarySheet(
                 dismissButton = { TextButton(onClick = { editBookmark = null }) { Text("Cancel") } },
             )
         }
-    } else {
+    } else if (selectedTab == 1) {
         var historyQuery by rememberSaveable { mutableStateOf("") }
         val visibleHistory = history.filter {
             historyQuery.isBlank() || it.title.contains(historyQuery, true) || it.url.contains(historyQuery, true)
@@ -2759,6 +3495,40 @@ private fun LibrarySheet(
                         trailingContent = {
                             IconButton(onClick = { onDeleteHistoryEntry(entry) }) {
                                 Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete history entry")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+    } else {
+        if (readingList.isEmpty()) {
+            EmptyLibrary("Pages saved for later will appear here.", Icons.Outlined.BookmarkBorder)
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
+                items(readingList, key = { it.id }) { entry ->
+                    ListItem(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        headlineContent = { Text(entry.title.ifBlank { BrowserUrl.displayValue(entry.url) }, maxLines = 1) },
+                        supportingContent = { Text(entry.url, maxLines = 1) },
+                        leadingContent = { Icon(Icons.Outlined.BookmarkBorder, contentDescription = null) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Switch(
+                                    checked = entry.isRead,
+                                    onCheckedChange = { onSetReadingListRead(entry, it) },
+                                )
+                                IconButton(onClick = { onOpen(entry.url) }) {
+                                    Icon(Icons.Outlined.OpenInNew, contentDescription = "Open saved page")
+                                }
+                                if (entry.offlinePath != null) {
+                                    IconButton(onClick = { onOpenOffline(entry) }) {
+                                        Icon(Icons.Outlined.Download, contentDescription = "Open offline copy")
+                                    }
+                                }
+                                IconButton(onClick = { onDeleteReadingListEntry(entry) }) {
+                                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove from reading list")
+                                }
                             }
                         },
                     )
@@ -3062,6 +3832,93 @@ private fun ExtensionUpdateDialog(
 }
 
 @Composable
+private fun SiteSettingsDialog(
+    tab: BrowserTabState?,
+    setting: SiteSetting?,
+    globalDesktopSites: Boolean,
+    globalAdBlocking: Boolean,
+    globalUserScripts: Boolean,
+    onSetDesktopOverride: (Boolean?) -> Unit,
+    onSetAdBlockingOverride: (Boolean?) -> Unit,
+    onSetUserScriptsOverride: (Boolean?) -> Unit,
+    onSetZoomOverride: (Int?) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (tab == null) return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+        title = { Text("Site settings") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(tab.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                Spacer(Modifier.height(16.dp))
+                SiteOverrideToggle("Desktop site", setting?.desktopSites, globalDesktopSites, onSetDesktopOverride)
+                Spacer(Modifier.height(12.dp))
+                SiteOverrideToggle("Ad blocking", setting?.adBlockingEnabled, globalAdBlocking, onSetAdBlockingOverride)
+                Spacer(Modifier.height(12.dp))
+                SiteOverrideToggle("Userscripts", setting?.userScriptsEnabled, globalUserScripts, onSetUserScriptsOverride)
+                Spacer(Modifier.height(16.dp))
+                Text("Page zoom", style = MaterialTheme.typography.titleSmall)
+                Text("Global/default: 100%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilterChip(
+                        selected = setting?.zoomPercent == null,
+                        onClick = { onSetZoomOverride(null) },
+                        label = { Text("Default") },
+                    )
+                    listOf(80, 90, 100, 110, 125, 150, 175, 200).forEach { zoom ->
+                        FilterChip(
+                            selected = setting?.zoomPercent == zoom,
+                            onClick = { onSetZoomOverride(zoom) },
+                            label = { Text("$zoom%") },
+                        )
+                    }
+                }
+                if (setting != null) {
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = onClear) {
+                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Clear site overrides")
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun SiteOverrideToggle(
+    title: String,
+    override: Boolean?,
+    globalValue: Boolean,
+    onChange: (Boolean?) -> Unit,
+) {
+    Column {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        Text("Global is currently ${if (globalValue) "on" else "off"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            FilterChip(selected = override == null, onClick = { onChange(null) }, label = { Text("Global") })
+            FilterChip(selected = override == true, onClick = { onChange(true) }, label = { Text("On") })
+            FilterChip(selected = override == false, onClick = { onChange(false) }, label = { Text("Off") })
+        }
+    }
+}
+
+@Composable
 private fun SettingsScreen(
     onBack: () -> Unit,
     themeMode: ThemeMode,
@@ -3079,6 +3936,11 @@ private fun SettingsScreen(
     onClearSitePermissions: () -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
     onSetVerticalTabs: (Boolean) -> Unit,
+    shortcutBindings: Map<BrowserCommandId, KeyChord>,
+    onSetKeyboardShortcut: (BrowserCommandId, KeyChord?) -> Unit,
+    capturingShortcut: BrowserCommandId?,
+    onBeginKeyboardShortcutCapture: (BrowserCommandId) -> Unit,
+    onCancelKeyboardShortcutCapture: () -> Unit,
     dnsOverHttpsEnabled: Boolean,
     onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
     dnsProvider: DnsProvider,
@@ -3160,7 +4022,7 @@ private fun SettingsScreen(
             }
         }
     }
-    SettingSection("Browsing") {
+     SettingSection("Browsing") {
         var homepageDraft by rememberSaveable { mutableStateOf(homepage) }
         LaunchedEffect(homepage) { homepageDraft = homepage }
         Text("Homepage", style = MaterialTheme.typography.titleSmall)
@@ -3209,9 +4071,52 @@ private fun SettingsScreen(
             Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
             Spacer(Modifier.width(6.dp))
             Text("Clear site permissions")
-        }
-    }
-    SettingSection("Network") {
+         }
+     }
+     SettingSection("Keyboard shortcuts") {
+         Text(
+             "Use Ctrl, Alt, or Meta combinations for browser actions. Shortcuts can be changed without affecting website text fields.",
+             style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+         )
+         capturingShortcut?.let { command ->
+             Surface(
+                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                 shape = RoundedCornerShape(10.dp),
+                 color = MaterialTheme.colorScheme.primaryContainer,
+             ) {
+                 Row(
+                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                     verticalAlignment = Alignment.CenterVertically,
+                 ) {
+                     Text("Press a key for ${BrowserCommands.all.firstOrNull { it.id == command }?.title ?: command.name}", Modifier.weight(1f))
+                     TextButton(onClick = onCancelKeyboardShortcutCapture) { Text("Cancel") }
+                 }
+             }
+         }
+         BrowserCommands.all.forEach { command ->
+             val binding = shortcutBindings[command.id]
+             Row(
+                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                 verticalAlignment = Alignment.CenterVertically,
+             ) {
+                 Column(Modifier.weight(1f)) {
+                     Text(command.title, style = MaterialTheme.typography.bodyMedium)
+                     Text(
+                         binding?.displayName() ?: "Not set",
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     )
+                 }
+                 TextButton(onClick = { onBeginKeyboardShortcutCapture(command.id) }) { Text("Change") }
+                 TextButton(
+                     onClick = { onSetKeyboardShortcut(command.id, null) },
+                     enabled = binding != DefaultKeyboardShortcuts.bindings[command.id],
+                 ) { Text("Reset") }
+             }
+         }
+     }
+     SettingSection("Network") {
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

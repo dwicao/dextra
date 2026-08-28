@@ -1,8 +1,12 @@
 package com.dwicao.dextra
 
 import android.content.Intent
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import android.view.KeyEvent
+import android.app.PictureInPictureParams
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -54,6 +58,21 @@ class MainActivity : ComponentActivity() {
         browserViewModel.handleIncomingIntent(intent)
     }
 
+    fun enterBrowserPictureInPicture() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            enterPictureInPictureMode(
+                PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .build(),
+            )
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        browserViewModel.setPictureInPictureMode(isInPictureInPictureMode)
+    }
+
     override fun onStart() {
         super.onStart()
         browserViewModel.onAppForeground()
@@ -67,6 +86,7 @@ class MainActivity : ComponentActivity() {
     @Suppress("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
+            if (browserViewModel.handleKeyShortcut(event)) return true
             if (event.isCtrlPressed) {
                 when {
                     event.keyCode in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> {

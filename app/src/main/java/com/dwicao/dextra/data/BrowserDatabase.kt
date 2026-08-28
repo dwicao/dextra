@@ -45,6 +45,29 @@ data class SitePermission(
     val updatedAt: Long,
 )
 
+@Entity(tableName = "site_settings")
+data class SiteSetting(
+    @PrimaryKey val origin: String,
+    val desktopSites: Boolean? = null,
+    val adBlockingEnabled: Boolean? = null,
+    val userScriptsEnabled: Boolean? = null,
+    val zoomPercent: Int? = null,
+    val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "reading_list",
+    indices = [Index(value = ["url"], unique = true)],
+)
+data class ReadingListEntry(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val url: String,
+    val title: String,
+    val savedAt: Long,
+    val isRead: Boolean = false,
+    val offlinePath: String? = null,
+)
+
 @Entity(tableName = "downloads")
 data class DownloadEntry(
     @PrimaryKey val downloadId: Long,
@@ -118,6 +141,36 @@ interface BrowserDao {
     @Query("DELETE FROM site_permissions")
     suspend fun clearSitePermissions()
 
+    @Query("SELECT * FROM site_settings WHERE origin = :origin LIMIT 1")
+    suspend fun getSiteSetting(origin: String): SiteSetting?
+
+    @Query("SELECT * FROM site_settings")
+    suspend fun getSiteSettings(): List<SiteSetting>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSiteSetting(setting: SiteSetting)
+
+    @Query("DELETE FROM site_settings WHERE origin = :origin")
+    suspend fun deleteSiteSetting(origin: String)
+
+    @Query("DELETE FROM site_settings")
+    suspend fun clearSiteSettings()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertReadingListEntry(entry: ReadingListEntry)
+
+    @Query("SELECT * FROM reading_list ORDER BY savedAt DESC")
+    fun observeReadingList(): Flow<List<ReadingListEntry>>
+
+    @Query("SELECT * FROM reading_list WHERE url = :url LIMIT 1")
+    suspend fun getReadingListEntry(url: String): ReadingListEntry?
+
+    @Query("DELETE FROM reading_list WHERE url = :url")
+    suspend fun deleteReadingListEntry(url: String)
+
+    @Query("UPDATE reading_list SET isRead = :isRead WHERE url = :url")
+    suspend fun setReadingListRead(url: String, isRead: Boolean)
+
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
     fun observeDownloads(): Flow<List<DownloadEntry>>
 
@@ -134,7 +187,7 @@ interface BrowserDao {
     suspend fun deleteDownload(downloadId: Long)
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class], version = 7, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class], version = 9, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -147,7 +200,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -209,6 +262,42 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
         private val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE downloads ADD COLUMN isPrivate INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS site_settings (
+                        origin TEXT NOT NULL,
+                        desktopSites INTEGER,
+                        adBlockingEnabled INTEGER,
+                        userScriptsEnabled INTEGER,
+                        zoomPercent INTEGER,
+                        updatedAt INTEGER NOT NULL,
+                        PRIMARY KEY(origin)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS reading_list (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        url TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        savedAt INTEGER NOT NULL,
+                        isRead INTEGER NOT NULL,
+                        offlinePath TEXT
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_reading_list_url ON reading_list(url)")
             }
         }
     }

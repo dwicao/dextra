@@ -3,13 +3,18 @@ package com.dwicao.dextra.browser
 import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.content.ContentValues
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Environment
 import android.os.Build
 import android.os.SystemClock
 import android.text.Html
+import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.lifecycle.AndroidViewModel
@@ -32,9 +37,11 @@ import com.dwicao.dextra.data.DownloadStatus
 import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.ExtensionInstallRecord
 import com.dwicao.dextra.data.HistoryEntry
+import com.dwicao.dextra.data.ReadingListEntry
 import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.SavedTab
 import com.dwicao.dextra.data.SavedTabGroup
+import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.SettingsRepository
 import com.dwicao.dextra.data.ThemeMode
@@ -54,11 +61,13 @@ import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.MediaSession
 import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebResponse
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URI
 import java.io.File
 import java.io.IOException
 import java.io.ByteArrayOutputStream
@@ -85,6 +94,8 @@ data class BrowserTabState(
     val groupId: String? = null,
     val isSleeping: Boolean = false,
     val isFullScreen: Boolean = false,
+    val hasActiveMedia: Boolean = false,
+    val sessionState: String? = null,
 )
 
 enum class BrowserOverlay {
@@ -106,6 +117,20 @@ enum class ContextMenuAction {
     CLOSE_OTHER_TABS,
     CLOSE_TABS_TO_LEFT,
     CLOSE_TABS_TO_RIGHT,
+    BACK,
+    FORWARD,
+    RELOAD,
+    OPEN_LINK,
+    OPEN_LINK_IN_NEW_TAB,
+    OPEN_LINK_IN_PRIVATE_TAB,
+    COPY_LINK,
+    COPY_TEXT,
+    OPEN_MEDIA_IN_NEW_TAB,
+    COPY_MEDIA_URL,
+    SAVE_MEDIA,
+    COPY_PAGE_URL,
+    TOGGLE_BOOKMARK,
+    SAVE_PAGE,
     OPEN_IN_SPLIT,
     CLOSE_SPLIT,
     SWAP_SPLIT,
@@ -116,6 +141,16 @@ data class BrowserContextMenu(
     val tabId: String,
     val x: Int,
     val y: Int,
+    val pageUrl: String = "",
+    val isBookmarked: Boolean = false,
+    val linkUri: String? = null,
+    val linkText: String? = null,
+    val textContent: String? = null,
+    val resourceUri: String? = null,
+    val resourceType: Int = GeckoSession.ContentDelegate.ContextElement.TYPE_NONE,
+    val canGoBack: Boolean = false,
+    val canGoForward: Boolean = false,
+    val isTab: Boolean = false,
     val isPinned: Boolean = false,
     val isSleeping: Boolean = false,
 )
@@ -166,6 +201,13 @@ data class ExtensionToolbarAction(
     val icon: Bitmap?,
 )
 
+data class WebAppManifestInfo(
+    val tabId: String,
+    val name: String,
+    val startUrl: String,
+    val scope: String,
+)
+
 data class ExtensionPopupState(
     val extensionId: String,
     val extensionName: String,
@@ -178,11 +220,28 @@ data class FindInPageState(
     val total: Int = 0,
 )
 
+data class CommandPaletteState(
+    val query: String = "",
+    val selectedIndex: Int = 0,
+)
+
+data class TabSwitcherState(
+    val query: String = "",
+    val selectedIndex: Int = 0,
+)
+
+data class OfflineArticle(
+    val title: String,
+    val content: String,
+)
+
 private data class ClosedTabEntry(
     val url: String,
+    val title: String,
     val isPrivate: Boolean,
     val pinned: Boolean,
     val groupId: String?,
+    val sessionState: String?,
 )
 
 data class ExtensionInstallPrompt(
@@ -202,6 +261,8 @@ private const val MAX_OPEN_TABS = 64
 private const val DOWNLOAD_CHANNEL_ID = "dextra_downloads"
 private const val MAX_BOOKMARK_IMPORT_BYTES = 5 * 1024 * 1024
 private const val PROGRESS_UPDATE_INTERVAL_MS = 100L
+private const val MAX_SESSION_STATE_BYTES = 256 * 1024
+private const val MAX_OFFLINE_ARTICLE_BYTES = 2 * 1024 * 1024
 
 data class ExtensionUpdatePrompt(
     val id: String,
@@ -230,6 +291,15 @@ data class BrowserUiState(
     val extensionActions: List<ExtensionToolbarAction> = emptyList(),
     val extensionPopup: ExtensionPopupState? = null,
     val findInPage: FindInPageState? = null,
+    val commandPalette: CommandPaletteState? = null,
+    val tabSwitcher: TabSwitcherState? = null,
+    val capturingShortcut: BrowserCommandId? = null,
+    val siteSetting: SiteSetting? = null,
+    val siteSettingsOpen: Boolean = false,
+    val qrCodeUrl: String? = null,
+    val webAppManifest: WebAppManifestInfo? = null,
+    val isPictureInPictureMode: Boolean = false,
+    val offlineArticle: OfflineArticle? = null,
     val addressFocusRequest: Long = 0,
     val splitPrimaryTabId: String? = null,
     val splitSecondaryTabId: String? = null,
@@ -371,6 +441,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val history: Flow<List<HistoryEntry>> = dao.observeHistory()
     val bookmarks: Flow<List<Bookmark>> = dao.observeBookmarks()
     val downloads: Flow<List<DownloadEntry>> = dao.observeDownloads()
+    val readingList: Flow<List<ReadingListEntry>> = dao.observeReadingList()
 
     init {
         readLastCrashReport()?.let { report ->
@@ -453,14 +524,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         privateMode: Boolean = false,
         initialUri: String? = null,
         openSession: Boolean = true,
+        savedSessionState: String? = null,
     ): String {
         if (_state.value.tabs.size >= MAX_OPEN_TABS) {
             showSnackbar("Tab limit reached ($MAX_OPEN_TABS)")
-            return _state.value.activeTabId.orEmpty()
+            return ""
         }
         val id = UUID.randomUUID().toString()
         val previousActiveTabId = _state.value.activeTabId
-        val session = createSession(id, privateMode, openSession)
+        val session = createSession(id, privateMode, openSession, savedSessionState = savedSessionState)
         val resolvedInitialUri = initialUri
             ?.let { BrowserUrl.resolve(it, _state.value.settings.searchEngine) }
             ?.takeIf(String::isNotBlank)
@@ -486,7 +558,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateExtensionActiveTab(previousActiveTabId, id)
         updateSessionActivity(id)
         persistOpenTabs()
-        if (resolvedInitialUri != null && openSession) session.loadUri(resolvedInitialUri)
+        val canRestoreState = savedSessionState?.let {
+            runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() != null
+        } == true
+        if (resolvedInitialUri != null && openSession && !canRestoreState) session.loadUri(resolvedInitialUri)
         return id
     }
 
@@ -507,6 +582,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(
                     activeTabId = id,
                     overlay = BrowserOverlay.NONE,
+                    siteSettingsOpen = false,
                     splitPrimaryTabId = if (splitSelection) it.splitPrimaryTabId else null,
                     splitSecondaryTabId = if (splitSelection) it.splitSecondaryTabId else null,
                     splitPaneFocused = splitSelection && id == it.splitSecondaryTabId,
@@ -520,6 +596,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeId = id,
                 secondaryId = if (splitSelection) current.splitSecondaryTabId else null,
             )
+            refreshSiteSetting(id)
             persistOpenTabs()
         }
     }
@@ -534,10 +611,170 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         selectTab(current.tabs[nextIndex].id)
     }
 
+    fun openCommandPalette() {
+        _state.update { it.copy(commandPalette = CommandPaletteState(), tabSwitcher = null, overlay = BrowserOverlay.NONE) }
+    }
+
+    fun closeCommandPalette() {
+        _state.update { it.copy(commandPalette = null) }
+    }
+
+    fun updateCommandPalette(query: String) {
+        _state.update { it.copy(commandPalette = it.commandPalette?.copy(query = query, selectedIndex = 0)) }
+    }
+
+    fun moveCommandSelection(offset: Int) {
+        val palette = _state.value.commandPalette ?: return
+        val count = filteredCommands(palette.query).size
+        if (count == 0) return
+        _state.update {
+            it.copy(commandPalette = palette.copy(selectedIndex = (palette.selectedIndex + offset + count) % count))
+        }
+    }
+
+    fun executeSelectedCommand() {
+        val palette = _state.value.commandPalette ?: return
+        filteredCommands(palette.query).getOrNull(palette.selectedIndex)?.let { executeCommand(it.id) }
+    }
+
+    fun executeCommand(command: BrowserCommandId) {
+        closeCommandPalette()
+        when (command) {
+            BrowserCommandId.NEW_TAB -> createTab()
+            BrowserCommandId.NEW_PRIVATE_TAB -> createPrivateTab()
+            BrowserCommandId.CLOSE_TAB -> activeTab()?.let { closeTab(it.id) }
+            BrowserCommandId.REOPEN_CLOSED_TAB -> reopenClosedTab()
+            BrowserCommandId.RELOAD -> reloadOrStop()
+            BrowserCommandId.FIND_IN_PAGE -> openFindInPage()
+            BrowserCommandId.FOCUS_ADDRESS_BAR -> focusAddressBar()
+            BrowserCommandId.TOGGLE_BOOKMARK -> toggleBookmark()
+            BrowserCommandId.TOGGLE_READING_LIST -> toggleReadingList()
+            BrowserCommandId.SHOW_QR -> openQrCode()
+            BrowserCommandId.NEXT_TAB -> cycleTab(true)
+            BrowserCommandId.PREVIOUS_TAB -> cycleTab(false)
+            BrowserCommandId.RESET_ZOOM -> resetPageZoom()
+            BrowserCommandId.ZOOM_OUT -> adjustPageZoom(-10)
+            BrowserCommandId.ZOOM_IN -> adjustPageZoom(10)
+            BrowserCommandId.SHOW_TABS -> setOverlay(BrowserOverlay.TABS)
+            BrowserCommandId.SHOW_LIBRARY -> setOverlay(BrowserOverlay.LIBRARY)
+            BrowserCommandId.SHOW_DOWNLOADS -> setOverlay(BrowserOverlay.DOWNLOADS)
+            BrowserCommandId.SHOW_SETTINGS -> setOverlay(BrowserOverlay.SETTINGS)
+            BrowserCommandId.TOGGLE_SPLIT -> activeTab()?.let { openTabInSplit(it.id) }
+            BrowserCommandId.HIBERNATE_TABS -> hibernateInactiveTabs()
+            BrowserCommandId.COMMAND_PALETTE -> openCommandPalette()
+            BrowserCommandId.TAB_SEARCH -> openTabSwitcher()
+        }
+    }
+
+    fun openTabSwitcher() {
+        _state.update { it.copy(tabSwitcher = TabSwitcherState(), commandPalette = null, overlay = BrowserOverlay.NONE) }
+    }
+
+    fun closeTabSwitcher() {
+        _state.update { it.copy(tabSwitcher = null) }
+    }
+
+    fun updateTabSwitcher(query: String) {
+        _state.update { it.copy(tabSwitcher = it.tabSwitcher?.copy(query = query, selectedIndex = 0)) }
+    }
+
+    fun moveTabSelection(offset: Int) {
+        val switcher = _state.value.tabSwitcher ?: return
+        val count = filteredTabs(switcher.query).size
+        if (count == 0) return
+        _state.update {
+            it.copy(tabSwitcher = switcher.copy(selectedIndex = (switcher.selectedIndex + offset + count) % count))
+        }
+    }
+
+    fun selectTabFromSwitcher() {
+        val switcher = _state.value.tabSwitcher ?: return
+        filteredTabs(switcher.query).getOrNull(switcher.selectedIndex)?.let { tab ->
+            selectTabFromSwitcher(tab.id)
+        }
+    }
+
+    fun selectTabFromSwitcher(tabId: String) {
+        if (_state.value.tabs.none { it.id == tabId }) return
+        closeTabSwitcher()
+        selectTab(tabId)
+    }
+
+    fun handleKeyShortcut(event: android.view.KeyEvent): Boolean {
+        if (event.action != android.view.KeyEvent.ACTION_DOWN) return false
+        _state.value.capturingShortcut?.let { command ->
+            if (event.keyCode == android.view.KeyEvent.KEYCODE_ESCAPE) {
+                cancelKeyboardShortcutCapture()
+                return true
+            }
+            if (event.keyCode in setOf(
+                    android.view.KeyEvent.KEYCODE_CTRL_LEFT,
+                    android.view.KeyEvent.KEYCODE_CTRL_RIGHT,
+                    android.view.KeyEvent.KEYCODE_SHIFT_LEFT,
+                    android.view.KeyEvent.KEYCODE_SHIFT_RIGHT,
+                    android.view.KeyEvent.KEYCODE_ALT_LEFT,
+                    android.view.KeyEvent.KEYCODE_ALT_RIGHT,
+                    android.view.KeyEvent.KEYCODE_META_LEFT,
+                    android.view.KeyEvent.KEYCODE_META_RIGHT,
+                )
+            ) return true
+            if (setKeyboardShortcut(command, event.toKeyChord())) {
+                _state.update { it.copy(capturingShortcut = null) }
+            }
+            return true
+        }
+        if (_state.value.commandPalette != null || _state.value.tabSwitcher != null) {
+            return when {
+                event.keyCode == android.view.KeyEvent.KEYCODE_ESCAPE -> {
+                    closeCommandPalette()
+                    closeTabSwitcher()
+                    true
+                }
+                event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (_state.value.commandPalette != null) moveCommandSelection(1) else moveTabSelection(1)
+                    true
+                }
+                event.keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                    if (_state.value.commandPalette != null) moveCommandSelection(-1) else moveTabSelection(-1)
+                    true
+                }
+                event.keyCode == android.view.KeyEvent.KEYCODE_ENTER -> {
+                    if (_state.value.commandPalette != null) executeSelectedCommand() else selectTabFromSwitcher()
+                    true
+                }
+                else -> false
+            }
+        }
+        val chord = event.toKeyChord()
+        val command = _state.value.settings.shortcutBindings.entries.firstOrNull { it.value == chord }?.key
+            ?: return false
+        executeCommand(command)
+        return true
+    }
+
+    private fun filteredCommands(query: String): List<BrowserCommand> {
+        val value = query.trim()
+        return BrowserCommands.all.filter {
+            value.isBlank() || it.title.contains(value, true) || it.description.contains(value, true)
+        }
+    }
+
+    private fun filteredTabs(query: String): List<BrowserTabState> {
+        val value = query.trim()
+        return _state.value.tabs.filter {
+            value.isBlank() || it.title.contains(value, true) || it.url.contains(value, true)
+        }
+    }
+
     fun reopenClosedTab() {
         val closed = recentlyClosedTabs.removeFirstOrNull() ?: return
-        val id = createTab(privateMode = closed.isPrivate, initialUri = closed.url.takeIf(String::isNotBlank))
+        val id = createTab(
+            privateMode = closed.isPrivate,
+            initialUri = closed.url.takeIf(String::isNotBlank),
+            savedSessionState = closed.sessionState,
+        )
         if (id.isNotBlank()) {
+            updateTab(id) { it.copy(title = closed.title.ifBlank { it.title }) }
             if (closed.pinned) toggleTabPinned(id)
             if (closed.groupId != null && _state.value.settings.tabGroups.any { it.id == closed.groupId }) {
                 moveTabToGroup(id, closed.groupId)
@@ -825,8 +1062,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (url.isEmpty()) return
         val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
         updateTab(tabId) {
-            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false)
+            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false, sessionState = null)
         }
+        _state.update {
+            if (it.activeTabId == tabId) it.copy(webAppManifest = null, siteSettingsOpen = false)
+            else it
+        }
+        refreshSiteSetting(tabId)
         persistOpenTabs()
         tab.session.loadUri(url)
     }
@@ -921,6 +1163,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         dismissContextMenu()
         closeExtensionPopup()
         closeFindInPage()
+        closeCommandPalette()
+        closeTabSwitcher()
         _state.value.contentPermission?.result?.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
         _state.value.androidPermission?.callback?.reject()
         _state.value.mediaPermission?.callback?.reject()
@@ -937,6 +1181,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun onAppBackground() {
         persistOpenTabs(immediate = true)
+        if (_state.value.isPictureInPictureMode) return
         updateSessionActivity(null)
     }
 
@@ -956,6 +1201,37 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(contextMenu = null) }
     }
 
+    fun showContextMenu(
+        tabId: String,
+        x: Int,
+        y: Int,
+        linkUri: String? = null,
+        linkText: String? = null,
+        textContent: String? = null,
+        resourceUri: String? = null,
+        resourceType: Int = GeckoSession.ContentDelegate.ContextElement.TYPE_NONE,
+    ) {
+        val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        _state.update {
+            it.copy(
+                contextMenu = BrowserContextMenu(
+                    tabId = tabId,
+                    x = x,
+                    y = y,
+                    pageUrl = tab.url,
+                    isBookmarked = tab.isBookmarked,
+                    linkUri = linkUri,
+                    linkText = linkText,
+                    textContent = textContent,
+                    resourceUri = resourceUri,
+                    resourceType = resourceType,
+                    canGoBack = tab.canGoBack,
+                    canGoForward = tab.canGoForward,
+                ),
+            )
+        }
+    }
+
     fun showTabContextMenu(tabId: String, x: Int, y: Int) {
         val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
         _state.update {
@@ -964,6 +1240,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     tabId = tabId,
                     x = x,
                     y = y,
+                    isTab = true,
                     isPinned = tab.pinned,
                     isSleeping = tab.isSleeping,
                 ),
@@ -977,8 +1254,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.NEW_TAB -> createTab()
             ContextMenuAction.NEW_PRIVATE_TAB -> createPrivateTab()
             ContextMenuAction.DUPLICATE_TAB -> {
-                val tab = _state.value.tabs.firstOrNull { it.id == menu.tabId }
-                if (tab != null) createTab(privateMode = tab.isPrivate, initialUri = tab.url.takeIf(String::isNotBlank))
+                duplicateTab(menu.tabId)
             }
             ContextMenuAction.RELOAD_TAB -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
             ContextMenuAction.TOGGLE_TAB_PINNED -> toggleTabPinned(menu.tabId)
@@ -987,6 +1263,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.CLOSE_OTHER_TABS -> closeOtherTabs(menu.tabId)
             ContextMenuAction.CLOSE_TABS_TO_LEFT -> closeTabsToLeft(menu.tabId)
             ContextMenuAction.CLOSE_TABS_TO_RIGHT -> closeTabsToRight(menu.tabId)
+            ContextMenuAction.BACK -> if (menu.canGoBack) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goBack(true)
+            ContextMenuAction.FORWARD -> if (menu.canGoForward) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goForward(true)
+            ContextMenuAction.RELOAD -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
+            ContextMenuAction.OPEN_LINK -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = false) }
+            ContextMenuAction.OPEN_LINK_IN_NEW_TAB -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
+            ContextMenuAction.OPEN_LINK_IN_PRIVATE_TAB -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = true, privateTab = true) }
+            ContextMenuAction.COPY_LINK -> menu.linkUri?.let { copyToClipboard("Link", it) }
+            ContextMenuAction.COPY_TEXT -> menu.textContent?.takeIf(String::isNotBlank)?.let { copyToClipboard("Text", it) }
+            ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB -> menu.resourceUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
+            ContextMenuAction.COPY_MEDIA_URL -> menu.resourceUri?.let { copyToClipboard("Media URL", it) }
+            ContextMenuAction.SAVE_MEDIA -> menu.resourceUri?.let { downloadUrl(it, isPrivateTab(menu.tabId)) }
+            ContextMenuAction.COPY_PAGE_URL -> menu.pageUrl.takeIf(String::isNotBlank)?.let { copyToClipboard("Page URL", it) }
+            ContextMenuAction.TOGGLE_BOOKMARK -> if (menu.tabId == _state.value.activeTabId) toggleBookmark()
+            ContextMenuAction.SAVE_PAGE -> menu.pageUrl.takeIf(String::isNotBlank)?.let { downloadUrl(it, isPrivateTab(menu.tabId)) }
             ContextMenuAction.OPEN_IN_SPLIT -> openTabInSplit(menu.tabId)
             ContextMenuAction.CLOSE_SPLIT -> closeSplit()
             ContextMenuAction.SWAP_SPLIT -> swapSplit()
@@ -995,11 +1285,31 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         dismissContextMenu()
     }
 
+    fun duplicateTab(tabId: String) {
+        val source = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        val duplicateId = createTab(
+            privateMode = source.isPrivate,
+            initialUri = source.url.takeIf(String::isNotBlank),
+            savedSessionState = source.sessionState,
+        )
+        if (duplicateId.isBlank()) return
+        updateTab(duplicateId) { it.copy(title = source.title, pinned = source.pinned, groupId = source.groupId) }
+        if (source.pinned) {
+            _state.update { state ->
+                state.copy(tabs = state.tabs.sortedWith(compareByDescending<BrowserTabState> { it.pinned }))
+            }
+        }
+        persistOpenTabs()
+    }
+
     private fun closeOtherTabs(id: String) {
         val current = _state.value
         val keep = current.tabs.firstOrNull { it.id == id } ?: return
         val closing = current.tabs.filterNot { it.id == id }
-        closing.forEach { tab -> rejectPermissionsForTab(tab.id) }
+        closing.forEach {
+            rememberClosedTab(it)
+            rejectPermissionsForTab(it.id)
+        }
         _state.update {
             it.copy(
                 tabs = listOf(keep.copy(isSleeping = false)),
@@ -1021,7 +1331,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val index = current.tabs.indexOfFirst { it.id == id }
         if (index < 0 || index == current.tabs.lastIndex) return
         val closing = current.tabs.drop(index + 1)
-        closing.forEach { tab -> rejectPermissionsForTab(tab.id) }
+        closing.forEach {
+            rememberClosedTab(it)
+            rejectPermissionsForTab(it.id)
+        }
         val newActive = if (closing.any { it.id == current.activeTabId }) id else current.activeTabId
         _state.update {
             it.copy(
@@ -1049,7 +1362,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val index = current.tabs.indexOfFirst { it.id == id }
         if (index <= 0) return
         val closing = current.tabs.take(index)
-        closing.forEach { tab -> rejectPermissionsForTab(tab.id) }
+        closing.forEach {
+            rememberClosedTab(it)
+            rejectPermissionsForTab(it.id)
+        }
         val newActive = if (closing.any { it.id == current.activeTabId }) id else current.activeTabId
         _state.update {
             it.copy(
@@ -1170,28 +1486,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                     output.toString(Charsets.UTF_8.name())
                 } ?: error("Could not open import file")
-                val anchors = Regex(
-                    "<A\\s+[^>]*HREF\\s*=\\s*\"([^\"]+)\"[^>]*>(.*?)</A>",
-                    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-                )
-                val headings = Regex(
-                    "<H3[^>]*>(.*?)</H3>",
-                    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-                )
                 var count = 0
-                anchors.findAll(html).forEach { match ->
-                    val url = Html.fromHtml(match.groupValues[1], Html.FROM_HTML_MODE_LEGACY).toString().trim()
-                    if (!NavigationPolicy.isWebUrl(url)) return@forEach
-                    val title = Html.fromHtml(match.groupValues[2], Html.FROM_HTML_MODE_LEGACY).toString().trim()
-                    val folder = headings.findAll(html.substring(0, match.range.first)).lastOrNull()?.groupValues?.get(1)
-                        ?.let { Html.fromHtml(it, Html.FROM_HTML_MODE_LEGACY).toString().trim() }
-                        ?.takeIf(String::isNotBlank)
+                BookmarkHtmlParser.parse(html).forEach { bookmark ->
                     dao.insertBookmark(
                         Bookmark(
-                            url = url,
-                            title = title.ifBlank { BrowserUrl.displayValue(url) },
+                            url = bookmark.url,
+                            title = bookmark.title,
                             createdAt = System.currentTimeMillis(),
-                            folder = folder,
+                            folder = bookmark.folder,
                         ),
                     )
                     count++
@@ -1207,10 +1509,311 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun isPrivateTab(tabId: String): Boolean =
         _state.value.tabs.firstOrNull { it.id == tabId }?.isPrivate == true
 
+    private fun downloadUrl(url: String, privateMode: Boolean = false) {
+        if (!NavigationPolicy.isWebUrl(url)) {
+            showSnackbar("This resource cannot be downloaded")
+            return
+        }
+        runCatching {
+            val uri = Uri.parse(url)
+            val fileName = uri.lastPathSegment?.takeIf(String::isNotBlank)?.sanitizeFileName() ?: "dextra-download"
+            val downloadId = -System.nanoTime()
+            val downloadDirectory = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: File(getApplication<Application>().filesDir, "downloads")
+            val download = DownloadEntry(
+                downloadId = downloadId,
+                fileName = fileName,
+                url = url,
+                mimeType = null,
+                status = DownloadStatus.QUEUED.label,
+                bytesDownloaded = 0,
+                totalBytes = -1,
+                localUri = null,
+                filePath = File(downloadDirectory, "$downloadId-$fileName").path,
+                reason = null,
+                speedBytesPerSecond = 0,
+                createdAt = System.currentTimeMillis(),
+                isPrivate = privateMode,
+            )
+            viewModelScope.launch {
+                dao.upsertDownload(download)
+                scheduleDownload(download)
+            }
+            showSnackbar("Download started")
+        }.onFailure { showSnackbar("Could not start download") }
+    }
+
     fun openSavedPage(url: String) {
         val tab = activeTab() ?: return
         navigate(tab.id, url)
         dismissOverlay()
+    }
+
+    fun toggleReadingList() {
+        val tab = activeTab() ?: return
+        if (tab.isPrivate || !tab.hasPage || !NavigationPolicy.isWebUrl(tab.url)) return
+        viewModelScope.launch {
+            if (dao.getReadingListEntry(tab.url) != null) {
+                dao.deleteReadingListEntry(tab.url)
+                showSnackbar("Removed from reading list")
+            } else {
+                dao.upsertReadingListEntry(
+                    ReadingListEntry(
+                        url = tab.url,
+                        title = tab.title.ifBlank { BrowserUrl.displayValue(tab.url) },
+                        savedAt = System.currentTimeMillis(),
+                    ),
+                )
+                showSnackbar("Saved to reading list")
+            }
+        }
+    }
+
+    fun deleteReadingListEntry(entry: ReadingListEntry) {
+        viewModelScope.launch {
+            entry.offlinePath?.let { path -> runCatching { File(path).delete() } }
+            dao.deleteReadingListEntry(entry.url)
+        }
+    }
+
+    fun setReadingListRead(entry: ReadingListEntry, isRead: Boolean) {
+        viewModelScope.launch { dao.setReadingListRead(entry.url, isRead) }
+    }
+
+    @androidx.annotation.OptIn(markerClass = [org.mozilla.geckoview.ExperimentalGeckoViewApi::class])
+    fun saveCurrentPageOffline() {
+        val tab = activeTab() ?: return
+        if (tab.isPrivate || !tab.hasPage || !NavigationPolicy.isWebUrl(tab.url)) {
+            showSnackbar("Offline pages are unavailable in private tabs")
+            return
+        }
+        viewModelScope.launch {
+            tab.session.sessionPageExtractor.getPageContent().accept(
+                { html ->
+                    val content = html.orEmpty()
+                    if (content.toByteArray(Charsets.UTF_8).size > MAX_OFFLINE_ARTICLE_BYTES) {
+                        showSnackbar("This page is too large to save offline")
+                        return@accept
+                    }
+                    viewModelScope.launch(Dispatchers.IO) {
+                        val result = runCatching {
+                            val directory = File(getApplication<Application>().filesDir, "offline").apply { mkdirs() }
+                            val file = File(directory, sha256(tab.url) + ".html")
+                            file.writeText(content, Charsets.UTF_8)
+                            val existing = dao.getReadingListEntry(tab.url)
+                            dao.upsertReadingListEntry(
+                                (existing ?: ReadingListEntry(
+                                    url = tab.url,
+                                    title = tab.title.ifBlank { BrowserUrl.displayValue(tab.url) },
+                                    savedAt = System.currentTimeMillis(),
+                                )).copy(offlinePath = file.path),
+                            )
+                        }
+                        withContext(Dispatchers.Main.immediate) {
+                            showSnackbar(if (result.isSuccess) "Saved for offline reading" else "Could not save page offline")
+                        }
+                    }
+                },
+                { showSnackbar("Could not extract this page for offline reading") },
+            )
+        }
+    }
+
+    fun openOfflineArticle(entry: ReadingListEntry) {
+        val path = entry.offlinePath ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val article = runCatching {
+                val file = File(path)
+                val offlineRoot = File(getApplication<Application>().filesDir, "offline").canonicalFile
+                require(file.canonicalFile.parentFile == offlineRoot)
+                require(file.length() <= MAX_OFFLINE_ARTICLE_BYTES)
+                OfflineArticle(
+                    title = entry.title,
+                    content = Html.fromHtml(file.readText(Charsets.UTF_8), Html.FROM_HTML_MODE_LEGACY).toString().trim(),
+                )
+            }.getOrNull()
+            withContext(Dispatchers.Main.immediate) {
+                if (article != null) _state.update { it.copy(offlineArticle = article, overlay = BrowserOverlay.NONE) }
+                else showSnackbar("Offline copy is no longer available")
+            }
+        }
+    }
+
+    fun closeOfflineArticle() {
+        _state.update { it.copy(offlineArticle = null) }
+    }
+
+    fun setCurrentSiteDesktopOverride(value: Boolean?) {
+        updateCurrentSiteSetting { it.copy(desktopSites = value) }
+    }
+
+    fun setCurrentSiteAdBlockingOverride(value: Boolean?) {
+        updateCurrentSiteSetting { it.copy(adBlockingEnabled = value) }
+    }
+
+    fun setCurrentSiteUserScriptsOverride(value: Boolean?) {
+        updateCurrentSiteSetting { it.copy(userScriptsEnabled = value) }
+    }
+
+    fun setCurrentSiteZoomOverride(value: Int?) {
+        updateCurrentSiteSetting { it.copy(zoomPercent = value?.coerceIn(50, 200)) }
+    }
+
+    fun clearCurrentSiteSettings() {
+        val origin = currentSiteOrigin() ?: return
+        viewModelScope.launch {
+            dao.deleteSiteSetting(origin)
+            _state.update { it.copy(siteSetting = null) }
+            activeTab()?.let { tab ->
+                applyDesktopSiteSetting(tab.session, _state.value.settings.desktopSites)
+                pageZoomByTab.remove(tab.id)
+                syncActiveTabZoom()
+                if (tab.hasPage) tab.session.reload()
+            }
+        }
+    }
+
+    fun openSiteSettings() {
+        if (currentSiteOrigin() == null) {
+            showSnackbar("Site settings are unavailable on this page")
+            return
+        }
+        refreshSiteSetting(_state.value.activeTabId ?: return)
+        _state.update { it.copy(siteSettingsOpen = true) }
+    }
+
+    fun closeSiteSettings() {
+        _state.update { it.copy(siteSettingsOpen = false) }
+    }
+
+    fun openQrCode() {
+        val url = activeTab()?.url?.takeIf { NavigationPolicy.isWebUrl(it) } ?: run {
+            showSnackbar("There is no web URL to share")
+            return
+        }
+        _state.update { it.copy(qrCodeUrl = url) }
+    }
+
+    fun closeQrCode() {
+        _state.update { it.copy(qrCodeUrl = null) }
+    }
+
+    fun setPictureInPictureMode(enabled: Boolean) {
+        _state.update { it.copy(isPictureInPictureMode = enabled) }
+        if (!enabled) onAppForeground()
+    }
+
+    fun shareActiveUrl() {
+        val url = activeTab()?.url?.takeIf { NavigationPolicy.isWebUrl(it) } ?: return
+        runCatching {
+            getApplication<Application>().startActivity(
+                Intent.createChooser(
+                    Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, url),
+                    "Share page",
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure { showSnackbar("Could not share this page") }
+    }
+
+    fun installCurrentWebApp() {
+        val manifest = _state.value.webAppManifest ?: run {
+            showSnackbar("This page has no installable web app manifest")
+            return
+        }
+        val context = getApplication<Application>()
+        val shortcutManager = context.getSystemService(ShortcutManager::class.java) ?: run {
+            showSnackbar("App shortcuts are unavailable on this device")
+            return
+        }
+        runCatching {
+            val shortcutId = "webapp-${MessageDigest.getInstance("SHA-256")
+                .digest(manifest.startUrl.toByteArray())
+                .joinToString("") { byte -> "%02x".format(byte) }
+                .take(24)}"
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(manifest.startUrl))
+                .setClass(context, com.dwicao.dextra.MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            shortcutManager.addDynamicShortcuts(listOf(
+                ShortcutInfo.Builder(context, shortcutId)
+                    .setShortLabel(manifest.name.take(25))
+                    .setLongLabel(manifest.name.take(80))
+                    .setIcon(Icon.createWithResource(context, com.dwicao.dextra.R.drawable.ic_launcher))
+                    .setIntent(intent)
+                    .build(),
+            ))
+        }.onSuccess {
+            showSnackbar("${manifest.name} added to app shortcuts")
+        }.onFailure {
+            showSnackbar("Could not install this web app")
+        }
+    }
+
+    fun exportPdf(uri: Uri) {
+        val tab = activeTab()?.takeIf { it.hasPage && NavigationPolicy.isAllowedTopLevel(it.url) } ?: run {
+            showSnackbar("There is no page to export")
+            return
+        }
+        tab.session.saveAsPdf().accept(
+            { input ->
+                viewModelScope.launch(Dispatchers.IO) {
+                    val result = runCatching {
+                        input?.use { source ->
+                            getApplication<Application>().contentResolver.openOutputStream(uri)?.use { output ->
+                                source.copyTo(output)
+                            } ?: error("Could not open PDF destination")
+                        } ?: error("Could not generate PDF")
+                    }
+                    withContext(Dispatchers.Main.immediate) {
+                        showSnackbar(if (result.isSuccess) "PDF exported" else "Could not export PDF")
+                    }
+                }
+            },
+            { showSnackbar("Could not generate PDF") },
+        )
+    }
+
+    fun saveScreenshot(bitmap: Bitmap) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val context = getApplication<Application>()
+                val fileName = "dextra-${System.currentTimeMillis()}.png"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Dextra")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                        ?: error("Could not create screenshot")
+                    try {
+                        context.contentResolver.openOutputStream(uri)?.use { output ->
+                            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "Could not encode screenshot" }
+                        } ?: error("Could not open screenshot")
+                        context.contentResolver.update(
+                            uri,
+                            ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                            null,
+                            null,
+                        )
+                    } catch (error: Exception) {
+                        context.contentResolver.delete(uri, null, null)
+                        throw error
+                    }
+                } else {
+                    val directory = File(
+                        context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir,
+                        "Dextra",
+                    ).apply { mkdirs() }
+                    File(directory, fileName).outputStream().use { output ->
+                        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "Could not encode screenshot" }
+                    }
+                }
+            }
+            withContext(Dispatchers.Main.immediate) {
+                showSnackbar(if (result.isSuccess) "Screenshot saved to Pictures/Dextra" else "Could not save screenshot")
+            }
+        }
     }
 
     fun clearHistory() {
@@ -1452,6 +2055,32 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { settingsRepository.setVerticalTabs(enabled) }
     }
 
+    fun setKeyboardShortcut(command: BrowserCommandId, chord: KeyChord?): Boolean {
+        if (chord != null) {
+            if (!chord.ctrl && !chord.alt && !chord.meta) {
+                showSnackbar("Use Ctrl, Alt, or Meta for a browser shortcut")
+                return false
+            }
+            val conflict = _state.value.settings.shortcutBindings.entries.firstOrNull {
+                it.key != command && it.value == chord
+            }
+            if (conflict != null) {
+                showSnackbar("Shortcut already used by ${BrowserCommands.all.firstOrNull { it.id == conflict.key }?.title ?: conflict.key.name}")
+                return false
+            }
+        }
+        viewModelScope.launch { settingsRepository.setShortcut(command, chord) }
+        return true
+    }
+
+    fun beginKeyboardShortcutCapture(command: BrowserCommandId) {
+        _state.update { it.copy(capturingShortcut = command) }
+    }
+
+    fun cancelKeyboardShortcutCapture() {
+        _state.update { it.copy(capturingShortcut = null) }
+    }
+
     fun setDnsOverHttpsEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setDnsOverHttpsEnabled(enabled) }
     }
@@ -1663,6 +2292,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         privateMode: Boolean,
         openSession: Boolean = true,
         extensionPopup: Boolean = false,
+        savedSessionState: String? = null,
     ): GeckoSession {
         val settings = _state.value.settings
         // Extension popups use a device-width viewport so their CSS is not scaled down from 980px.
@@ -1684,11 +2314,25 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 })
                 .build(),
         )
+        savedSessionState?.let { serialized ->
+            runCatching { GeckoSession.SessionState.fromString(serialized) }
+                .getOrNull()
+                ?.let(session::restoreState)
+        }
         session.setNavigationDelegate(NavigationDelegate(tabId))
         session.setHistoryDelegate(HistoryDelegate(tabId))
         session.setProgressDelegate(ProgressDelegate(tabId))
         session.setContentDelegate(ContentDelegate(tabId))
         session.setPermissionDelegate(PermissionDelegate(tabId))
+        session.setMediaSessionDelegate(object : MediaSession.Delegate {
+            override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
+                updateTab(tabId) { it.copy(hasActiveMedia = true) }
+            }
+
+            override fun onDeactivated(session: GeckoSession, mediaSession: MediaSession) {
+                updateTab(tabId) { it.copy(hasActiveMedia = false) }
+            }
+        })
         if (openSession) {
             session.open(runtime)
             attachAdBlockContentDelegate(session)
@@ -1722,7 +2366,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun rememberClosedTab(tab: BrowserTabState) {
         if (tab.url.isBlank() || !tab.hasPage) return
-        recentlyClosedTabs.addFirst(ClosedTabEntry(tab.url, tab.isPrivate, tab.pinned, tab.groupId))
+        recentlyClosedTabs.addFirst(ClosedTabEntry(tab.url, tab.title, tab.isPrivate, tab.pinned, tab.groupId, tab.sessionState))
         while (recentlyClosedTabs.size > 10) recentlyClosedTabs.removeLast()
     }
 
@@ -1738,18 +2382,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val restoredIds = mutableSetOf<String>()
         val restored = tabsToRestore.map { saved ->
             val id = saved.id?.takeIf(restoredIds::add) ?: UUID.randomUUID().toString().also(restoredIds::add)
-            val session = createSession(id, saved.isPrivate)
+            val session = createSession(id, saved.isPrivate, savedSessionState = saved.sessionState)
             BrowserTabState(
                 id = id,
                 session = session,
-                title = "Loading...",
+                title = saved.title?.ifBlank { null } ?: "Loading...",
                 url = saved.url,
-                isLoading = true,
+                isLoading = saved.sessionState == null,
                 isSecure = saved.url.startsWith("https://"),
                 hasPage = true,
                 isPrivate = saved.isPrivate,
                 pinned = saved.pinned,
                 groupId = saved.groupId?.takeIf { groupId -> current.settings.tabGroups.any { it.id == groupId } },
+                sessionState = saved.sessionState,
             )
         }
         val activeTab = restored.getOrNull(activeIndex.coerceIn(0, restored.lastIndex)) ?: restored.first()
@@ -1762,7 +2407,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         setExtensionTabActive(activeTab.id, true)
         updateSessionActivity(activeTab.id)
-        restored.forEach { tab -> tab.session.loadUri(tab.url) }
+        restored.filter { it.sessionState == null }.forEach { tab -> tab.session.loadUri(tab.url) }
     }
 
     private fun persistOpenTabs(immediate: Boolean = false) {
@@ -1776,7 +2421,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistJob = viewModelScope.launch {
             if (!immediate) delay(250)
             settingsRepository.saveOpenTabs(
-                tabs = pageTabs.map { tab -> SavedTab(tab.url, tab.isPrivate, tab.pinned, tab.groupId, tab.id) },
+                tabs = pageTabs.map {
+                    SavedTab(
+                        url = it.url,
+                        isPrivate = it.isPrivate,
+                        pinned = it.pinned,
+                        groupId = it.groupId,
+                        id = it.id,
+                        title = it.title,
+                        sessionState = it.sessionState?.takeIf { state -> state.toByteArray().size <= MAX_SESSION_STATE_BYTES },
+                    )
+                },
                 activeTabIndex = activeIndex.coerceAtLeast(0),
                 groups = current.settings.tabGroups,
             )
@@ -1810,6 +2465,58 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 .put("type", "setZoom")
                 .put("zoomFactor", zoom / 100.0),
         )
+    }
+
+    private fun currentSiteOrigin(): String? = activeTab()
+        ?.takeIf { !it.isPrivate }
+        ?.let { NavigationPolicy.origin(it.url) }
+
+    private fun refreshSiteSetting(tabId: String) {
+        val tab = _state.value.tabs.firstOrNull { it.id == tabId }
+        val origin = tab?.takeIf { !it.isPrivate }?.let { NavigationPolicy.origin(it.url) }
+        if (origin == null) {
+            _state.update { it.copy(siteSetting = null) }
+            return
+        }
+        _state.update { if (it.activeTabId == tabId) it.copy(siteSetting = null) else it }
+        viewModelScope.launch {
+            val setting = dao.getSiteSetting(origin)
+            if (_state.value.activeTabId == tabId && currentSiteOrigin() == origin) {
+                _state.update { it.copy(siteSetting = setting) }
+                applyDesktopSiteSetting(tab.session, setting?.desktopSites ?: _state.value.settings.desktopSites)
+                setting?.zoomPercent?.let { pageZoomByTab[tabId] = it } ?: pageZoomByTab.remove(tabId)
+                syncActiveTabZoom()
+                syncAdBlockSettings(_state.value.settings)
+            }
+        }
+    }
+
+    private fun updateCurrentSiteSetting(transform: (SiteSetting) -> SiteSetting) {
+        val tab = activeTab() ?: return
+        val origin = currentSiteOrigin() ?: run {
+            showSnackbar("Site settings are unavailable in private tabs")
+            return
+        }
+        viewModelScope.launch {
+            val current = dao.getSiteSetting(origin) ?: SiteSetting(origin = origin, updatedAt = System.currentTimeMillis())
+            val updated = transform(current).copy(origin = origin, updatedAt = System.currentTimeMillis())
+            if (updated.desktopSites == null && updated.adBlockingEnabled == null &&
+                updated.userScriptsEnabled == null && updated.zoomPercent == null
+            ) {
+                dao.deleteSiteSetting(origin)
+            } else {
+                dao.upsertSiteSetting(updated)
+            }
+            _state.update { it.copy(siteSetting = updated.takeUnless {
+                it.desktopSites == null && it.adBlockingEnabled == null &&
+                    it.userScriptsEnabled == null && it.zoomPercent == null
+            }) }
+            applyDesktopSiteSetting(tab.session, updated.desktopSites ?: _state.value.settings.desktopSites)
+            updated.zoomPercent?.let { pageZoomByTab[tab.id] = it } ?: pageZoomByTab.remove(tab.id)
+            syncActiveTabZoom()
+            syncAdBlockSettings(_state.value.settings)
+            if (tab.hasPage && updated.desktopSites != current.desktopSites) tab.session.reload()
+        }
     }
 
     private fun showSnackbar(message: String) {
@@ -1936,12 +2643,27 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val port = adBlockPort ?: return
         val urls = JSONArray()
         settings.adBlockFilters.filter { it.enabled }.forEach { urls.put(it.url) }
-        port.postMessage(
-            JSONObject()
-                .put("type", "updateAdblock")
-                .put("enabled", settings.adBlockingEnabled)
-                .put("urls", urls),
-        )
+        viewModelScope.launch(Dispatchers.IO) {
+            val disabledOrigins = JSONArray()
+            val enabledOrigins = JSONArray()
+            val siteSettings = dao.getSiteSettings()
+            siteSettings
+                .filter { it.adBlockingEnabled == false }
+                .forEach { disabledOrigins.put(it.origin) }
+            siteSettings
+                .filter { it.adBlockingEnabled == true }
+                .forEach { enabledOrigins.put(it.origin) }
+            withContext(Dispatchers.Main.immediate) {
+                port.postMessage(
+                    JSONObject()
+                        .put("type", "updateAdblock")
+                        .put("enabled", settings.adBlockingEnabled)
+                        .put("urls", urls)
+                        .put("disabledOrigins", disabledOrigins)
+                        .put("enabledOrigins", enabledOrigins),
+                )
+            }
+        }
     }
 
     private fun applyDnsOverHttps(enabled: Boolean, provider: DnsProvider) {
@@ -1978,11 +2700,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         settings.userScriptUrls
             .filterNot { it in settings.disabledUserScriptUrls }
             .forEach(urls::put)
-        port.postMessage(
-            JSONObject()
-                .put("type", "updateUserscripts")
-                .put("urls", urls),
-        )
+        viewModelScope.launch(Dispatchers.IO) {
+            val disabledOrigins = JSONArray()
+            dao.getSiteSettings()
+                .filter { it.userScriptsEnabled == false }
+                .forEach { disabledOrigins.put(it.origin) }
+            withContext(Dispatchers.Main.immediate) {
+                port.postMessage(
+                    JSONObject()
+                        .put("type", "updateUserscripts")
+                        .put("urls", urls)
+                        .put("disabledOrigins", disabledOrigins),
+                )
+            }
+        }
     }
 
     private fun createExtensionInstallPrompt(
@@ -2425,6 +3156,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun String.sanitizeFileName(): String =
         replace(Regex("[^A-Za-z0-9._-]"), "_").take(120).ifBlank { "dextra-download" }
 
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { byte -> "%02x".format(byte) }
+
     private fun String.htmlEscape(): String =
         replace("&", "&amp;")
             .replace("\"", "&quot;")
@@ -2444,6 +3179,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://"), crashed = false) }
             }
+            if (_state.value.activeTabId == tabId) refreshSiteSetting(tabId)
             persistOpenTabs()
         }
 
@@ -2508,6 +3244,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false) }
             }
+            _state.update { if (it.activeTabId == tabId) it.copy(webAppManifest = null) else it }
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {
@@ -2531,11 +3268,37 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         ) {
             updateTab(tabId) { it.copy(isSecure = securityInfo.isSecure) }
         }
+
+        override fun onSessionStateChange(session: GeckoSession, state: GeckoSession.SessionState) {
+            val serialized = state.toString().takeIf {
+                it.toByteArray(Charsets.UTF_8).size <= MAX_SESSION_STATE_BYTES
+            }
+            updateTab(tabId) { it.copy(sessionState = serialized) }
+            persistOpenTabs()
+        }
     }
 
     private inner class ContentDelegate(private val tabId: String) : GeckoSession.ContentDelegate {
         override fun onTitleChange(session: GeckoSession, title: String?) {
             updateTab(tabId) { it.copy(title = title?.ifBlank { "New tab" } ?: "New tab") }
+        }
+
+        override fun onWebAppManifest(session: GeckoSession, manifest: JSONObject) {
+            val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+            val pageOrigin = NavigationPolicy.origin(tab.url) ?: return
+            val rawStartUrl = manifest.optString("start_url").ifBlank { tab.url }
+            val startUrl = runCatching { URI(tab.url).resolve(rawStartUrl).toString() }.getOrNull() ?: return
+            if (!NavigationPolicy.isWebUrl(startUrl) || NavigationPolicy.origin(startUrl) != pageOrigin) return
+            val rawScope = manifest.optString("scope").ifBlank { "/" }
+            val scope = runCatching { URI(startUrl).resolve(rawScope).toString() }.getOrNull() ?: return
+            if (NavigationPolicy.origin(scope) != pageOrigin || !startUrl.startsWith(scope.trimEnd('/') + "/")) return
+            val name = manifest.optString("name").ifBlank { manifest.optString("short_name") }.trim().take(80)
+            if (name.isBlank()) return
+            _state.update {
+                if (it.activeTabId == tabId) {
+                    it.copy(webAppManifest = WebAppManifestInfo(tabId, name, startUrl, scope))
+                } else it
+            }
         }
 
         override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
@@ -2545,6 +3308,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 download(response, isPrivateTab(tabId))
             }
+        }
+
+        override fun onContextMenu(
+            session: GeckoSession,
+            screenX: Int,
+            screenY: Int,
+            element: GeckoSession.ContentDelegate.ContextElement,
+        ) {
+            showContextMenu(
+                tabId = tabId,
+                x = screenX,
+                y = screenY,
+                linkUri = element.linkUri,
+                linkText = element.linkText,
+                textContent = element.title ?: element.altText,
+                resourceUri = element.srcUri,
+                resourceType = element.type,
+            )
         }
 
         override fun onCloseRequest(session: GeckoSession) {

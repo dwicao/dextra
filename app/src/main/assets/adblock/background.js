@@ -4,6 +4,9 @@
   const filterRules = new Map();
   const userScripts = [];
   const injectedScripts = new Set();
+  const disabledAdblockOrigins = new Set();
+  const enabledAdblockOrigins = new Set();
+  const disabledUserScriptOrigins = new Set();
   const MAX_FILTER_BYTES = 8 * 1024 * 1024;
   const MAX_SCRIPT_BYTES = 512 * 1024;
   let filterLoadGeneration = 0;
@@ -41,7 +44,7 @@
   const isSameSite = (left, right) => left === right || left.endsWith(`.${right}`) || right.endsWith(`.${left}`);
 
   const shouldBlock = (request) => {
-    if (!enabled || filterRules.size === 0 || request.type === "main_frame") return false;
+    if (filterRules.size === 0 || request.type === "main_frame") return false;
     let target;
     try {
       target = new URL(request.url);
@@ -57,6 +60,14 @@
       return false;
     }
     if (!documentHost || isSameSite(target.hostname, documentHost)) return false;
+    let documentOrigin;
+    try {
+      documentOrigin = new URL(request.documentUrl).origin;
+      if (disabledAdblockOrigins.has(documentOrigin)) return false;
+      if (!enabled && !enabledAdblockOrigins.has(documentOrigin)) return false;
+    } catch (_) {
+      return false;
+    }
 
     const labels = target.hostname.toLowerCase().split(".");
     for (let index = 0; index < labels.length - 1; index += 1) {
@@ -139,6 +150,11 @@
 
   const injectUserScripts = async (tabId, url, phase) => {
     if (!url || !/^https:\/\//i.test(url)) return;
+    try {
+      if (disabledUserScriptOrigins.has(new URL(url).origin)) return;
+    } catch (_) {
+      return;
+    }
     for (const script of userScripts) {
       if (script.runAt !== phase || !matchesUserScript(script, url)) continue;
       const key = `${tabId}|${url}|${script.sourceUrl}|${phase}`;
@@ -213,11 +229,23 @@
           return;
         }
         if (message?.type === "updateUserscripts") {
+          disabledUserScriptOrigins.clear();
+          (Array.isArray(message.disabledOrigins) ? message.disabledOrigins : []).forEach((origin) => {
+            if (typeof origin === "string" && /^https:\/\//i.test(origin)) disabledUserScriptOrigins.add(origin);
+          });
           loadUserScripts(Array.isArray(message.urls) ? message.urls : []);
           return;
         }
         if (message?.type !== "updateAdblock") return;
         enabled = message.enabled !== false;
+        disabledAdblockOrigins.clear();
+        enabledAdblockOrigins.clear();
+        (Array.isArray(message.disabledOrigins) ? message.disabledOrigins : []).forEach((origin) => {
+          if (typeof origin === "string" && /^https:\/\//i.test(origin)) disabledAdblockOrigins.add(origin);
+        });
+        (Array.isArray(message.enabledOrigins) ? message.enabledOrigins : []).forEach((origin) => {
+          if (typeof origin === "string" && /^https:\/\//i.test(origin)) enabledAdblockOrigins.add(origin);
+        });
         browser.storage.local.set({ enabled });
         loadFilters(Array.isArray(message.urls) ? message.urls : []);
       });
