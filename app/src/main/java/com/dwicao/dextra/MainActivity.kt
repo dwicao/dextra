@@ -33,7 +33,11 @@ class MainActivity : ComponentActivity() {
             override fun handleOnBackPressed() {
                 val state = browserViewModel.state.value
                 if (state.overlay != BrowserOverlay.NONE) {
-                    browserViewModel.dismissOverlay()
+                    if (state.overlay == BrowserOverlay.KEYBOARD_SHORTCUTS) {
+                        browserViewModel.setOverlay(BrowserOverlay.SETTINGS)
+                    } else {
+                        browserViewModel.dismissOverlay()
+                    }
                     return
                 }
                 if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null || state.readerMode != null ||

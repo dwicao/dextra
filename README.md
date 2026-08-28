@@ -7,7 +7,7 @@ Dextra is a GeckoView-based Android browser designed for Samsung DeX. It treats 
 This project is an early release build intended for internal testing and Samsung DeX-focused development.
 
 - Application ID: `com.dwicao.dextra`
-- Version: `0.4.0`
+- Version: `0.4.1`
 - Minimum Android version: 26
 - Target Android SDK: 36
 - Web engine: Mozilla GeckoView `154.0.20260824154132`
@@ -37,7 +37,8 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Durable downloads through WorkManager.
 - User-selected SAF download folders and download search/status/type filters.
 - Download resume validation, pause, cancel, MediaStore publishing, and notifications.
-- Bookmark folders, bounded HTML import/export, history search, and history pruning.
+- Full-page bookmark and history managers with folder filtering, bounded HTML import/export, search, deletion, and history pruning.
+- Dedicated Keyboard Shortcuts settings page.
 - Reading list with bounded offline article snapshots.
 - Native reader mode with article extraction, font sizing, and light/dark/sepia palettes.
 - Privacy dashboard for reviewing and clearing per-site or all GeckoView site data.

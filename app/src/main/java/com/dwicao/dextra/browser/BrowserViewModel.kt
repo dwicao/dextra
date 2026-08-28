@@ -112,8 +112,11 @@ enum class BrowserOverlay {
     NONE,
     TABS,
     LIBRARY,
+    BOOKMARKS,
+    HISTORY,
     SETTINGS,
     DOWNLOADS,
+    KEYBOARD_SHORTCUTS,
     PRIVACY,
 }
 
@@ -812,7 +815,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             BrowserCommandId.ZOOM_OUT -> adjustPageZoom(-10)
             BrowserCommandId.ZOOM_IN -> adjustPageZoom(10)
             BrowserCommandId.SHOW_TABS -> setOverlay(BrowserOverlay.TABS)
-            BrowserCommandId.SHOW_LIBRARY -> setOverlay(BrowserOverlay.LIBRARY)
+            BrowserCommandId.SHOW_LIBRARY -> setOverlay(BrowserOverlay.BOOKMARKS)
             BrowserCommandId.SHOW_DOWNLOADS -> setOverlay(BrowserOverlay.DOWNLOADS)
             BrowserCommandId.SHOW_SETTINGS -> setOverlay(BrowserOverlay.SETTINGS)
             BrowserCommandId.SHOW_PRIVACY -> setOverlay(BrowserOverlay.PRIVACY)

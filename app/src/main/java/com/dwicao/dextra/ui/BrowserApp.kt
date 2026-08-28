@@ -696,6 +696,56 @@ private fun BrowserScreen(
             Handler(Looper.getMainLooper()).postDelayed({ captureTile(0) }, 250L)
         }
     }
+    when (state.overlay) {
+        BrowserOverlay.BOOKMARKS -> {
+            BookmarksPage(
+                bookmarks = bookmarks,
+                onOpen = onOpenSavedPage,
+                onSetBookmarkFolder = onSetBookmarkFolder,
+                onUpdateBookmark = onUpdateBookmark,
+                onDeleteBookmark = onDeleteBookmark,
+                onExportBookmarks = onExportBookmarks,
+                onImportBookmarks = onImportBookmarks,
+                onBack = onDismissOverlay,
+            )
+            return
+        }
+        BrowserOverlay.HISTORY -> {
+            HistoryPage(
+                history = history,
+                onOpen = onOpenSavedPage,
+                onClearHistory = onClearHistory,
+                onDeleteHistoryEntry = onDeleteHistoryEntry,
+                onBack = onDismissOverlay,
+            )
+            return
+        }
+        BrowserOverlay.DOWNLOADS -> {
+            DownloadsPage(
+                downloads = downloads,
+                onOpen = onOpenDownload,
+                onShare = onShareDownload,
+                onToggle = onToggleDownload,
+                onCancel = onCancelDownload,
+                onRemove = onRemoveDownload,
+                onClearCompleted = onClearCompletedDownloads,
+                onBack = onDismissOverlay,
+            )
+            return
+        }
+        BrowserOverlay.KEYBOARD_SHORTCUTS -> {
+            KeyboardShortcutsPage(
+                shortcutBindings = shortcutBindings,
+                onSetKeyboardShortcut = onSetKeyboardShortcut,
+                capturingShortcut = capturingShortcut,
+                onBeginKeyboardShortcutCapture = onBeginKeyboardShortcutCapture,
+                onCancelKeyboardShortcutCapture = onCancelKeyboardShortcutCapture,
+                onBack = { onSetOverlay(BrowserOverlay.SETTINGS) },
+            )
+            return
+        }
+        else -> Unit
+    }
     if (state.standalonePwa) {
         BrowserViewport(
             tab = activeTab,
@@ -750,14 +800,10 @@ private fun BrowserScreen(
                   installedWebApps = installedWebApps,
                   onOpenInstalledWebApp = onOpenInstalledWebApp,
                   onUninstallWebApp = onUninstallWebApp,
-                 onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
-                  onSetVerticalTabs = onSetVerticalTabs,
-                  shortcutBindings = shortcutBindings,
-                  onSetKeyboardShortcut = onSetKeyboardShortcut,
-                  capturingShortcut = capturingShortcut,
-                  onBeginKeyboardShortcutCapture = onBeginKeyboardShortcutCapture,
-                  onCancelKeyboardShortcutCapture = onCancelKeyboardShortcutCapture,
-                dnsOverHttpsEnabled = state.settings.dnsOverHttpsEnabled,
+                    onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
+                    onSetVerticalTabs = onSetVerticalTabs,
+                    onOpenKeyboardShortcuts = { onSetOverlay(BrowserOverlay.KEYBOARD_SHORTCUTS) },
+                 dnsOverHttpsEnabled = state.settings.dnsOverHttpsEnabled,
                 onSetDnsOverHttpsEnabled = onSetDnsOverHttpsEnabled,
                 dnsProvider = state.settings.dnsProvider,
                 onSetDnsProvider = onSetDnsProvider,
@@ -867,9 +913,13 @@ private fun BrowserScreen(
                     menuExpanded = false
                     onSetOverlay(BrowserOverlay.TABS)
                 },
-                onShowLibrary = {
+                onShowBookmarks = {
                     menuExpanded = false
-                    onSetOverlay(BrowserOverlay.LIBRARY)
+                    onSetOverlay(BrowserOverlay.BOOKMARKS)
+                },
+                onShowHistory = {
+                    menuExpanded = false
+                    onSetOverlay(BrowserOverlay.HISTORY)
                 },
                  onShowDownloads = {
                      menuExpanded = false
@@ -970,16 +1020,7 @@ private fun BrowserScreen(
                               onRestoreSessionSnapshot = onRestoreSessionSnapshot,
                               onDeleteSessionSnapshot = onDeleteSessionSnapshot,
                           )
-                         BrowserOverlay.DOWNLOADS -> DownloadsSheet(
-                            downloads = downloads,
-                            onOpen = onOpenDownload,
-                            onShare = onShareDownload,
-                            onToggle = onToggleDownload,
-                             onCancel = onCancelDownload,
-                              onRemove = onRemoveDownload,
-                              onClearCompleted = onClearCompletedDownloads,
-                          )
-                          BrowserOverlay.PRIVACY -> PrivacyDashboardSheet(
+                           BrowserOverlay.PRIVACY -> PrivacyDashboardSheet(
                               origins = privacyOrigins,
                               totalBlocked = state.blockerStats.totalBlocked,
                               currentOrigin = activeTab?.takeIf { !it.isPrivate }?.let { NavigationPolicy.origin(it.url) },
@@ -987,8 +1028,11 @@ private fun BrowserScreen(
                               onForgetSite = onForgetSite,
                               onClearAll = onClearAllSiteData,
                          )
-                         BrowserOverlay.SETTINGS,
-                        BrowserOverlay.NONE,
+                          BrowserOverlay.SETTINGS,
+                         BrowserOverlay.BOOKMARKS,
+                         BrowserOverlay.HISTORY,
+                         BrowserOverlay.KEYBOARD_SHORTCUTS,
+                         BrowserOverlay.NONE,
                         -> Unit
                     }
                 }
@@ -3567,7 +3611,8 @@ private fun BrowserMenu(
     onDismiss: () -> Unit,
     onNewPrivateTab: () -> Unit,
     onShowTabs: () -> Unit,
-    onShowLibrary: () -> Unit,
+    onShowBookmarks: () -> Unit,
+    onShowHistory: () -> Unit,
     onShowDownloads: () -> Unit,
     onShowSiteSettings: () -> Unit,
     onOpenPrivacyDashboard: () -> Unit,
@@ -3614,10 +3659,15 @@ private fun BrowserMenu(
                     onClick = onOpenCommandPalette,
                 )
         DropdownMenuItem(
-            text = { Text("Bookmarks & history") },
-            leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
-            onClick = onShowLibrary,
-        )
+                    text = { Text("Bookmarks") },
+                    leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+                    onClick = onShowBookmarks,
+                )
+                DropdownMenuItem(
+                    text = { Text("History") },
+                    leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null) },
+                    onClick = onShowHistory,
+                )
         DropdownMenuItem(
             text = { Text("Downloads") },
             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
@@ -3689,6 +3739,369 @@ private fun BrowserMenu(
                     onClick = onShowSettings,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun FullPageScaffold(
+    title: String,
+    subtitle: String,
+    onBack: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Outlined.ArrowBack, contentDescription = "Back")
+                }
+                Column(Modifier.padding(start = 4.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun BookmarksPage(
+    bookmarks: List<Bookmark>,
+    onOpen: (String) -> Unit,
+    onSetBookmarkFolder: (Bookmark, String?) -> Unit,
+    onUpdateBookmark: (Bookmark, String, String?) -> Unit,
+    onDeleteBookmark: (Bookmark) -> Unit,
+    onExportBookmarks: () -> Unit,
+    onImportBookmarks: () -> Unit,
+    onBack: () -> Unit,
+) {
+    var selectedFolder by rememberSaveable { mutableStateOf("") }
+    var folderBookmark by remember { mutableStateOf<Bookmark?>(null) }
+    var folderName by rememberSaveable { mutableStateOf("") }
+    var editBookmark by remember { mutableStateOf<Bookmark?>(null) }
+    var editTitle by rememberSaveable { mutableStateOf("") }
+    var editFolder by rememberSaveable { mutableStateOf("") }
+    val folders = bookmarks.mapNotNull { it.folder?.takeIf(String::isNotBlank) }.distinct().sorted()
+    val visibleBookmarks = bookmarks.filter { selectedFolder.isBlank() || it.folder == selectedFolder }
+
+    FullPageScaffold("Bookmarks", "Organize saved pages and folders", onBack) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onImportBookmarks) {
+                    Icon(Icons.Outlined.Download, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import")
+                }
+                TextButton(onClick = onExportBookmarks, enabled = bookmarks.isNotEmpty()) {
+                    Icon(Icons.Outlined.Share, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Export")
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = selectedFolder.isBlank(),
+                    onClick = { selectedFolder = "" },
+                    label = { Text("All") },
+                )
+                folders.forEach { folder ->
+                    FilterChip(
+                        selected = selectedFolder == folder,
+                        onClick = { selectedFolder = folder },
+                        label = { Text(folder) },
+                    )
+                }
+            }
+            if (visibleBookmarks.isEmpty()) {
+                EmptyLibrary(
+                    if (bookmarks.isEmpty()) "Bookmarks you save will appear here." else "No bookmarks in this folder.",
+                    Icons.Outlined.BookmarkBorder,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+                ) {
+                    items(visibleBookmarks, key = { it.id }) { bookmark ->
+                        var menuExpanded by remember(bookmark.id) { mutableStateOf(false) }
+                        ListItem(
+                            modifier = Modifier
+                                .padding(horizontal = 12.dp)
+                                .clickable { onOpen(bookmark.url) },
+                            headlineContent = { Text(bookmark.title.ifBlank { BrowserUrl.displayValue(bookmark.url) }, maxLines = 1) },
+                            supportingContent = {
+                                Text(listOfNotNull(bookmark.folder, bookmark.url).joinToString("  •  "), maxLines = 1)
+                            },
+                            leadingContent = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+                            trailingContent = {
+                                Box {
+                                    IconButton(onClick = { menuExpanded = true }) {
+                                        Icon(Icons.Outlined.MoreVert, contentDescription = "Bookmark actions")
+                                    }
+                                    DropdownMenu(
+                                        expanded = menuExpanded,
+                                        onDismissRequest = { menuExpanded = false },
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Edit bookmark") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                editBookmark = bookmark
+                                                editTitle = bookmark.title
+                                                editFolder = bookmark.folder.orEmpty()
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("No folder") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                onSetBookmarkFolder(bookmark, null)
+                                            },
+                                        )
+                                        folders.filter { it != bookmark.folder }.forEach { folder ->
+                                            DropdownMenuItem(
+                                                text = { Text(folder) },
+                                                onClick = {
+                                                    menuExpanded = false
+                                                    onSetBookmarkFolder(bookmark, folder)
+                                                },
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text("New folder...") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                folderBookmark = bookmark
+                                                folderName = ""
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Delete bookmark") },
+                                            onClick = {
+                                                menuExpanded = false
+                                                onDeleteBookmark(bookmark)
+                                            },
+                                        )
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    folderBookmark?.let { bookmark ->
+        AlertDialog(
+            onDismissRequest = { folderBookmark = null },
+            title = { Text("Move bookmark") },
+            text = {
+                OutlinedTextField(
+                    value = folderName,
+                    onValueChange = { folderName = it },
+                    label = { Text("Folder name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onSetBookmarkFolder(bookmark, folderName)
+                        folderBookmark = null
+                    },
+                    enabled = folderName.isNotBlank(),
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { folderBookmark = null }) { Text("Cancel") } },
+        )
+    }
+    editBookmark?.let { bookmark ->
+        AlertDialog(
+            onDismissRequest = { editBookmark = null },
+            title = { Text("Edit bookmark") },
+            text = {
+                Column {
+                    OutlinedTextField(value = editTitle, onValueChange = { editTitle = it }, label = { Text("Title") }, singleLine = true)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(value = editFolder, onValueChange = { editFolder = it }, label = { Text("Folder (optional)") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onUpdateBookmark(bookmark, editTitle, editFolder)
+                        editBookmark = null
+                    },
+                    enabled = editTitle.isNotBlank(),
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { editBookmark = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun HistoryPage(
+    history: List<HistoryEntry>,
+    onOpen: (String) -> Unit,
+    onClearHistory: () -> Unit,
+    onDeleteHistoryEntry: (HistoryEntry) -> Unit,
+    onBack: () -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val visibleHistory = history.filter {
+        query.isBlank() || it.title.contains(query, true) || it.url.contains(query, true)
+    }
+    FullPageScaffold("History", "Search and manage recently visited pages", onBack) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Search history") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                    singleLine = true,
+                )
+                TextButton(onClick = onClearHistory, enabled = history.isNotEmpty()) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Clear all")
+                }
+            }
+            if (visibleHistory.isEmpty()) {
+                EmptyLibrary(
+                    if (history.isEmpty()) "Pages you visit will appear here." else "No matching history.",
+                    Icons.Outlined.History,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+                ) {
+                    items(visibleHistory, key = { it.id }) { entry ->
+                        ListItem(
+                            modifier = Modifier.padding(horizontal = 12.dp).clickable { onOpen(entry.url) },
+                            headlineContent = { Text(entry.title.ifBlank { BrowserUrl.displayValue(entry.url) }, maxLines = 1) },
+                            supportingContent = { Text(entry.url, maxLines = 1) },
+                            leadingContent = { Icon(Icons.Outlined.History, contentDescription = null) },
+                            trailingContent = {
+                                IconButton(onClick = { onDeleteHistoryEntry(entry) }) {
+                                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete history entry")
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadsPage(
+    downloads: List<DownloadEntry>,
+    onOpen: (DownloadEntry) -> Unit,
+    onShare: (DownloadEntry) -> Unit,
+    onToggle: (DownloadEntry) -> Unit,
+    onCancel: (DownloadEntry) -> Unit,
+    onRemove: (DownloadEntry) -> Unit,
+    onClearCompleted: () -> Unit,
+    onBack: () -> Unit,
+) {
+    FullPageScaffold("Downloads", "Track, filter, and manage saved files", onBack) {
+        DownloadsSheet(
+            downloads = downloads,
+            onOpen = onOpen,
+            onShare = onShare,
+            onToggle = onToggle,
+            onCancel = onCancel,
+            onRemove = onRemove,
+            onClearCompleted = onClearCompleted,
+            showHeader = false,
+        )
+    }
+}
+
+@Composable
+private fun KeyboardShortcutsPage(
+    shortcutBindings: Map<BrowserCommandId, KeyChord>,
+    onSetKeyboardShortcut: (BrowserCommandId, KeyChord?) -> Unit,
+    capturingShortcut: BrowserCommandId?,
+    onBeginKeyboardShortcutCapture: (BrowserCommandId) -> Unit,
+    onCancelKeyboardShortcutCapture: () -> Unit,
+    onBack: () -> Unit,
+) {
+    FullPageScaffold("Keyboard shortcuts", "Configure keyboard and mouse-friendly browser actions", onBack) {
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
+        ) {
+            Text(
+                "Use Ctrl, Alt, or Meta combinations for browser actions. Shortcuts can be changed without affecting website text fields.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            capturingShortcut?.let { command ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Press a key for ${BrowserCommands.all.firstOrNull { it.id == command }?.title ?: command.name}",
+                            Modifier.weight(1f),
+                        )
+                        TextButton(onClick = onCancelKeyboardShortcutCapture) { Text("Cancel") }
+                    }
+                }
+            }
+            BrowserCommands.all.forEach { command ->
+                val binding = shortcutBindings[command.id]
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(command.title, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            binding?.displayName() ?: "Not set",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = { onBeginKeyboardShortcutCapture(command.id) }) { Text("Change") }
+                    TextButton(
+                        onClick = { onSetKeyboardShortcut(command.id, null) },
+                        enabled = binding != DefaultKeyboardShortcuts.bindings[command.id],
+                    ) { Text("Reset") }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
         }
     }
 }
@@ -4102,6 +4515,7 @@ private fun DownloadsSheet(
     onCancel: (DownloadEntry) -> Unit,
     onRemove: (DownloadEntry) -> Unit,
     onClearCompleted: () -> Unit,
+    showHeader: Boolean = true,
 ) {
     var pendingDelete by remember { mutableStateOf<DownloadEntry?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -4115,7 +4529,9 @@ private fun DownloadsSheet(
             (!privateOnly || download.isPrivate) &&
             (query.isBlank() || download.fileName.contains(query, true) || download.url.contains(query, true))
     }
-    SheetHeader("Downloads", if (activeCount == 0) "Files saved by Dextra" else "$activeCount active")
+    if (showHeader) {
+        SheetHeader("Downloads", if (activeCount == 0) "Files saved by Dextra" else "$activeCount active")
+    }
     OutlinedTextField(
         value = query,
         onValueChange = { query = it },
@@ -4575,11 +4991,7 @@ private fun SettingsScreen(
     onUninstallWebApp: (InstalledWebApp) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
     onSetVerticalTabs: (Boolean) -> Unit,
-    shortcutBindings: Map<BrowserCommandId, KeyChord>,
-    onSetKeyboardShortcut: (BrowserCommandId, KeyChord?) -> Unit,
-    capturingShortcut: BrowserCommandId?,
-    onBeginKeyboardShortcutCapture: (BrowserCommandId) -> Unit,
-    onCancelKeyboardShortcutCapture: () -> Unit,
+    onOpenKeyboardShortcuts: () -> Unit,
     dnsOverHttpsEnabled: Boolean,
     onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
     dnsProvider: DnsProvider,
@@ -4794,48 +5206,18 @@ private fun SettingsScreen(
           }
       }
       SettingSection("Keyboard shortcuts") {
-         Text(
-             "Use Ctrl, Alt, or Meta combinations for browser actions. Shortcuts can be changed without affecting website text fields.",
-             style = MaterialTheme.typography.bodySmall,
-             color = MaterialTheme.colorScheme.onSurfaceVariant,
-         )
-         capturingShortcut?.let { command ->
-             Surface(
-                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-                 shape = RoundedCornerShape(10.dp),
-                 color = MaterialTheme.colorScheme.primaryContainer,
-             ) {
-                 Row(
-                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                     verticalAlignment = Alignment.CenterVertically,
-                 ) {
-                     Text("Press a key for ${BrowserCommands.all.firstOrNull { it.id == command }?.title ?: command.name}", Modifier.weight(1f))
-                     TextButton(onClick = onCancelKeyboardShortcutCapture) { Text("Cancel") }
-                 }
-             }
-         }
-         BrowserCommands.all.forEach { command ->
-             val binding = shortcutBindings[command.id]
-             Row(
-                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                 verticalAlignment = Alignment.CenterVertically,
-             ) {
-                 Column(Modifier.weight(1f)) {
-                     Text(command.title, style = MaterialTheme.typography.bodyMedium)
-                     Text(
-                         binding?.displayName() ?: "Not set",
-                         style = MaterialTheme.typography.bodySmall,
-                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                     )
-                 }
-                 TextButton(onClick = { onBeginKeyboardShortcutCapture(command.id) }) { Text("Change") }
-                 TextButton(
-                     onClick = { onSetKeyboardShortcut(command.id, null) },
-                     enabled = binding != DefaultKeyboardShortcuts.bindings[command.id],
-                 ) { Text("Reset") }
-             }
-         }
-     }
+          Text(
+              "Configure browser actions without filling the settings page with every binding.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          Spacer(Modifier.height(8.dp))
+          Button(onClick = onOpenKeyboardShortcuts) {
+              Icon(Icons.Outlined.Settings, contentDescription = null)
+              Spacer(Modifier.width(8.dp))
+              Text("Open keyboard shortcuts")
+          }
+      }
      SettingSection("Network") {
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
