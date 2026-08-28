@@ -10,7 +10,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.scrollBy
@@ -139,10 +138,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -472,38 +469,12 @@ private fun BrowserScreen(
     val fullScreenTab = state.tabs.firstOrNull { it.isFullScreen }
     var menuExpanded by remember { mutableStateOf(false) }
     val addressFocusRequester = remember { FocusRequester() }
-    val rootFocusRequester = remember { FocusRequester() }
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .padding(top = if (fullScreenTab == null) 8.dp else 0.dp)
-            .focusRequester(rootFocusRequester)
-            .focusable()
-            .onPreviewKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown || !event.isCtrlPressed) return@onPreviewKeyEvent false
-                when (event.key) {
-                    Key.T -> {
-                        onNewTab()
-                        true
-                    }
-                    Key.R -> {
-                        onReload()
-                        true
-                    }
-                    Key.W -> {
-                        activeTab?.let { onCloseTab(it.id) }
-                        true
-                    }
-                    Key.L -> {
-                        addressFocusRequester.requestFocus()
-                        true
-                    }
-                    else -> false
-                }
-            },
+            .padding(top = if (fullScreenTab == null) 8.dp else 0.dp),
     ) {
-        LaunchedEffect(Unit) { rootFocusRequester.requestFocus() }
-    LaunchedEffect(state.addressFocusRequest) {
+        LaunchedEffect(state.addressFocusRequest) {
             runCatching { addressFocusRequester.requestFocus() }
         }
         if (state.overlay == BrowserOverlay.SETTINGS) {
@@ -2087,6 +2058,8 @@ private class ContextMenuGeckoView(
 
     init {
         setBackgroundColor(backgroundColor)
+        isFocusable = true
+        isFocusableInTouchMode = true
     }
 
     fun setTabId(id: String) {
@@ -2111,6 +2084,7 @@ private class ContextMenuGeckoView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
         if (event.actionMasked == MotionEvent.ACTION_DOWN &&
             event.buttonState and MotionEvent.BUTTON_SECONDARY != 0
         ) {
