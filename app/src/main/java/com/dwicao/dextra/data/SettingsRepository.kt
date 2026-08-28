@@ -51,6 +51,8 @@ data class BrowserSettings(
     val activeTabIndex: Int = 0,
     val tabGroups: List<SavedTabGroup> = emptyList(),
     val shortcutBindings: Map<BrowserCommandId, KeyChord> = DefaultKeyboardShortcuts.bindings,
+    val sessionSnapshots: List<SessionSnapshot> = emptyList(),
+    val downloadDirectoryUri: String? = null,
 )
 
 data class ExtensionInstallRecord(
@@ -74,6 +76,15 @@ data class SavedTabGroup(
     val title: String,
     val color: Long = 0xFF4E4BB5L,
     val collapsed: Boolean = false,
+)
+
+data class SessionSnapshot(
+    val id: String,
+    val title: String,
+    val createdAt: Long,
+    val tabs: List<SavedTab>,
+    val activeTabIndex: Int,
+    val tabGroups: List<SavedTabGroup>,
 )
 
 enum class DnsProvider(val label: String, val dohUri: String) {
@@ -117,6 +128,8 @@ class SettingsRepository(private val context: Context) {
         val activeTabIndex = intPreferencesKey("active_tab_index")
         val tabGroups = stringPreferencesKey("tab_groups")
         val shortcutBindings = stringPreferencesKey("shortcut_bindings")
+        val sessionSnapshots = stringPreferencesKey("session_snapshots")
+        val downloadDirectoryUri = stringPreferencesKey("download_directory_uri")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -296,6 +309,39 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun saveSessionSnapshot(snapshot: SessionSnapshot) {
+        context.settingsDataStore.edit { preferences ->
+            val snapshots = preferences.sessionSnapshots().toMutableList()
+            snapshots.removeAll { it.id == snapshot.id }
+            snapshots.add(0, snapshot)
+            val bounded = snapshots.take(MAX_SESSION_SNAPSHOTS).toMutableList()
+            while (bounded.isNotEmpty()) {
+                val payload = JSONArray(bounded.map { it.toJson() }).toString()
+                if (payload.toByteArray(Charsets.UTF_8).size <= MAX_SESSION_SNAPSHOT_BYTES) {
+                    preferences[Keys.sessionSnapshots] = payload
+                    return@edit
+                }
+                bounded.removeAt(bounded.lastIndex)
+            }
+            preferences.remove(Keys.sessionSnapshots)
+        }
+    }
+
+    suspend fun deleteSessionSnapshot(id: String) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.sessionSnapshots] = JSONArray(
+                preferences.sessionSnapshots().filterNot { it.id == id }.map { it.toJson() },
+            ).toString()
+        }
+    }
+
+    suspend fun setDownloadDirectoryUri(uri: String?) {
+        context.settingsDataStore.edit { preferences ->
+            if (uri == null) preferences.remove(Keys.downloadDirectoryUri)
+            else preferences[Keys.downloadDirectoryUri] = uri
+        }
+    }
+
     private fun Preferences.toBrowserSettings(): BrowserSettings = BrowserSettings(
         themeMode = get(Keys.theme)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
             ?: ThemeMode.SYSTEM,
@@ -319,6 +365,8 @@ class SettingsRepository(private val context: Context) {
         activeTabIndex = get(Keys.activeTabIndex) ?: 0,
         tabGroups = savedTabGroups(),
         shortcutBindings = DefaultKeyboardShortcuts.bindings + shortcutBindings(),
+        sessionSnapshots = sessionSnapshots(),
+        downloadDirectoryUri = get(Keys.downloadDirectoryUri),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -404,11 +452,92 @@ class SettingsRepository(private val context: Context) {
         ?.toMap()
         ?: emptyMap()
 
+    private fun Preferences.sessionSnapshots(): List<SessionSnapshot> = runCatching {
+        val snapshots = JSONArray(get(Keys.sessionSnapshots).orEmpty())
+        (0 until snapshots.length()).mapNotNull { index ->
+            val snapshot = snapshots.optJSONObject(index) ?: return@mapNotNull null
+            val id = snapshot.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val tabs = snapshot.optJSONArray("tabs")?.let { array ->
+                (0 until array.length()).mapNotNull { tabIndex ->
+                    array.optJSONObject(tabIndex)?.toSavedTab()
+                }
+            }.orEmpty()
+            if (tabs.isEmpty()) return@mapNotNull null
+            val groups = snapshot.optJSONArray("groups")?.let { array ->
+                (0 until array.length()).mapNotNull { groupIndex ->
+                    array.optJSONObject(groupIndex)?.toSavedTabGroup()
+                }
+            }.orEmpty()
+            SessionSnapshot(
+                id = id,
+                title = snapshot.optString("title").ifBlank { "Saved session" },
+                createdAt = snapshot.optLong("createdAt", 0L),
+                tabs = tabs,
+                activeTabIndex = snapshot.optInt("activeTabIndex", 0),
+                tabGroups = groups,
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    private fun SessionSnapshot.toJson(): JSONObject = JSONObject().apply {
+        put("id", id)
+        put("title", title)
+        put("createdAt", createdAt)
+        put("activeTabIndex", activeTabIndex)
+        put("tabs", JSONArray(tabs.map { it.toJson() }))
+        put("groups", JSONArray(tabGroups.map { it.toJson() }))
+    }
+
+    private fun SavedTab.toJson(): JSONObject = JSONObject().apply {
+        put("url", url)
+        put("private", isPrivate)
+        put("pinned", pinned)
+        put("groupId", groupId)
+        put("id", id)
+        put("title", title)
+        put("sessionState", sessionState)
+    }
+
+    private fun SavedTabGroup.toJson(): JSONObject = JSONObject().apply {
+        put("id", id)
+        put("title", title)
+        put("color", color)
+        put("collapsed", collapsed)
+    }
+
+    private fun JSONObject.toSavedTab(): SavedTab? {
+        val url = optString("url").takeIf(String::isNotBlank) ?: return null
+        return SavedTab(
+            url = url,
+            isPrivate = optBoolean("private"),
+            pinned = optBoolean("pinned"),
+            groupId = optString("groupId").takeIf(String::isNotBlank),
+            id = optString("id").takeIf(String::isNotBlank),
+            title = optString("title").takeIf(String::isNotBlank),
+            sessionState = optString("sessionState").takeIf(String::isNotBlank),
+        )
+    }
+
+    private fun JSONObject.toSavedTabGroup(): SavedTabGroup? {
+        val id = optString("id").takeIf(String::isNotBlank) ?: return null
+        return SavedTabGroup(
+            id = id,
+            title = optString("title").ifBlank { "Tab group" },
+            color = optLong("color", 0xFF4E4BB5L),
+            collapsed = optBoolean("collapsed"),
+        )
+    }
+
     private fun filterFromUrl(url: String, enabled: Boolean): AdBlockFilter =
         AdBlockFilter(url.substringAfterLast('/').ifBlank { url }, url, enabled)
 
     private fun defaultDesktopSites(): Boolean {
         val configuration = context.resources.configuration
         return configuration.screenWidthDp >= 600 || configuration.smallestScreenWidthDp >= 600
+    }
+
+    private companion object {
+        const val MAX_SESSION_SNAPSHOTS = 20
+        const val MAX_SESSION_SNAPSHOT_BYTES = 8 * 1024 * 1024
     }
 }

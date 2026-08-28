@@ -23,6 +23,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         browserViewModel.handleIncomingIntent(intent)
+        window.decorView.setOnDragListener { _, event ->
+            if (event.action == android.view.DragEvent.ACTION_DROP) {
+                browserViewModel.handleDroppedData(event.clipData)
+            }
+            true
+        }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val state = browserViewModel.state.value

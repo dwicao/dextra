@@ -10,7 +10,11 @@
 -dontoptimize
 -keep class com.dwicao.dextra.DextraApplication { *; }
 -keep class com.dwicao.dextra.MainActivity { *; }
+-keep class com.dwicao.dextra.PwaActivity { *; }
 -keep class com.dwicao.dextra.browser.BrowserViewModel { *; }
 -keep class com.dwicao.dextra.browser.DownloadWorker { *; }
 -keep class com.dwicao.dextra.data.BrowserDatabase { *; }
 -keep class com.dwicao.dextra.data.BrowserDatabase_Impl { *; }
+-keepclassmembers class org.mozilla.geckoview.Autocomplete$LoginEntry {
+    <init>(org.mozilla.gecko.util.GeckoBundle);
+}

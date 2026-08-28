@@ -26,10 +26,14 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
             put("sitePermissions", JSONArray(dao.getSitePermissions().map { JSONObject().apply {
                 put("origin", it.origin); put("permission", it.permission); put("decision", it.decision); put("updatedAt", it.updatedAt)
             } }))
-            put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
-                put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
-                putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent); put("updatedAt", it.updatedAt)
-            } }))
+             put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
+                 put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
+                 putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent); put("updatedAt", it.updatedAt)
+             } }))
+             put("installedWebApps", JSONArray(dao.getInstalledWebApps().map { JSONObject().apply {
+                 put("id", it.id); put("origin", it.origin); put("name", it.name)
+                 put("startUrl", it.startUrl); put("scope", it.scope); put("installedAt", it.installedAt)
+             } }))
         }
         context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString().toByteArray(Charsets.UTF_8)) }
             ?: error("Could not open backup destination")
@@ -68,6 +72,20 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
         root.optJSONArray("siteSettings")?.let { array ->
             for (i in 0 until array.length()) array.getJSONObject(i).let {
                 dao.upsertSiteSetting(SiteSetting(it.getString("origin"), it.optBooleanOrNull("desktopSites"), it.optBooleanOrNull("adBlockingEnabled"), it.optBooleanOrNull("userScriptsEnabled"), it.optIntOrNull("zoomPercent"), it.optLong("updatedAt", System.currentTimeMillis())))
+            }
+        }
+        root.optJSONArray("installedWebApps")?.let { array ->
+            for (i in 0 until array.length()) array.getJSONObject(i).let {
+                dao.upsertInstalledWebApp(
+                    InstalledWebApp(
+                        id = it.getString("id"),
+                        origin = it.getString("origin"),
+                        name = it.getString("name"),
+                        startUrl = it.getString("startUrl"),
+                        scope = it.getString("scope"),
+                        installedAt = it.optLong("installedAt", System.currentTimeMillis()),
+                    ),
+                )
             }
         }
         return imported

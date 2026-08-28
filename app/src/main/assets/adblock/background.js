@@ -7,10 +7,14 @@
   const disabledAdblockOrigins = new Set();
   const enabledAdblockOrigins = new Set();
   const disabledUserScriptOrigins = new Set();
+  const blockedByOrigin = new Map();
   const MAX_FILTER_BYTES = 8 * 1024 * 1024;
   const MAX_SCRIPT_BYTES = 512 * 1024;
   let filterLoadGeneration = 0;
   let enabled = true;
+  let nativePort = null;
+  let totalBlocked = 0;
+  let lastStatsReport = 0;
 
   const addHostRule = (value, thirdParty, rules) => {
     const host = value.toLowerCase().replace(/^\.+/, "").replace(/\.$/, "");
@@ -76,6 +80,39 @@
       if (rule && (!rule.thirdParty || !isSameSite(target.hostname, documentHost))) return true;
     }
     return false;
+  };
+
+  const reportStats = () => {
+    if (!nativePort) return;
+    try {
+      nativePort.postMessage({
+        type: "blockedStats",
+        totalBlocked,
+        byOrigin: Object.fromEntries(blockedByOrigin),
+      });
+    } catch (_) {
+      // The native port can disappear while a request is being handled.
+    }
+  };
+
+  const recordBlocked = (request) => {
+    totalBlocked += 1;
+    try {
+      const origin = new URL(request.documentUrl || "").origin;
+      if (/^https?:$/i.test(new URL(request.documentUrl || "").protocol)) {
+        blockedByOrigin.set(origin, (blockedByOrigin.get(origin) || 0) + 1);
+        if (blockedByOrigin.size > 200) {
+          blockedByOrigin.delete(blockedByOrigin.keys().next().value);
+        }
+      }
+    } catch (_) {
+      // Requests without a valid document origin are not attributed.
+    }
+    const now = Date.now();
+    if (now - lastStatsReport >= 1000) {
+      lastStatsReport = now;
+      reportStats();
+    }
   };
 
   const loadFilters = async (urls) => {
@@ -217,6 +254,8 @@
   const connectToDextra = () => {
     try {
       const port = browser.runtime.connectNative("dextra");
+      nativePort = port;
+      reportStats();
       port.onMessage.addListener((message) => {
         if (message?.type === "setZoom") {
           const zoomFactor = Number(message.zoomFactor);
@@ -249,7 +288,10 @@
         browser.storage.local.set({ enabled });
         loadFilters(Array.isArray(message.urls) ? message.urls : []);
       });
-      port.onDisconnect.addListener(() => setTimeout(connectToDextra, 2000));
+      port.onDisconnect.addListener(() => {
+        if (nativePort === port) nativePort = null;
+        setTimeout(connectToDextra, 2000);
+      });
     } catch (_) {
       setTimeout(connectToDextra, 2000);
     }
@@ -275,7 +317,11 @@
   });
 
   browser.webRequest.onBeforeRequest.addListener(
-    (request) => (shouldBlock(request) ? { cancel: true } : {}),
+    (request) => {
+      if (!shouldBlock(request)) return {};
+      recordBlocked(request);
+      return { cancel: true };
+    },
     { urls: ["http://*/*", "https://*/*"] },
     ["blocking"],
   );

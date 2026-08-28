@@ -111,4 +111,17 @@ class BookmarkAndShortcutTest {
         assertEquals(2, origins[1].permissionCount)
         assertTrue(origins[1].hasSiteOverrides)
     }
+
+    @Test
+    fun privacyOriginsIncludeBlockingStatsWithoutSiteRecords() {
+        val origins = buildPrivacyOrigins(
+            permissions = emptyList(),
+            settings = emptyList(),
+            blockedByOrigin = mapOf("https://ads.example" to 7),
+        )
+
+        assertEquals(1, origins.size)
+        assertEquals("https://ads.example", origins.single().origin)
+        assertEquals(7, origins.single().blockedCount)
+    }
 }

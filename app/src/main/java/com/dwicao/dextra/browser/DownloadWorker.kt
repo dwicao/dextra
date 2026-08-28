@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -13,6 +14,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
@@ -73,9 +75,25 @@ class DownloadWorker(
     }
 
     private fun publishDownload(download: DownloadEntry): String? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         val filePath = download.filePath ?: return null
         val resolver = applicationContext.contentResolver
+        download.destinationTreeUri?.let { treeUriString ->
+            val tree = DocumentFile.fromTreeUri(applicationContext, Uri.parse(treeUriString)) ?: return@let
+            val destination = tree.createFile(
+                download.mimeType ?: "application/octet-stream",
+                download.fileName,
+            ) ?: return@let
+            return try {
+                resolver.openOutputStream(destination.uri)?.use { output ->
+                    File(filePath).inputStream().use { input -> input.copyTo(output) }
+                } ?: error("Could not open selected download folder")
+                destination.uri.toString()
+            } catch (_: Exception) {
+                runCatching { destination.delete() }
+                null
+            }
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, download.fileName)
             put(MediaStore.Downloads.MIME_TYPE, download.mimeType ?: "application/octet-stream")

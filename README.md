@@ -7,7 +7,7 @@ Dextra is a GeckoView-based Android browser designed for Samsung DeX. It treats 
 This project is an early release build intended for internal testing and Samsung DeX-focused development.
 
 - Application ID: `com.dwicao.dextra`
-- Version: `0.3.0`
+- Version: `0.4.0`
 - Minimum Android version: 26
 - Target Android SDK: 36
 - Web engine: Mozilla GeckoView `154.0.20260824154132`
@@ -20,8 +20,10 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - DeX-oriented desktop and compact layouts.
 - Horizontal and vertical tab strips.
 - Stable tab IDs and session restore.
+- Named tab session snapshots with restore and deletion.
 - Tab groups with rename, collapse, move, and delete actions.
 - Tab reorder, pinning, sleeping, and inactive-tab hibernation.
+- DeX drag-and-drop URL opening and expanded browser keyboard shortcuts.
 - Two-pane split view with focus, swap, and close actions.
 - Mouse secondary-click context menus for pages and tabs.
 - Searchable tab switcher, command palette, configurable keyboard shortcuts, and hover previews.
@@ -33,13 +35,17 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - HTTPS-only remote filter lists and userscripts.
 - Mozilla-signed Firefox extension installation.
 - Durable downloads through WorkManager.
+- User-selected SAF download folders and download search/status/type filters.
 - Download resume validation, pause, cancel, MediaStore publishing, and notifications.
 - Bookmark folders, bounded HTML import/export, history search, and history pruning.
 - Reading list with bounded offline article snapshots.
 - Native reader mode with article extraction, font sizing, and light/dark/sepia palettes.
 - Privacy dashboard for reviewing and clearing per-site or all GeckoView site data.
+- Per-site "forget this site" cleanup and live ad/tracker blocking statistics.
 - QR URL sharing, PDF export, visible and bounded long screenshots.
 - Picture-in-Picture for active media and validated PWA launcher shortcuts.
+- Encrypted local login storage with GeckoView autocomplete integration.
+- Installed PWA management with separate Android document tasks/windows.
 - Private tabs excluded from saved sessions, history, and favicon fetching.
 - Crash reports for Java uncaught exceptions.
 

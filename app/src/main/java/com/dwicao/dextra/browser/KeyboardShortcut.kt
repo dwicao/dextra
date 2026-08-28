@@ -73,6 +73,7 @@ data class KeyChord(
         code == KeyEvent.KEYCODE_ESCAPE -> "Escape"
         code == KeyEvent.KEYCODE_MINUS -> "-"
         code == KeyEvent.KEYCODE_EQUALS -> "="
+        code == KeyEvent.KEYCODE_COMMA -> ","
         else -> "Key $code"
     }
 }
@@ -104,6 +105,13 @@ object DefaultKeyboardShortcuts {
         BrowserCommandId.COMMAND_PALETTE to KeyChord(KeyEvent.KEYCODE_P, ctrl = true, shift = true),
         BrowserCommandId.TAB_SEARCH to KeyChord(KeyEvent.KEYCODE_A, ctrl = true, shift = true),
         BrowserCommandId.READER_MODE to KeyChord(KeyEvent.KEYCODE_R, ctrl = true, shift = true),
+        BrowserCommandId.SHOW_TABS to KeyChord(KeyEvent.KEYCODE_9, ctrl = true, shift = true),
+        BrowserCommandId.SHOW_LIBRARY to KeyChord(KeyEvent.KEYCODE_B, ctrl = true, shift = true),
+        BrowserCommandId.SHOW_DOWNLOADS to KeyChord(KeyEvent.KEYCODE_J, ctrl = true),
+        BrowserCommandId.SHOW_SETTINGS to KeyChord(KeyEvent.KEYCODE_COMMA, ctrl = true),
+        BrowserCommandId.SHOW_PRIVACY to KeyChord(KeyEvent.KEYCODE_V, ctrl = true, shift = true),
+        BrowserCommandId.TOGGLE_SPLIT to KeyChord(KeyEvent.KEYCODE_S, ctrl = true, shift = true),
+        BrowserCommandId.HIBERNATE_TABS to KeyChord(KeyEvent.KEYCODE_H, ctrl = true, shift = true),
     )
 }
 
@@ -138,5 +146,7 @@ object BrowserCommands {
         BrowserCommand(BrowserCommandId.READER_MODE, "Reader mode", "Read the active article without page clutter"),
         BrowserCommand(BrowserCommandId.TOGGLE_SPLIT, "Open in split view", "Open the active tab beside another tab"),
         BrowserCommand(BrowserCommandId.HIBERNATE_TABS, "Hibernate inactive tabs", "Pause inactive tabs to save resources"),
+        BrowserCommand(BrowserCommandId.COMMAND_PALETTE, "Command palette", "Search and run browser actions"),
+        BrowserCommand(BrowserCommandId.TAB_SEARCH, "Search tabs", "Find an open tab by title or URL"),
     )
 }

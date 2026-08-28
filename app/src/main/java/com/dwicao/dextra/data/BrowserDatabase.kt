@@ -84,6 +84,7 @@ data class DownloadEntry(
     val createdAt: Long,
     val isPrivate: Boolean = false,
     val attempts: Int = 0,
+    val destinationTreeUri: String? = null,
 )
 
 enum class DownloadStatus(val label: String) {
@@ -94,6 +95,19 @@ enum class DownloadStatus(val label: String) {
     FAILED("Failed"),
     CANCELED("Canceled"),
 }
+
+@Entity(
+    tableName = "installed_web_apps",
+    indices = [Index(value = ["origin"], unique = true)],
+)
+data class InstalledWebApp(
+    @PrimaryKey val id: String,
+    val origin: String,
+    val name: String,
+    val startUrl: String,
+    val scope: String,
+    val installedAt: Long,
+)
 
 @Dao
 interface BrowserDao {
@@ -219,9 +233,24 @@ interface BrowserDao {
 
     @Query("DELETE FROM downloads WHERE status IN (:statuses)")
     suspend fun deleteDownloadsWithStatus(statuses: List<String>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertInstalledWebApp(app: InstalledWebApp)
+
+    @Query("SELECT * FROM installed_web_apps ORDER BY installedAt DESC")
+    fun observeInstalledWebApps(): Flow<List<InstalledWebApp>>
+
+    @Query("DELETE FROM installed_web_apps WHERE id = :id")
+    suspend fun deleteInstalledWebApp(id: String)
+
+    @Query("SELECT * FROM installed_web_apps WHERE id = :id LIMIT 1")
+    suspend fun getInstalledWebApp(id: String): InstalledWebApp?
+
+    @Query("SELECT * FROM installed_web_apps ORDER BY installedAt DESC")
+    suspend fun getInstalledWebApps(): List<InstalledWebApp>
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class], version = 10, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 11, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -234,7 +263,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -338,6 +367,26 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
         private val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE downloads ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE downloads ADD COLUMN destinationTreeUri TEXT")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS installed_web_apps (
+                        id TEXT NOT NULL,
+                        origin TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        startUrl TEXT NOT NULL,
+                        scope TEXT NOT NULL,
+                        installedAt INTEGER NOT NULL,
+                        PRIMARY KEY(id)
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_installed_web_apps_origin ON installed_web_apps(origin)")
             }
         }
     }
