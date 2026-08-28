@@ -16,7 +16,8 @@ plugins {
 
 android {
     namespace = "com.dwicao.dextra"
-    compileSdk = 36
+    compileSdk = 37
+    compileSdkMinor = 1
 
     defaultConfig {
         applicationId = "com.dwicao.dextra"
@@ -100,7 +101,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
 
-    implementation("org.mozilla.geckoview:geckoview-arm64-v8a:141.0.20250806102122")
+    implementation("org.mozilla.geckoview:geckoview-arm64-v8a:154.0.20260824154132")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.test:core:1.7.0")

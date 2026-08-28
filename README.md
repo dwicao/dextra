@@ -10,7 +10,7 @@ This project is an early release build intended for internal testing and Samsung
 - Version: `0.1.0`
 - Minimum Android version: 26
 - Target Android SDK: 36
-- Web engine: Mozilla GeckoView `141.0.20250806102122`
+- Web engine: Mozilla GeckoView `154.0.20260824154132`
 - Current native ABI: `arm64-v8a`
 
 Runtime testing on physical Samsung DeX hardware is still required before public distribution.
@@ -49,7 +49,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 ## Requirements
 
 - JDK 17.
-- Android SDK platform 36.
+- Android SDK platform 37.1.
 - Android Build Tools compatible with the installed Android Gradle Plugin.
 - An arm64 Android device or emulator for GeckoView runtime testing.
 - Internet access to resolve Maven and Mozilla GeckoView dependencies.

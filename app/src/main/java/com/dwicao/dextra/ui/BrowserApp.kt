@@ -1,7 +1,6 @@
 package com.dwicao.dextra.ui
 
 import android.app.Activity
-import android.content.Context
 import android.os.Build
 import android.view.MotionEvent
 import android.Manifest
@@ -166,7 +165,6 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import org.mozilla.geckoview.GeckoSession
 import com.dwicao.dextra.browser.BrowserTabState
 import com.dwicao.dextra.browser.BrowserContextMenu
 import com.dwicao.dextra.browser.BrowserUrl
@@ -343,7 +341,6 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
                   onContextMenuAction = viewModel::handleContextMenuAction,
                   onDismissContextMenu = viewModel::dismissContextMenu,
-                  onShowContextMenu = viewModel::showContextMenu,
                   onTabContextMenu = viewModel::showTabContextMenu,
                   extensionPopup = state.extensionPopup,
                   onCloseExtensionPopup = viewModel::closeExtensionPopup,
@@ -456,8 +453,7 @@ private fun BrowserScreen(
     onResolveExtensionUpdate: (Boolean) -> Unit,
     onContextMenuAction: (ContextMenuAction) -> Unit,
     onDismissContextMenu: () -> Unit,
-    onShowContextMenu: (String, Int, Int) -> Unit,
-    onTabContextMenu: (String, Int, Int) -> Unit,
+     onTabContextMenu: (String, Int, Int) -> Unit,
     extensionPopup: ExtensionPopupState?,
     onCloseExtensionPopup: () -> Unit,
     findInPage: FindInPageState?,
@@ -536,8 +532,7 @@ private fun BrowserScreen(
                     onForward = onForward,
                     onReload = onReload,
                     onReloadCrashedTab = onReloadCrashedTab,
-                    onShowContextMenu = onShowContextMenu,
-                    onTabContextMenu = onTabContextMenu,
+                     onTabContextMenu = onTabContextMenu,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                  onNewTab = { onNewTab() },
@@ -571,8 +566,7 @@ private fun BrowserScreen(
                     onForward = onForward,
                     onReload = onReload,
                     onReloadCrashedTab = onReloadCrashedTab,
-                    onShowContextMenu = onShowContextMenu,
-                    onTabContextMenu = onTabContextMenu,
+                     onTabContextMenu = onTabContextMenu,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                     onNewTab = { onNewTab() },
@@ -720,7 +714,6 @@ private fun DesktopBrowserLayout(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
-    onShowContextMenu: (String, Int, Int) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
@@ -824,7 +817,6 @@ private fun DesktopBrowserLayout(
                         tab = splitPrimaryTab,
                         onNavigate = onNavigate,
                         onReloadCrashedTab = onReloadCrashedTab,
-                        onShowContextMenu = onShowContextMenu,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         onFocus = { onFocusSplitPane(false) },
                     )
@@ -838,7 +830,6 @@ private fun DesktopBrowserLayout(
                         tab = splitSecondaryTab,
                         onNavigate = onNavigate,
                         onReloadCrashedTab = onReloadCrashedTab,
-                        onShowContextMenu = onShowContextMenu,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         onFocus = { onFocusSplitPane(true) },
                     )
@@ -848,7 +839,6 @@ private fun DesktopBrowserLayout(
                     tab = fullScreenTab ?: activeTab,
                     onNavigate = onNavigate,
                     onReloadCrashedTab = onReloadCrashedTab,
-                    onShowContextMenu = onShowContextMenu,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
             }
@@ -867,7 +857,6 @@ private fun CompactBrowserLayout(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
-    onShowContextMenu: (String, Int, Int) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
@@ -931,7 +920,6 @@ private fun CompactBrowserLayout(
             tab = fullScreenTab ?: activeTab,
             onNavigate = onNavigate,
             onReloadCrashedTab = onReloadCrashedTab,
-            onShowContextMenu = onShowContextMenu,
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
         if (fullScreenTab == null) {
@@ -2054,65 +2042,6 @@ private fun TabStrip(
     }
 }
 
-private class ContextMenuGeckoView(
-    context: Context,
-    private var tabId: String,
-    private val onSecondaryClick: (String, Int, Int) -> Unit,
-    backgroundColor: Int,
-) : GeckoView(context) {
-    private var lastSecondaryClick = 0L
-    private var currentBackgroundColor = backgroundColor
-
-    init {
-        setBackgroundColor(backgroundColor)
-        isFocusable = true
-        isFocusableInTouchMode = true
-    }
-
-    fun setTabId(id: String) {
-        if (tabId != id) tabId = id
-    }
-
-    fun updateBackgroundColor(color: Int) {
-        if (currentBackgroundColor == color) return
-        currentBackgroundColor = color
-        setBackgroundColor(color)
-        session?.compositorController?.setClearColor(color)
-    }
-
-    private fun dispatchSecondaryClick(event: MotionEvent): Boolean {
-        val now = event.eventTime
-        if (now - lastSecondaryClick < 150L) return true
-        lastSecondaryClick = now
-        val location = IntArray(2)
-        getLocationOnScreen(location)
-        onSecondaryClick(tabId, location[0] + event.x.toInt(), location[1] + event.y.toInt())
-        return true
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) requestFocus()
-        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
-            event.buttonState and MotionEvent.BUTTON_SECONDARY != 0
-        ) {
-            dispatchSecondaryClick(event)
-        }
-        if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
-        return super.onTouchEvent(event)
-    }
-
-    override fun performClick(): Boolean = super.performClick()
-
-    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        if ((event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS) &&
-            event.buttonState and MotionEvent.BUTTON_SECONDARY != 0
-        ) {
-            dispatchSecondaryClick(event)
-        }
-        return super.onGenericMotionEvent(event)
-    }
-}
-
 @Composable
 private fun ExtensionPopupView(
     popup: ExtensionPopupState,
@@ -2265,7 +2194,6 @@ private fun BrowserViewport(
     tab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onReloadCrashedTab: () -> Unit,
-    onShowContextMenu: (String, Int, Int) -> Unit,
     modifier: Modifier = Modifier,
     onFocus: (() -> Unit)? = null,
 ) {
@@ -2282,12 +2210,7 @@ private fun BrowserViewport(
         } else {
             AndroidView(
                 factory = { context ->
-                    ContextMenuGeckoView(
-                        context = context,
-                        tabId = tab.id,
-                        onSecondaryClick = onShowContextMenu,
-                        backgroundColor = pageBackground,
-                    ).apply {
+                    GeckoView(context).apply {
                         setBackgroundColor(pageBackground)
                         coverUntilFirstPaint(pageBackground)
                         setSession(tab.session)
@@ -2296,8 +2219,8 @@ private fun BrowserViewport(
                     }
                 },
                     update = { view ->
-                    view.updateBackgroundColor(pageBackground)
-                    view.setTabId(tab.id)
+                    view.setBackgroundColor(pageBackground)
+                    view.session?.compositorController?.setClearColor(pageBackground)
                     if (view.session !== tab.session) {
                         view.coverUntilFirstPaint(pageBackground)
                         view.releaseSession()
@@ -2380,7 +2303,6 @@ private fun BrowserContextMenuPopup(
     onAction: (ContextMenuAction) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val isImage = menu.resourceType == GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE
     Popup(
         popupPositionProvider = ContextMenuPositionProvider(menu.x, menu.y),
         properties = PopupProperties(focusable = true),
@@ -2397,7 +2319,6 @@ private fun BrowserContextMenuPopup(
                     .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
-        if (menu.isTab) {
             DropdownMenuItem(
                 text = { Text("New tab") },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
@@ -2454,89 +2375,6 @@ private fun BrowserContextMenuPopup(
                 leadingIcon = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.CLOSE_TABS_TO_RIGHT) },
             )
-        } else {
-            if (!menu.linkUri.isNullOrBlank()) {
-            DropdownMenuItem(
-                text = { Text("Open link") },
-                leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.OPEN_LINK) },
-            )
-            DropdownMenuItem(
-                text = { Text("Open link in new tab") },
-                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.OPEN_LINK_IN_NEW_TAB) },
-            )
-            DropdownMenuItem(
-                text = { Text("Open link in private tab") },
-                leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.OPEN_LINK_IN_PRIVATE_TAB) },
-            )
-            DropdownMenuItem(
-                text = { Text("Copy link") },
-                leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.COPY_LINK) },
-            )
-            }
-        if (!menu.resourceUri.isNullOrBlank()) {
-            DropdownMenuItem(
-                text = { Text(if (isImage) "Open image in new tab" else "Open media in new tab") },
-                leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB) },
-            )
-            DropdownMenuItem(
-                text = { Text(if (isImage) "Save image" else "Save media") },
-                leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.SAVE_MEDIA) },
-            )
-            DropdownMenuItem(
-                text = { Text("Copy media URL") },
-                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.COPY_MEDIA_URL) },
-            )
-        }
-        if (!menu.textContent.isNullOrBlank()) {
-            DropdownMenuItem(
-                text = { Text("Copy text") },
-                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.COPY_TEXT) },
-            )
-        }
-        Divider()
-        if (menu.canGoBack) {
-            DropdownMenuItem(
-                text = { Text("Back") },
-                leadingIcon = { Icon(Icons.Outlined.ArrowBack, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.BACK) },
-            )
-        }
-        if (menu.canGoForward) {
-            DropdownMenuItem(
-                text = { Text("Forward") },
-                leadingIcon = { Icon(Icons.Outlined.ArrowForward, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.FORWARD) },
-            )
-        }
-        DropdownMenuItem(
-            text = { Text("Reload") },
-            leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
-            onClick = { onAction(ContextMenuAction.RELOAD) },
-        )
-        DropdownMenuItem(
-            text = { Text("Copy page URL") },
-            leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
-            onClick = { onAction(ContextMenuAction.COPY_PAGE_URL) },
-        )
-        DropdownMenuItem(
-            text = { Text(if (menu.isBookmarked) "Remove bookmark" else "Bookmark page") },
-            leadingIcon = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
-            onClick = { onAction(ContextMenuAction.TOGGLE_BOOKMARK) },
-        )
-        DropdownMenuItem(
-            text = { Text("Save page") },
-            leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
-            onClick = { onAction(ContextMenuAction.SAVE_PAGE) },
-        )
-        }
             }
         }
     }
@@ -3200,7 +3038,7 @@ private fun ExtensionUpdateDialog(
                     .heightIn(max = 360.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
-                Text("${prompt.currentVersion} -> ${prompt.newVersion} requests additional access.")
+                Text("This extension requests additional access to update.")
                 if (prompt.permissions.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
                     Text("New extension permissions", style = MaterialTheme.typography.titleSmall)
@@ -3210,6 +3048,11 @@ private fun ExtensionUpdateDialog(
                     Spacer(Modifier.height(12.dp))
                     Text("New website access", style = MaterialTheme.typography.titleSmall)
                     prompt.origins.forEach { Text("- $it", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (prompt.dataCollectionPermissions.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("New data collection access", style = MaterialTheme.typography.titleSmall)
+                    prompt.dataCollectionPermissions.forEach { Text("- $it", style = MaterialTheme.typography.bodySmall) }
                 }
             }
         },

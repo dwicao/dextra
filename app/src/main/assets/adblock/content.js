@@ -20,22 +20,4 @@
   document.addEventListener("click", openLinkInNewTab, true);
   document.addEventListener("auxclick", openLinkInNewTab, true);
 
-  document.addEventListener("contextmenu", (event) => {
-    const target = event.target instanceof Element ? event.target : null;
-    const link = target?.closest("a[href]");
-    const media = target?.closest("img,video,audio");
-    browser.runtime.sendNativeMessage("dextra", {
-      type: "contextMenu",
-      x: Math.round(event.clientX),
-      y: Math.round(event.clientY),
-      linkUrl: link?.href || null,
-      selectedText: window.getSelection()?.toString()?.trim() || null,
-      textContent: link?.textContent?.trim() || target?.textContent?.trim() || null,
-      resourceUri: media?.currentSrc || media?.src || null,
-      resourceType: media?.tagName?.toLowerCase() || null,
-    }).catch(() => {});
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }, true);
-
 })();

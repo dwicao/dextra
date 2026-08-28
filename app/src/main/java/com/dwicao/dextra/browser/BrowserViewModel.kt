@@ -106,20 +106,6 @@ enum class ContextMenuAction {
     CLOSE_OTHER_TABS,
     CLOSE_TABS_TO_LEFT,
     CLOSE_TABS_TO_RIGHT,
-    BACK,
-    FORWARD,
-    RELOAD,
-    OPEN_LINK,
-    OPEN_LINK_IN_NEW_TAB,
-    OPEN_LINK_IN_PRIVATE_TAB,
-    COPY_LINK,
-    COPY_TEXT,
-    OPEN_MEDIA_IN_NEW_TAB,
-    COPY_MEDIA_URL,
-    SAVE_MEDIA,
-    COPY_PAGE_URL,
-    TOGGLE_BOOKMARK,
-    SAVE_PAGE,
     OPEN_IN_SPLIT,
     CLOSE_SPLIT,
     SWAP_SPLIT,
@@ -130,18 +116,8 @@ data class BrowserContextMenu(
     val tabId: String,
     val x: Int,
     val y: Int,
-    val pageUrl: String,
-    val isBookmarked: Boolean,
     val isPinned: Boolean = false,
     val isSleeping: Boolean = false,
-    val linkUri: String?,
-    val linkText: String?,
-    val textContent: String?,
-    val resourceUri: String?,
-    val resourceType: Int,
-    val canGoBack: Boolean,
-    val canGoForward: Boolean,
-    val isTab: Boolean = false,
 )
 
 data class ContentPermissionPrompt(
@@ -230,10 +206,9 @@ private const val PROGRESS_UPDATE_INTERVAL_MS = 100L
 data class ExtensionUpdatePrompt(
     val id: String,
     val name: String,
-    val currentVersion: String,
-    val newVersion: String,
     val permissions: List<String>,
     val origins: List<String>,
+    val dataCollectionPermissions: List<String>,
     val result: GeckoResult<AllowOrDeny>,
 )
 
@@ -321,41 +296,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         openContextUrl(tabId, url, inNewTab = true)
                     }
                 }
-                "contextMenu" -> {
-                    val resourceType = when (json.optString("resourceType")) {
-                        "img" -> GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE
-                        "video" -> GeckoSession.ContentDelegate.ContextElement.TYPE_VIDEO
-                        "audio" -> GeckoSession.ContentDelegate.ContextElement.TYPE_AUDIO
-                        else -> GeckoSession.ContentDelegate.ContextElement.TYPE_NONE
-                    }
-                    val contextText = json.optString("selectedText")
-                        .takeIf(String::isNotBlank)
-                        ?: json.optString("textContent").takeIf(String::isNotBlank)
-                    showContextMenu(
-                        tabId = tabId,
-                        x = json.optInt("x"),
-                        y = json.optInt("y"),
-                        linkUri = json.optString("linkUrl").takeIf(String::isNotBlank),
-                        linkText = contextText,
-                        textContent = contextText,
-                        resourceUri = json.optString("resourceUri").takeIf(String::isNotBlank),
-                        resourceType = resourceType,
-                    )
-                }
             }
             return null
         }
     }
 
     private val extensionPromptDelegate = object : WebExtensionController.PromptDelegate {
-        @Suppress("DEPRECATION")
-        override fun onInstallPromptRequest(
-            extension: WebExtension,
-            permissions: Array<String>,
-            origins: Array<String>,
-        ): GeckoResult<WebExtension.PermissionPromptResponse> =
-            createExtensionInstallPrompt(extension, permissions, origins, emptyArray())
-
         override fun onInstallPromptRequest(
             extension: WebExtension,
             permissions: Array<String>,
@@ -366,14 +312,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         override fun onUpdatePrompt(
             extension: WebExtension,
-            updatedExtension: WebExtension,
             newPermissions: Array<String>,
             newOrigins: Array<String>,
+            newDataCollectionPermissions: Array<String>,
         ): GeckoResult<AllowOrDeny> = createExtensionUpdatePrompt(
             extension,
-            updatedExtension,
             newPermissions,
             newOrigins,
+            newDataCollectionPermissions,
         )
     }
 
@@ -1010,37 +956,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(contextMenu = null) }
     }
 
-    fun showContextMenu(
-        tabId: String,
-        x: Int,
-        y: Int,
-        linkUri: String? = null,
-        linkText: String? = null,
-        textContent: String? = null,
-        resourceUri: String? = null,
-        resourceType: Int = GeckoSession.ContentDelegate.ContextElement.TYPE_NONE,
-    ) {
-        val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
-        _state.update {
-            it.copy(
-                contextMenu = BrowserContextMenu(
-                    tabId = tabId,
-                    x = x,
-                    y = y,
-                    pageUrl = tab.url,
-                    isBookmarked = tab.isBookmarked,
-                    linkUri = linkUri,
-                    linkText = linkText,
-                    textContent = textContent,
-                    resourceUri = resourceUri,
-                    resourceType = resourceType,
-                    canGoBack = tab.canGoBack,
-                    canGoForward = tab.canGoForward,
-                ),
-            )
-        }
-    }
-
     fun showTabContextMenu(tabId: String, x: Int, y: Int) {
         val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
         _state.update {
@@ -1049,18 +964,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     tabId = tabId,
                     x = x,
                     y = y,
-                    pageUrl = tab.url,
-                    isBookmarked = tab.isBookmarked,
-                    linkUri = null,
-                    linkText = null,
-                    textContent = null,
-                    resourceUri = null,
-                    resourceType = GeckoSession.ContentDelegate.ContextElement.TYPE_NONE,
-                    canGoBack = tab.canGoBack,
-                    canGoForward = tab.canGoForward,
                     isPinned = tab.pinned,
                     isSleeping = tab.isSleeping,
-                    isTab = true,
                 ),
             )
         }
@@ -1082,20 +987,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.CLOSE_OTHER_TABS -> closeOtherTabs(menu.tabId)
             ContextMenuAction.CLOSE_TABS_TO_LEFT -> closeTabsToLeft(menu.tabId)
             ContextMenuAction.CLOSE_TABS_TO_RIGHT -> closeTabsToRight(menu.tabId)
-            ContextMenuAction.BACK -> if (menu.canGoBack) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goBack(true)
-            ContextMenuAction.FORWARD -> if (menu.canGoForward) _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.goForward(true)
-            ContextMenuAction.RELOAD -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
-            ContextMenuAction.OPEN_LINK -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = false) }
-            ContextMenuAction.OPEN_LINK_IN_NEW_TAB -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
-            ContextMenuAction.OPEN_LINK_IN_PRIVATE_TAB -> menu.linkUri?.let { openContextUrl(menu.tabId, it, inNewTab = true, privateTab = true) }
-            ContextMenuAction.COPY_LINK -> menu.linkUri?.let { copyToClipboard("Link", it) }
-            ContextMenuAction.COPY_TEXT -> menu.textContent?.takeIf(String::isNotBlank)?.let { copyToClipboard("Text", it) }
-            ContextMenuAction.OPEN_MEDIA_IN_NEW_TAB -> menu.resourceUri?.let { openContextUrl(menu.tabId, it, inNewTab = true) }
-            ContextMenuAction.COPY_MEDIA_URL -> menu.resourceUri?.let { copyToClipboard("Media URL", it) }
-            ContextMenuAction.SAVE_MEDIA -> menu.resourceUri?.let { downloadUrl(it, isPrivateTab(menu.tabId)) }
-            ContextMenuAction.COPY_PAGE_URL -> menu.pageUrl.takeIf(String::isNotBlank)?.let { copyToClipboard("Page URL", it) }
-            ContextMenuAction.TOGGLE_BOOKMARK -> if (menu.tabId == _state.value.activeTabId) toggleBookmark()
-            ContextMenuAction.SAVE_PAGE -> menu.pageUrl.takeIf(String::isNotBlank)?.let { downloadUrl(it, isPrivateTab(menu.tabId)) }
             ContextMenuAction.OPEN_IN_SPLIT -> openTabInSplit(menu.tabId)
             ContextMenuAction.CLOSE_SPLIT -> closeSplit()
             ContextMenuAction.SWAP_SPLIT -> swapSplit()
@@ -1315,47 +1206,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun isPrivateTab(tabId: String): Boolean =
         _state.value.tabs.firstOrNull { it.id == tabId }?.isPrivate == true
-
-    private fun downloadUrl(url: String, privateMode: Boolean = false) {
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: run {
-            showSnackbar("This resource cannot be downloaded")
-            return
-        }
-        if (!NavigationPolicy.isWebUrl(url)) {
-            showSnackbar("This resource cannot be downloaded")
-            return
-        }
-        runCatching {
-            val fileName = uri.lastPathSegment
-                ?.takeIf { it.isNotBlank() }
-                ?.sanitizeFileName()
-                ?: "dextra-download"
-            val downloadId = -System.nanoTime()
-            val downloadDirectory = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-                ?: File(getApplication<Application>().filesDir, "downloads")
-            val outputPath = File(downloadDirectory, "$downloadId-$fileName").path
-            val download = DownloadEntry(
-                downloadId = downloadId,
-                fileName = fileName,
-                url = url,
-                mimeType = null,
-                status = DownloadStatus.QUEUED.label,
-                bytesDownloaded = 0,
-                totalBytes = -1,
-                localUri = null,
-                filePath = outputPath,
-                reason = null,
-                speedBytesPerSecond = 0,
-                createdAt = System.currentTimeMillis(),
-                isPrivate = privateMode,
-            )
-            viewModelScope.launch {
-                dao.upsertDownload(download)
-                scheduleDownload(download)
-            }
-            showSnackbar("Download started")
-        }.onFailure { showSnackbar("Could not start download") }
-    }
 
     fun openSavedPage(url: String) {
         val tab = activeTab() ?: return
@@ -2020,7 +1870,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         runtime.webExtensionController.list().accept(
             { extensions ->
                 val staleExtensions = extensions.orEmpty().filter {
-                    it.id == "adblock@dextra" && it.metaData.version != "2.6.1"
+                    it.id == "adblock@dextra" && it.metaData.version != "2.6.2"
                 }
                 removeStaleAdBlockers(staleExtensions)
             },
@@ -2178,9 +2028,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun createExtensionUpdatePrompt(
         extension: WebExtension,
-        updatedExtension: WebExtension,
         permissions: Array<String>,
         origins: Array<String>,
+        dataCollectionPermissions: Array<String>,
     ): GeckoResult<AllowOrDeny> {
         _state.value.extensionUpdatePrompt?.result?.complete(AllowOrDeny.DENY)
         val result = GeckoResult<AllowOrDeny>()
@@ -2189,10 +2039,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 extensionUpdatePrompt = ExtensionUpdatePrompt(
                     id = UUID.randomUUID().toString(),
                     name = extension.metaData.name ?: extension.id,
-                    currentVersion = extension.metaData.version,
-                    newVersion = updatedExtension.metaData.version,
                     permissions = permissions.toList(),
                     origins = origins.toList(),
+                    dataCollectionPermissions = dataCollectionPermissions.toList(),
                     result = result,
                 ),
             )
@@ -2720,24 +2569,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
                 updateSessionActivity(current.splitPrimaryTabId ?: current.activeTabId, current.splitSecondaryTabId)
             }
-        }
-
-        override fun onContextMenu(
-            session: GeckoSession,
-            screenX: Int,
-            screenY: Int,
-            element: GeckoSession.ContentDelegate.ContextElement,
-        ) {
-            showContextMenu(
-                tabId = tabId,
-                x = screenX,
-                y = screenY,
-                linkUri = element.linkUri,
-                linkText = element.textContent,
-                textContent = element.textContent,
-                resourceUri = element.srcUri,
-                resourceType = element.type,
-            )
         }
 
         override fun onCrash(session: GeckoSession) {
