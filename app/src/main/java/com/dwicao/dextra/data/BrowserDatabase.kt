@@ -83,6 +83,7 @@ data class DownloadEntry(
     val speedBytesPerSecond: Long,
     val createdAt: Long,
     val isPrivate: Boolean = false,
+    val attempts: Int = 0,
 )
 
 enum class DownloadStatus(val label: String) {
@@ -99,8 +100,17 @@ interface BrowserDao {
     @Query("SELECT * FROM history ORDER BY visitedAt DESC LIMIT 500")
     fun observeHistory(): Flow<List<HistoryEntry>>
 
+    @Query("SELECT * FROM history WHERE url LIKE '%' || :query || '%' OR title LIKE '%' || :query || '%' ORDER BY visitedAt DESC LIMIT 500")
+    suspend fun searchHistory(query: String): List<HistoryEntry>
+
+    @Query("SELECT * FROM history ORDER BY visitedAt DESC LIMIT 500")
+    suspend fun getHistory(): List<HistoryEntry>
+
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
     fun observeBookmarks(): Flow<List<Bookmark>>
+
+    @Query("SELECT * FROM bookmarks WHERE url LIKE '%' || :query || '%' OR title LIKE '%' || :query || '%' OR COALESCE(folder, '') LIKE '%' || :query || '%' ORDER BY createdAt DESC")
+    suspend fun searchBookmarks(query: String): List<Bookmark>
 
     @Query("SELECT EXISTS(SELECT 1 FROM bookmarks WHERE url = :url)")
     suspend fun isBookmarked(url: String): Boolean
@@ -126,11 +136,17 @@ interface BrowserDao {
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
     suspend fun getBookmarks(): List<Bookmark>
 
+    @Query("SELECT * FROM site_permissions ORDER BY updatedAt DESC")
+    suspend fun getSitePermissions(): List<SitePermission>
+
     @Query("DELETE FROM history")
     suspend fun clearHistory()
 
     @Query("DELETE FROM history WHERE id = :id")
     suspend fun deleteHistory(id: Long)
+
+    @Query("DELETE FROM history WHERE url LIKE '%' || :query || '%' OR title LIKE '%' || :query || '%'")
+    suspend fun deleteHistoryMatching(query: String)
 
     @Query("SELECT * FROM site_permissions WHERE origin = :origin AND permission = :permission LIMIT 1")
     suspend fun getSitePermission(origin: String, permission: String): SitePermission?
@@ -141,11 +157,20 @@ interface BrowserDao {
     @Query("DELETE FROM site_permissions")
     suspend fun clearSitePermissions()
 
+    @Query("SELECT * FROM site_permissions ORDER BY updatedAt DESC")
+    fun observeSitePermissions(): Flow<List<SitePermission>>
+
+    @Query("DELETE FROM site_permissions WHERE origin = :origin")
+    suspend fun deleteSitePermissions(origin: String)
+
     @Query("SELECT * FROM site_settings WHERE origin = :origin LIMIT 1")
     suspend fun getSiteSetting(origin: String): SiteSetting?
 
     @Query("SELECT * FROM site_settings")
     suspend fun getSiteSettings(): List<SiteSetting>
+
+    @Query("SELECT * FROM site_settings ORDER BY updatedAt DESC")
+    fun observeSiteSettings(): Flow<List<SiteSetting>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSiteSetting(setting: SiteSetting)
@@ -162,6 +187,9 @@ interface BrowserDao {
     @Query("SELECT * FROM reading_list ORDER BY savedAt DESC")
     fun observeReadingList(): Flow<List<ReadingListEntry>>
 
+    @Query("SELECT * FROM reading_list WHERE url LIKE '%' || :query || '%' OR title LIKE '%' || :query || '%' ORDER BY savedAt DESC")
+    suspend fun searchReadingList(query: String): List<ReadingListEntry>
+
     @Query("SELECT * FROM reading_list WHERE url = :url LIMIT 1")
     suspend fun getReadingListEntry(url: String): ReadingListEntry?
 
@@ -170,6 +198,9 @@ interface BrowserDao {
 
     @Query("UPDATE reading_list SET isRead = :isRead WHERE url = :url")
     suspend fun setReadingListRead(url: String, isRead: Boolean)
+
+    @Query("SELECT * FROM reading_list ORDER BY savedAt DESC")
+    suspend fun getReadingList(): List<ReadingListEntry>
 
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
     fun observeDownloads(): Flow<List<DownloadEntry>>
@@ -185,9 +216,12 @@ interface BrowserDao {
 
     @Query("DELETE FROM downloads WHERE downloadId = :downloadId")
     suspend fun deleteDownload(downloadId: Long)
+
+    @Query("DELETE FROM downloads WHERE status IN (:statuses)")
+    suspend fun deleteDownloadsWithStatus(statuses: List<String>)
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class], version = 9, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class], version = 10, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -200,7 +234,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -298,6 +332,12 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                     """.trimIndent(),
                 )
                 database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_reading_list_url ON reading_list(url)")
+            }
+        }
+
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE downloads ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

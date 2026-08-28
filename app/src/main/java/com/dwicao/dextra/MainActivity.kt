@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
                     browserViewModel.dismissOverlay()
                     return
                 }
-                if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null ||
+                if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null || state.readerMode != null ||
                     state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null
                 ) {
                     browserViewModel.dismissTransientUi()
@@ -169,7 +169,7 @@ class MainActivity : ComponentActivity() {
                 }
                 KeyEvent.KEYCODE_ESCAPE -> {
                     val state = browserViewModel.state.value
-                    if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null) {
+                    if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null || state.readerMode != null) {
                         browserViewModel.dismissTransientUi()
                         return true
                     }

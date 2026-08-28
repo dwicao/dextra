@@ -31,6 +31,8 @@ private val RemovedDefaultAdBlockFilterUrls = setOf(
     "https://easylist.to/easylist/easyprivacy.txt",
 )
 
+private const val DefaultAdBlockFilterUrl = "https://easylist.to/easylist/easylist.txt"
+
 data class BrowserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,
@@ -325,7 +327,7 @@ class SettingsRepository(private val context: Context) {
         ?.filter(String::isNotBlank)
         ?.filter { it.startsWith("https://", ignoreCase = true) }
         ?.filterNot { it in RemovedDefaultAdBlockFilterUrls }
-        ?: emptyList()
+        ?: listOf(DefaultAdBlockFilterUrl)
 
     private fun Preferences.disabledFilterUrls(): List<String> = get(Keys.disabledAdBlockFilters)
         ?.split('\n')

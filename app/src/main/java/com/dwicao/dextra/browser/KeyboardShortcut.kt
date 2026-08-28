@@ -22,6 +22,8 @@ enum class BrowserCommandId {
     SHOW_LIBRARY,
     SHOW_DOWNLOADS,
     SHOW_SETTINGS,
+    SHOW_PRIVACY,
+    READER_MODE,
     TOGGLE_SPLIT,
     HIBERNATE_TABS,
     COMMAND_PALETTE,
@@ -101,6 +103,7 @@ object DefaultKeyboardShortcuts {
         BrowserCommandId.ZOOM_IN to KeyChord(KeyEvent.KEYCODE_EQUALS, ctrl = true),
         BrowserCommandId.COMMAND_PALETTE to KeyChord(KeyEvent.KEYCODE_P, ctrl = true, shift = true),
         BrowserCommandId.TAB_SEARCH to KeyChord(KeyEvent.KEYCODE_A, ctrl = true, shift = true),
+        BrowserCommandId.READER_MODE to KeyChord(KeyEvent.KEYCODE_R, ctrl = true, shift = true),
     )
 }
 
@@ -131,6 +134,8 @@ object BrowserCommands {
         BrowserCommand(BrowserCommandId.SHOW_LIBRARY, "Open library", "Open bookmarks and history"),
         BrowserCommand(BrowserCommandId.SHOW_DOWNLOADS, "Open downloads", "Open the download manager"),
         BrowserCommand(BrowserCommandId.SHOW_SETTINGS, "Open settings", "Open browser settings"),
+        BrowserCommand(BrowserCommandId.SHOW_PRIVACY, "Open privacy dashboard", "Review and clear site data"),
+        BrowserCommand(BrowserCommandId.READER_MODE, "Reader mode", "Read the active article without page clutter"),
         BrowserCommand(BrowserCommandId.TOGGLE_SPLIT, "Open in split view", "Open the active tab beside another tab"),
         BrowserCommand(BrowserCommandId.HIBERNATE_TABS, "Hibernate inactive tabs", "Pause inactive tabs to save resources"),
     )

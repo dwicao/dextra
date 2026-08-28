@@ -24,10 +24,12 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.Constraints
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.BackoffPolicy
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.dwicao.dextra.GeckoRuntimeHolder
 import com.dwicao.dextra.data.AdBlockFilter
+import com.dwicao.dextra.data.BackupRepository
 import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.BrowserDao
 import com.dwicao.dextra.data.BrowserDatabase
@@ -62,6 +64,8 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.MediaSession
+import org.mozilla.geckoview.PageExtractionController
+import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebResponse
@@ -104,6 +108,7 @@ enum class BrowserOverlay {
     LIBRARY,
     SETTINGS,
     DOWNLOADS,
+    PRIVACY,
 }
 
 enum class ContextMenuAction {
@@ -263,6 +268,7 @@ private const val MAX_BOOKMARK_IMPORT_BYTES = 5 * 1024 * 1024
 private const val PROGRESS_UPDATE_INTERVAL_MS = 100L
 private const val MAX_SESSION_STATE_BYTES = 256 * 1024
 private const val MAX_OFFLINE_ARTICLE_BYTES = 2 * 1024 * 1024
+private const val MAX_READER_ARTICLE_BYTES = 2 * 1024 * 1024
 
 data class ExtensionUpdatePrompt(
     val id: String,
@@ -300,6 +306,7 @@ data class BrowserUiState(
     val webAppManifest: WebAppManifestInfo? = null,
     val isPictureInPictureMode: Boolean = false,
     val offlineArticle: OfflineArticle? = null,
+    val readerMode: ReaderModeState? = null,
     val addressFocusRequest: Long = 0,
     val splitPrimaryTabId: String? = null,
     val splitSecondaryTabId: String? = null,
@@ -311,6 +318,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val database = BrowserDatabase.get(application)
     private val dao: BrowserDao = database.browserDao()
     private val settingsRepository = SettingsRepository(application)
+    private val backupRepository = BackupRepository(application, dao)
     private val _state = MutableStateFlow(BrowserUiState())
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val extensionActionObjects = mutableMapOf<String, WebExtension.Action>()
@@ -442,6 +450,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val bookmarks: Flow<List<Bookmark>> = dao.observeBookmarks()
     val downloads: Flow<List<DownloadEntry>> = dao.observeDownloads()
     val readingList: Flow<List<ReadingListEntry>> = dao.observeReadingList()
+    val sitePermissions: Flow<List<SitePermission>> = dao.observeSitePermissions()
+    val siteSettings: Flow<List<SiteSetting>> = dao.observeSiteSettings()
 
     init {
         readLastCrashReport()?.let { report ->
@@ -576,6 +586,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             closeExtensionPopup()
             closeFindInPage()
+            closeReaderMode()
             val previousActiveTabId = current.activeTabId
             val splitSelection = id == current.splitPrimaryTabId || id == current.splitSecondaryTabId
             _state.update {
@@ -659,6 +670,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             BrowserCommandId.SHOW_LIBRARY -> setOverlay(BrowserOverlay.LIBRARY)
             BrowserCommandId.SHOW_DOWNLOADS -> setOverlay(BrowserOverlay.DOWNLOADS)
             BrowserCommandId.SHOW_SETTINGS -> setOverlay(BrowserOverlay.SETTINGS)
+            BrowserCommandId.SHOW_PRIVACY -> setOverlay(BrowserOverlay.PRIVACY)
+            BrowserCommandId.READER_MODE -> openReaderMode()
             BrowserCommandId.TOGGLE_SPLIT -> activeTab()?.let { openTabInSplit(it.id) }
             BrowserCommandId.HIBERNATE_TABS -> hibernateInactiveTabs()
             BrowserCommandId.COMMAND_PALETTE -> openCommandPalette()
@@ -1065,7 +1078,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false, sessionState = null)
         }
         _state.update {
-            if (it.activeTabId == tabId) it.copy(webAppManifest = null, siteSettingsOpen = false)
+            if (it.activeTabId == tabId) it.copy(webAppManifest = null, siteSettingsOpen = false, readerMode = null)
             else it
         }
         refreshSiteSetting(tabId)
@@ -1159,12 +1172,81 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(findInPage = null) }
     }
 
+    @androidx.annotation.OptIn(markerClass = [org.mozilla.geckoview.ExperimentalGeckoViewApi::class])
+    fun openReaderMode() {
+        val tab = activeTab()?.takeIf { it.hasPage && NavigationPolicy.isWebUrl(it.url) } ?: run {
+            showSnackbar("Reader mode needs a web page")
+            return
+        }
+        _state.update {
+            it.copy(
+                readerMode = ReaderModeState(
+                    tabId = tab.id,
+                    url = tab.url,
+                    title = tab.title.ifBlank { BrowserUrl.displayValue(tab.url) },
+                ),
+                overlay = BrowserOverlay.NONE,
+                siteSettingsOpen = false,
+            )
+        }
+        tab.session.sessionPageExtractor.getPageMetadata().accept(
+            { metadata ->
+                if (_state.value.readerMode?.tabId != tab.id) return@accept
+                if (metadata?.isReaderable != true) {
+                    closeReaderMode()
+                    showSnackbar("This page does not have a readable article")
+                    return@accept
+                }
+                tab.session.sessionPageExtractor.getPageContent(PageExtractionController.ContentParams(true)).accept(
+                    { html ->
+                        val rawContent = html.orEmpty()
+                        if (rawContent.toByteArray(Charsets.UTF_8).size > MAX_READER_ARTICLE_BYTES) {
+                            closeReaderMode()
+                            showSnackbar("This article is too large for reader mode")
+                            return@accept
+                        }
+                        viewModelScope.launch(Dispatchers.Default) {
+                            val content = readerTextFromHtml(rawContent)
+                            withContext(Dispatchers.Main.immediate) {
+                                if (_state.value.readerMode?.tabId == tab.id) {
+                                    _state.update {
+                                        it.copy(
+                                            readerMode = it.readerMode?.copy(
+                                                content = content,
+                                                wordCount = metadata.wordCount,
+                                                language = metadata.language.takeIf(String::isNotBlank),
+                                                isLoading = false,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        closeReaderMode()
+                        showSnackbar("Could not extract this article")
+                    },
+                )
+            },
+            {
+                closeReaderMode()
+                showSnackbar("Reader mode is unavailable for this page")
+            },
+        )
+    }
+
+    fun closeReaderMode() {
+        _state.update { it.copy(readerMode = null) }
+    }
+
     fun dismissTransientUi() {
         dismissContextMenu()
         closeExtensionPopup()
         closeFindInPage()
         closeCommandPalette()
         closeTabSwitcher()
+        closeReaderMode()
         _state.value.contentPermission?.result?.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
         _state.value.androidPermission?.callback?.reject()
         _state.value.mediaPermission?.callback?.reject()
@@ -1715,6 +1797,28 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }.onFailure { showSnackbar("Could not share this page") }
     }
 
+    fun shareQrCode() {
+        val url = _state.value.qrCodeUrl ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val directory = File(getApplication<Application>().cacheDir, "shared").apply { mkdirs() }
+                val file = File(directory, "dextra-qr.png")
+                file.outputStream().use { output ->
+                    check(QrCodeGenerator.generate(url, 1024).compress(Bitmap.CompressFormat.PNG, 100, output))
+                }
+                FileProvider.getUriForFile(getApplication(), "${getApplication<Application>().packageName}.fileprovider", file)
+            }
+            withContext(Dispatchers.Main.immediate) {
+                result.onSuccess { uri ->
+                    getApplication<Application>().startActivity(Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, uri)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share QR code",
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }.onFailure { showSnackbar("Could not share QR code") }
+            }
+        }
+    }
+
     fun installCurrentWebApp() {
         val manifest = _state.value.webAppManifest ?: run {
             showSnackbar("This page has no installable web app manifest")
@@ -1820,6 +1924,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             dao.clearHistory()
             showSnackbar("History cleared")
+        }
+    }
+
+    fun exportBackup(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { backupRepository.export(uri) }
+            withContext(Dispatchers.Main.immediate) {
+                showSnackbar(if (result.isSuccess) "Backup exported" else "Could not export backup")
+            }
+        }
+    }
+
+    fun importBackup(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { backupRepository.import(uri) }
+            withContext(Dispatchers.Main.immediate) {
+                showSnackbar(result.fold({ "Restored ${it} bookmarks" }, { "Could not restore backup" }))
+            }
         }
     }
 
@@ -2131,10 +2253,64 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearSitePermissions() {
-        viewModelScope.launch {
-            dao.clearSitePermissions()
-            showSnackbar("Site permissions cleared")
+        runtime.storageController.clearData(StorageController.ClearFlags.PERMISSIONS).accept(
+            {
+                viewModelScope.launch {
+                    dao.clearSitePermissions()
+                    showSnackbar("Site permissions cleared")
+                }
+            },
+            { showSnackbar("Could not clear site permissions") },
+        )
+    }
+
+    fun clearSiteData(origin: String) {
+        val host = runCatching { Uri.parse(origin).host?.takeIf(String::isNotBlank) }.getOrNull() ?: run {
+            showSnackbar("This site origin is invalid")
+            return
         }
+        runtime.storageController.clearDataFromHost(host, StorageController.ClearFlags.SITE_DATA).accept(
+            {
+                viewModelScope.launch {
+                    dao.deleteSitePermissions(origin)
+                    dao.deleteSiteSetting(origin)
+                    _state.value.tabs
+                        .filter { NavigationPolicy.origin(it.url) == origin }
+                        .forEach { tab ->
+                            pageZoomByTab.remove(tab.id)
+                            if (tab.hasPage) tab.session.reload()
+                        }
+                    syncActiveTabZoom()
+                    syncAdBlockSettings(_state.value.settings)
+                    syncUserScripts(_state.value.settings)
+                    if (currentSiteOrigin() == origin) {
+                        _state.update { it.copy(siteSetting = null) }
+                        _state.value.activeTabId?.let(::refreshSiteSetting)
+                    }
+                    showSnackbar("Cleared data for $origin")
+                }
+            },
+            { showSnackbar("Could not clear data for $origin") },
+        )
+    }
+
+    fun clearAllSiteData() {
+        runtime.storageController.clearData(StorageController.ClearFlags.SITE_DATA).accept(
+            {
+                viewModelScope.launch {
+                    dao.clearSitePermissions()
+                    dao.clearSiteSettings()
+                    pageZoomByTab.clear()
+                    _state.update { it.copy(siteSetting = null) }
+                    syncActiveTabZoom()
+                    syncAdBlockSettings(_state.value.settings)
+                    syncUserScripts(_state.value.settings)
+                    _state.value.tabs.filter { it.hasPage }.forEach { it.session.reload() }
+                    showSnackbar("Cleared site data")
+                }
+            },
+            { showSnackbar("Could not clear site data") },
+        )
     }
 
     private fun showNextContentPermission() {
@@ -2276,7 +2452,32 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
             DownloadStatus.PAUSED.label -> scheduleDownload(download)
+            DownloadStatus.FAILED.label -> retryDownload(download)
             else -> Unit
+        }
+    }
+
+    fun retryDownload(download: DownloadEntry) {
+        if (download.status != DownloadStatus.FAILED.label) return
+        viewModelScope.launch {
+            dao.getDownload(download.downloadId)?.let {
+                val retry = it.copy(status = DownloadStatus.QUEUED.label, reason = null)
+                dao.upsertDownload(retry)
+                scheduleDownload(retry)
+            }
+        }
+    }
+
+    fun clearCompletedDownloads() {
+        viewModelScope.launch {
+            dao.getDownloads()
+                .filter { it.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.CANCELED.label) }
+                .forEach { download ->
+                    download.localUri?.let { uri -> runCatching { getApplication<Application>().contentResolver.delete(Uri.parse(uri), null, null) } }
+                    cleanupDownloadFiles(download)
+                    dao.deleteDownload(download.downloadId)
+                }
+            showSnackbar("Download history cleared")
         }
     }
 
@@ -2551,6 +2752,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(workDataOf(DownloadWorker.KEY_DOWNLOAD_ID to download.downloadId))
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, java.util.concurrent.TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(getApplication()).enqueueUniqueWork(
             downloadWorkName(download.downloadId),
@@ -3244,7 +3446,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false) }
             }
-            _state.update { if (it.activeTabId == tabId) it.copy(webAppManifest = null) else it }
+            _state.update { if (it.activeTabId == tabId) it.copy(webAppManifest = null, readerMode = null) else it }
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {

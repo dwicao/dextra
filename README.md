@@ -7,7 +7,7 @@ Dextra is a GeckoView-based Android browser designed for Samsung DeX. It treats 
 This project is an early release build intended for internal testing and Samsung DeX-focused development.
 
 - Application ID: `com.dwicao.dextra`
-- Version: `0.2.0`
+- Version: `0.3.0`
 - Minimum Android version: 26
 - Target Android SDK: 36
 - Web engine: Mozilla GeckoView `154.0.20260824154132`
@@ -25,6 +25,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Two-pane split view with focus, swap, and close actions.
 - Mouse secondary-click context menus for pages and tabs.
 - Searchable tab switcher, command palette, configurable keyboard shortcuts, and hover previews.
+- Smart address bar suggestions from bookmarks and normal browsing history, with keyboard navigation.
 - Homepage, search engine, theme, desktop-site, and tab layout settings.
 - Per-site desktop mode, ad blocking, userscripts, and zoom overrides.
 - GeckoView tracking protection and Global Privacy Control.
@@ -35,6 +36,8 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Download resume validation, pause, cancel, MediaStore publishing, and notifications.
 - Bookmark folders, bounded HTML import/export, history search, and history pruning.
 - Reading list with bounded offline article snapshots.
+- Native reader mode with article extraction, font sizing, and light/dark/sepia palettes.
+- Privacy dashboard for reviewing and clearing per-site or all GeckoView site data.
 - QR URL sharing, PDF export, visible and bounded long screenshots.
 - Picture-in-Picture for active media and validated PWA launcher shortcuts.
 - Private tabs excluded from saved sessions, history, and favicon fetching.
@@ -115,7 +118,7 @@ Privacy-sensitive features should be explicit, origin-scoped where possible, cle
 
 ## Testing
 
-Current automated tests cover URL handling, navigation policy, Firefox Add-on URL parsing, bookmark HTML parsing, keyboard shortcuts, and the native download request path. The project still needs physical-device and instrumentation coverage for:
+Current automated tests cover URL handling, navigation policy, Firefox Add-on URL parsing, bookmark HTML parsing, address suggestions, privacy-origin aggregation, keyboard shortcuts, and the native download request path. The project still needs physical-device and instrumentation coverage for:
 
 - Samsung DeX window resizing and external displays.
 - Cold start and session restore after process death.

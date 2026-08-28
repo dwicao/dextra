@@ -62,6 +62,10 @@ class DownloadWorker(
             val publicUri = publishDownload(completed)
             dao.upsertDownload(completed.copy(localUri = publicUri))
         }
+        if (completed.status == DownloadStatus.FAILED.label && completed.attempts < MAX_RETRY_ATTEMPTS) {
+            dao.upsertDownload(completed.copy(attempts = completed.attempts + 1, reason = "Retry scheduled"))
+            return Result.retry()
+        }
         if (completed.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.FAILED.label)) {
             notifyDownload(completed)
         }
@@ -143,5 +147,6 @@ class DownloadWorker(
 
     companion object {
         const val KEY_DOWNLOAD_ID = "download_id"
+        private const val MAX_RETRY_ATTEMPTS = 3
     }
 }
