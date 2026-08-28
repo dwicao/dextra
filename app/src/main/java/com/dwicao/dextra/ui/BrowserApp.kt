@@ -521,20 +521,12 @@ private fun BrowserScreen(
                 onUninstallExtension = onUninstallExtension,
             )
         } else {
-            if (fullScreenTab != null) {
-                BrowserViewport(
-                    tab = fullScreenTab,
-                    onNavigate = onNavigate,
-                    onReloadCrashedTab = onReloadCrashedTab,
-                    onShowContextMenu = onShowContextMenu,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                val expanded = maxWidth >= 600.dp
-                if (expanded) {
+            val expanded = maxWidth >= 600.dp
+            if (expanded) {
                 DesktopBrowserLayout(
                     state = state,
                     activeTab = activeTab,
+                    fullScreenTab = fullScreenTab,
                      onNavigate = onNavigate,
                      onHome = onHome,
                      onCloseSplit = onCloseSplit,
@@ -568,10 +560,11 @@ private fun BrowserScreen(
                      showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                      verticalTabs = state.settings.verticalTabs,
                  )
-                } else {
-                    CompactBrowserLayout(
+            } else {
+                CompactBrowserLayout(
                     state = state,
                     activeTab = activeTab,
+                    fullScreenTab = fullScreenTab,
                      onNavigate = onNavigate,
                      onHome = onHome,
                     onBack = onBack,
@@ -592,8 +585,7 @@ private fun BrowserScreen(
                     addressFocusRequester = addressFocusRequester,
                     onShowTabs = { onSetOverlay(BrowserOverlay.TABS) },
                     showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
-                    )
-                }
+                )
             }
 
             if (fullScreenTab == null) BrowserMenu(
@@ -718,6 +710,7 @@ private fun BrowserScreen(
 private fun DesktopBrowserLayout(
     state: com.dwicao.dextra.browser.BrowserUiState,
     activeTab: BrowserTabState?,
+    fullScreenTab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onHome: () -> Unit,
     onCloseSplit: () -> Unit,
@@ -754,7 +747,7 @@ private fun DesktopBrowserLayout(
     val splitPrimaryTab = state.splitPrimaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
     val splitSecondaryTab = state.splitSecondaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
     Row(Modifier.fillMaxSize()) {
-        if (verticalTabs) {
+        if (verticalTabs && fullScreenTab == null) {
             GroupedVerticalTabStrip(
                 tabs = state.tabs,
                 activeTabId = state.activeTabId,
@@ -780,39 +773,41 @@ private fun DesktopBrowserLayout(
                 .weight(1f)
                 .fillMaxHeight(),
         ) {
-            DesktopToolbar(
-                tabs = state.tabs,
-                activeTabId = state.activeTabId,
-                onSelectTab = onSelectTab,
-                onCloseTab = onCloseTab,
-                onTabContextMenu = onTabContextMenu,
-                onNewTab = onNewTab,
-                showTabBar = showTabBarWithAddressBar && !verticalTabs,
-                activeTab = activeTab,
-                onNavigate = onNavigate,
-                onHome = onHome,
-                onBack = onBack,
-                onForward = onForward,
-                onReload = onReload,
-                onMoveTabBefore = onMoveTabBefore,
-                onMoveTabAfter = onMoveTabAfter,
-                onToggleBookmark = onToggleBookmark,
-                onShowDownloads = onShowDownloads,
-                extensionActions = extensionActions,
-                onClickExtensionAction = onClickExtensionAction,
-                onMenu = onMenu,
-                addressFocusRequester = addressFocusRequester,
-                stretchAddressBar = verticalTabs,
-            )
-            activeTab?.takeIf { it.isLoading }?.let {
-                LinearProgressIndicator(
-                    progress = { it.progress / 100f },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp),
+            if (fullScreenTab == null) {
+                DesktopToolbar(
+                    tabs = state.tabs,
+                    activeTabId = state.activeTabId,
+                    onSelectTab = onSelectTab,
+                    onCloseTab = onCloseTab,
+                    onTabContextMenu = onTabContextMenu,
+                    onNewTab = onNewTab,
+                    showTabBar = showTabBarWithAddressBar && !verticalTabs,
+                    activeTab = activeTab,
+                    onNavigate = onNavigate,
+                    onHome = onHome,
+                    onBack = onBack,
+                    onForward = onForward,
+                    onReload = onReload,
+                    onMoveTabBefore = onMoveTabBefore,
+                    onMoveTabAfter = onMoveTabAfter,
+                    onToggleBookmark = onToggleBookmark,
+                    onShowDownloads = onShowDownloads,
+                    extensionActions = extensionActions,
+                    onClickExtensionAction = onClickExtensionAction,
+                    onMenu = onMenu,
+                    addressFocusRequester = addressFocusRequester,
+                    stretchAddressBar = verticalTabs,
                 )
+                activeTab?.takeIf { it.isLoading }?.let {
+                    LinearProgressIndicator(
+                        progress = { it.progress / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp),
+                    )
+                }
             }
-            if (splitPrimaryTab != null && splitSecondaryTab != null) {
+            if (fullScreenTab == null && splitPrimaryTab != null && splitSecondaryTab != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -850,10 +845,11 @@ private fun DesktopBrowserLayout(
                 }
             } else {
                 BrowserViewport(
-                    tab = activeTab,
+                    tab = fullScreenTab ?: activeTab,
                     onNavigate = onNavigate,
                     onReloadCrashedTab = onReloadCrashedTab,
                     onShowContextMenu = onShowContextMenu,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                 )
             }
         }
@@ -864,6 +860,7 @@ private fun DesktopBrowserLayout(
 private fun CompactBrowserLayout(
     state: com.dwicao.dextra.browser.BrowserUiState,
     activeTab: BrowserTabState?,
+    fullScreenTab: BrowserTabState?,
     onNavigate: (String) -> Unit,
     onHome: () -> Unit,
     onBack: () -> Boolean,
@@ -886,59 +883,69 @@ private fun CompactBrowserLayout(
     showTabBarWithAddressBar: Boolean,
 ) {
     Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 3.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            BrowserNavButton(Icons.Outlined.Menu, "Open menu", enabled = true, onClick = onMenu)
-            AddressBar(
-                tab = activeTab,
-                modifier = Modifier.weight(1f),
-                onNavigate = onNavigate,
-                onToggleBookmark = onToggleBookmark,
-                focusRequester = addressFocusRequester,
-            )
-            extensionActions.forEach { action ->
-                ExtensionActionButton(action, onClickExtensionAction)
-            }
-            BrowserNavButton(Icons.Outlined.Home, "Home", enabled = true, onClick = onHome)
-            BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
-        }
-        if (showTabBarWithAddressBar) {
-            TabStrip(
+        if (fullScreenTab == null) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(42.dp),
-                tabs = state.tabs,
-                activeTabId = state.activeTabId,
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                BrowserNavButton(Icons.Outlined.Menu, "Open menu", enabled = true, onClick = onMenu)
+                AddressBar(
+                    tab = activeTab,
+                    modifier = Modifier.weight(1f),
+                    onNavigate = onNavigate,
+                    onToggleBookmark = onToggleBookmark,
+                    focusRequester = addressFocusRequester,
+                )
+                extensionActions.forEach { action ->
+                    ExtensionActionButton(action, onClickExtensionAction)
+                }
+                BrowserNavButton(Icons.Outlined.Home, "Home", enabled = true, onClick = onHome)
+                BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
+            }
+            if (showTabBarWithAddressBar) {
+                TabStrip(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp),
+                    tabs = state.tabs,
+                    activeTabId = state.activeTabId,
                     onNewTab = onNewTab,
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
                     onMoveTabBefore = onMoveTabBefore,
                     onMoveTabAfter = onMoveTabAfter,
                     onTabContextMenu = onTabContextMenu,
-            )
+                )
+            }
+            activeTab?.takeIf { it.isLoading }?.let {
+                LinearProgressIndicator(
+                    progress = { it.progress / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
-        activeTab?.takeIf { it.isLoading }?.let {
-            LinearProgressIndicator(
-                progress = { it.progress / 100f },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        BrowserViewport(activeTab, onNavigate, onReloadCrashedTab, onShowContextMenu)
-        CompactBottomBar(
-            tabCount = state.tabs.size,
-            activeTab = activeTab,
-            onBack = onBack,
-            onForward = onForward,
-            onReload = onReload,
-            onShowTabs = onShowTabs,
-            onSelectTab = onSelectTab,
-            onCloseTab = onCloseTab,
+        BrowserViewport(
+            tab = fullScreenTab ?: activeTab,
+            onNavigate = onNavigate,
+            onReloadCrashedTab = onReloadCrashedTab,
+            onShowContextMenu = onShowContextMenu,
+            modifier = Modifier.fillMaxWidth().weight(1f),
         )
+        if (fullScreenTab == null) {
+            CompactBottomBar(
+                tabCount = state.tabs.size,
+                activeTab = activeTab,
+                onBack = onBack,
+                onForward = onForward,
+                onReload = onReload,
+                onShowTabs = onShowTabs,
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+            )
+        }
     }
 }
 
