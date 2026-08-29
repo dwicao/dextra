@@ -185,6 +185,8 @@ import com.dwicao.dextra.browser.BrowserContextMenu
 import com.dwicao.dextra.browser.BrowserUrl
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
+import com.dwicao.dextra.browser.SecurityDiagnostics
+import com.dwicao.dextra.browser.sitePermissionLabel
 import com.dwicao.dextra.browser.PrivacyOrigin
 import com.dwicao.dextra.browser.AddressSuggestionSource
 import com.dwicao.dextra.browser.NavigationPolicy
@@ -218,6 +220,8 @@ import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
 import com.dwicao.dextra.data.InstalledWebApp
 import com.dwicao.dextra.data.SiteSetting
+import com.dwicao.dextra.data.SitePermission
+import com.dwicao.dextra.data.TabWorkspace
 import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.StoredWebPushSubscription
 import com.dwicao.dextra.data.DnsProvider
@@ -355,9 +359,18 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  history = history,
                   bookmarks = bookmarks,
                   downloads = downloads,
-                  installedWebApps = installedWebApps,
+                 installedWebApps = installedWebApps,
                   privacyOrigins = privacyOrigins,
-                 onNavigate = viewModel::navigateActive,
+                  sitePermissions = sitePermissions,
+                  onSetSitePermission = viewModel::setSitePermission,
+                  onOpenSecurityDiagnostics = viewModel::openSecurityDiagnostics,
+                  workspaces = state.settings.workspaces,
+                  activeWorkspaceId = state.settings.activeWorkspaceId,
+                  onCreateWorkspace = viewModel::createWorkspace,
+                  onSwitchWorkspace = viewModel::switchWorkspace,
+                  onRenameWorkspace = viewModel::renameWorkspace,
+                  onDeleteWorkspace = viewModel::deleteWorkspace,
+                  onNavigate = viewModel::navigateActive,
                  onHome = { viewModel.navigateActive(state.settings.homepage) },
                  onCloseSplit = viewModel::closeSplit,
                  onSwapSplit = viewModel::swapSplit,
@@ -418,8 +431,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onSetReduceMotion = viewModel::setReduceMotion,
                  webDav = state.webDav,
                  onSaveWebDavSettings = viewModel::saveWebDavSettings,
-                 onDisableWebDav = viewModel::disableWebDavSync,
-                 onRunWebDavSync = viewModel::runWebDavSyncNow,
+                  onDisableWebDav = viewModel::disableWebDavSync,
+                  onRunWebDavSync = viewModel::runWebDavSyncNow,
+                  onResolveWebDavConflict = viewModel::resolveWebDavConflict,
                   onSetDesktopSites = viewModel::setDesktopSites,
                    onSetHomepage = viewModel::setHomepage,
                    onClearSitePermissions = viewModel::clearSitePermissions,
@@ -614,6 +628,15 @@ private fun BrowserScreen(
     downloads: List<DownloadEntry>,
     installedWebApps: List<InstalledWebApp>,
     privacyOrigins: List<PrivacyOrigin>,
+    sitePermissions: List<SitePermission>,
+    onSetSitePermission: (String, String, String) -> Unit,
+    onOpenSecurityDiagnostics: () -> Unit,
+    workspaces: List<TabWorkspace>,
+    activeWorkspaceId: String,
+    onCreateWorkspace: (String) -> Unit,
+    onSwitchWorkspace: (String) -> Unit,
+    onRenameWorkspace: (String, String) -> Unit,
+    onDeleteWorkspace: (String) -> Unit,
     onNavigate: (String) -> Unit,
     onHome: () -> Unit,
     onCloseSplit: () -> Unit,
@@ -670,7 +693,8 @@ private fun BrowserScreen(
      webDav: WebDavSettingsState,
      onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
      onDisableWebDav: () -> Unit,
-     onRunWebDavSync: () -> Unit,
+      onRunWebDavSync: () -> Unit,
+      onResolveWebDavConflict: (String) -> Unit,
      onSetDesktopSites: (Boolean) -> Unit,
      onSetHomepage: (String) -> Unit,
      onClearSitePermissions: () -> Unit,
@@ -942,8 +966,9 @@ private fun BrowserScreen(
                   onSetReduceMotion = onSetReduceMotion,
                   webDav = webDav,
                   onSaveWebDavSettings = onSaveWebDavSettings,
-                  onDisableWebDav = onDisableWebDav,
-                  onRunWebDavSync = onRunWebDavSync,
+                   onDisableWebDav = onDisableWebDav,
+                   onRunWebDavSync = onRunWebDavSync,
+                   onResolveWebDavConflict = onResolveWebDavConflict,
                   desktopSites = state.settings.desktopSites,
                  tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                  verticalTabs = state.settings.verticalTabs,
@@ -1115,6 +1140,14 @@ private fun BrowserScreen(
                       menuExpanded = false
                       onOpenPrivacyDashboard()
                   },
+                  onOpenSecurityDiagnostics = {
+                      menuExpanded = false
+                      onOpenSecurityDiagnostics()
+                  },
+                  onOpenWorkspaces = {
+                      menuExpanded = false
+                      onSetOverlay(BrowserOverlay.WORKSPACES)
+                  },
                  onToggleReadingList = {
                      menuExpanded = false
                      onToggleReadingList()
@@ -1210,18 +1243,32 @@ private fun BrowserScreen(
                               onRestoreSessionSnapshot = onRestoreSessionSnapshot,
                               onDeleteSessionSnapshot = onDeleteSessionSnapshot,
                           )
-                           BrowserOverlay.PRIVACY -> PrivacyDashboardSheet(
-                              origins = privacyOrigins,
-                              totalBlocked = state.blockerStats.totalBlocked,
-                              currentOrigin = activeTab?.takeIf { !it.isPrivate }?.let { NavigationPolicy.origin(it.url) },
-                              onClearOrigin = onClearSiteData,
-                              onForgetSite = onForgetSite,
-                              onClearAll = onClearAllSiteData,
+                        BrowserOverlay.PRIVACY -> PrivacyDashboardSheet(
+                               origins = privacyOrigins,
+                               permissions = sitePermissions,
+                               totalBlocked = state.blockerStats.totalBlocked,
+                               currentOrigin = activeTab?.takeIf { !it.isPrivate }?.let { NavigationPolicy.origin(it.url) },
+                               onClearOrigin = onClearSiteData,
+                               onForgetSite = onForgetSite,
+                               onClearAll = onClearAllSiteData,
+                               onSetPermission = onSetSitePermission,
+                          )
+                         BrowserOverlay.SECURITY -> SecurityDiagnosticsSheet(
+                             diagnostics = state.securityDiagnostics,
+                             onSetPermission = onSetSitePermission,
+                         )
+                         BrowserOverlay.WORKSPACES -> WorkspaceSheet(
+                             workspaces = workspaces,
+                             activeWorkspaceId = activeWorkspaceId,
+                             onCreate = onCreateWorkspace,
+                             onSwitch = onSwitchWorkspace,
+                             onRename = onRenameWorkspace,
+                             onDelete = onDeleteWorkspace,
                          )
                           BrowserOverlay.SETTINGS,
                          BrowserOverlay.BOOKMARKS,
                          BrowserOverlay.HISTORY,
-                         BrowserOverlay.KEYBOARD_SHORTCUTS,
+                          BrowserOverlay.KEYBOARD_SHORTCUTS,
                          BrowserOverlay.NONE,
                         -> Unit
                     }
@@ -3799,14 +3846,17 @@ private fun ReaderModeDialog(
 @Composable
 private fun PrivacyDashboardSheet(
     origins: List<PrivacyOrigin>,
+    permissions: List<SitePermission>,
     totalBlocked: Int,
     currentOrigin: String?,
     onClearOrigin: (String) -> Unit,
     onForgetSite: (String) -> Unit,
     onClearAll: () -> Unit,
+    onSetPermission: (String, String, String) -> Unit,
 ) {
     var pendingOrigin by remember { mutableStateOf<String?>(null) }
     var pendingForgetOrigin by remember { mutableStateOf<String?>(null) }
+    var selectedPermissionOrigin by remember { mutableStateOf<String?>(null) }
     var confirmClearAll by remember { mutableStateOf(false) }
     SheetHeader("Privacy dashboard", "Review and clear site data managed by Dextra")
     Text(
@@ -3877,6 +3927,7 @@ private fun PrivacyDashboardSheet(
         LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
             items(origins, key = { it.origin }) { origin ->
                 ListItem(
+                    modifier = Modifier.clickable { selectedPermissionOrigin = origin.origin },
                     headlineContent = { Text(origin.origin, maxLines = 1) },
                     supportingContent = {
                         Text(
@@ -3950,6 +4001,248 @@ private fun PrivacyDashboardSheet(
             dismissButton = { TextButton(onClick = { confirmClearAll = false }) { Text("Cancel") } },
         )
     }
+    selectedPermissionOrigin?.let { origin ->
+        val originPermissions = permissions.filter { it.origin == origin }
+        AlertDialog(
+            onDismissRequest = { selectedPermissionOrigin = null },
+            icon = { Icon(Icons.Outlined.Security, contentDescription = null) },
+            title = { Text("Permissions for $origin") },
+            text = {
+                Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                    if (originPermissions.isEmpty()) {
+                        Text("No stored permission decisions. New requests will ask again.")
+                    } else {
+                        originPermissions.forEach { permission ->
+                            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                Text(sitePermissionLabel(permission.permission), style = MaterialTheme.typography.titleSmall)
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    FilterChip(
+                                        selected = permission.decision == "allow",
+                                        onClick = { onSetPermission(origin, permission.permission, "allow") },
+                                        label = { Text("Allow") },
+                                    )
+                                    FilterChip(
+                                        selected = permission.decision == "block",
+                                        onClick = { onSetPermission(origin, permission.permission, "block") },
+                                        label = { Text("Block") },
+                                    )
+                                    FilterChip(
+                                        selected = false,
+                                        onClick = { onSetPermission(origin, permission.permission, "ask") },
+                                        label = { Text("Ask") },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Text(
+                        "Ask removes the saved decision and lets the site request access again.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { selectedPermissionOrigin = null }) { Text("Done") } },
+        )
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+@Composable
+private fun SecurityDiagnosticsSheet(
+    diagnostics: SecurityDiagnostics?,
+    onSetPermission: (String, String, String) -> Unit,
+) {
+    SheetHeader("Security diagnostics", "Inspect the active page connection and permissions")
+    if (diagnostics == null) {
+        EmptyLibrary("No page is selected.", Icons.Outlined.Lock)
+        return
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Text(
+            diagnostics.origin ?: diagnostics.url.ifBlank { "New tab" },
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 2,
+        )
+        Text(
+            if (diagnostics.isSecure) "Secure HTTPS connection" else "Connection is not verified as secure",
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (diagnostics.isSecure) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.height(12.dp))
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Connection", style = MaterialTheme.typography.titleSmall)
+                Text("Host: ${diagnostics.host ?: "Unavailable"}", style = MaterialTheme.typography.bodySmall)
+                Text("Port: ${diagnostics.port?.toString() ?: "Default"}", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "DNS over HTTPS: ${if (diagnostics.dnsOverHttpsEnabled) diagnostics.dnsProvider else "Off"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text("Blocked requests: ${diagnostics.blockedRequests}", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        diagnostics.error?.let { error ->
+            Text(
+                error,
+                modifier = Modifier.padding(top = 10.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        diagnostics.certificate?.let { certificate ->
+            Card(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Certificate", style = MaterialTheme.typography.titleSmall)
+                    Text("Subject: ${certificate.subject}", style = MaterialTheme.typography.bodySmall, maxLines = 3)
+                    Text("Issuer: ${certificate.issuer}", style = MaterialTheme.typography.bodySmall, maxLines = 3)
+                    Text("Valid: ${certificate.validFrom} - ${certificate.validTo}", style = MaterialTheme.typography.bodySmall)
+                    Text("SHA-256: ${certificate.sha256}", style = MaterialTheme.typography.bodySmall, maxLines = 3)
+                }
+            }
+        }
+        if (diagnostics.isLoading) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text("Inspecting certificate...", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Text("Saved permissions", modifier = Modifier.padding(top = 14.dp), style = MaterialTheme.typography.titleSmall)
+        if (diagnostics.permissions.isEmpty()) {
+            Text("No saved permissions for this origin.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            diagnostics.permissions.forEach { permission ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    Text(sitePermissionLabel(permission.permission), style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(
+                            selected = permission.decision == "allow",
+                            onClick = { onSetPermission(permission.origin, permission.permission, "allow") },
+                            label = { Text("Allow") },
+                        )
+                        FilterChip(
+                            selected = permission.decision == "block",
+                            onClick = { onSetPermission(permission.origin, permission.permission, "block") },
+                            label = { Text("Block") },
+                        )
+                        FilterChip(
+                            selected = false,
+                            onClick = { onSetPermission(permission.origin, permission.permission, "ask") },
+                            label = { Text("Ask") },
+                        )
+                    }
+                }
+            }
+        }
+        diagnostics.siteSetting?.let {
+            Text("This origin has custom site overrides.", modifier = Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun WorkspaceSheet(
+    workspaces: List<TabWorkspace>,
+    activeWorkspaceId: String,
+    onCreate: (String) -> Unit,
+    onSwitch: (String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    var newTitle by rememberSaveable { mutableStateOf("") }
+    var renameWorkspace by remember { mutableStateOf<TabWorkspace?>(null) }
+    var renameText by rememberSaveable { mutableStateOf("") }
+    SheetHeader("Workspaces", "Keep separate tab sessions for different contexts")
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Text(
+            "Each workspace keeps its own normal tabs, groups, and active tab. Private tabs are never stored in a workspace.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = newTitle,
+                onValueChange = { newTitle = it.take(40) },
+                modifier = Modifier.weight(1f),
+                label = { Text("New workspace") },
+                singleLine = true,
+            )
+            Button(
+                onClick = {
+                    onCreate(newTitle)
+                    newTitle = ""
+                },
+                enabled = newTitle.isNotBlank(),
+            ) { Text("Create") }
+        }
+        Spacer(Modifier.height(8.dp))
+        workspaces.sortedBy { it.createdAt }.forEach { workspace ->
+            ListItem(
+                headlineContent = { Text(workspace.title) },
+                supportingContent = { Text("${workspace.tabs.size} tabs") },
+                leadingContent = {
+                    Icon(
+                        if (workspace.id == activeWorkspaceId) Icons.Outlined.Tab else Icons.Outlined.Language,
+                        contentDescription = null,
+                    )
+                },
+                trailingContent = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (workspace.id != activeWorkspaceId) {
+                            TextButton(onClick = { onSwitch(workspace.id) }) { Text("Open") }
+                        }
+                        TextButton(onClick = {
+                            renameWorkspace = workspace
+                            renameText = workspace.title
+                        }) { Text("Rename") }
+                        if (workspaces.size > 1) {
+                            IconButton(onClick = { onDelete(workspace.id) }) {
+                                Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete workspace")
+                            }
+                        }
+                    }
+                },
+            )
+        }
+    }
+    renameWorkspace?.let { workspace ->
+        AlertDialog(
+            onDismissRequest = { renameWorkspace = null },
+            title = { Text("Rename workspace") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it.take(40) },
+                    label = { Text("Name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRename(workspace.id, renameText)
+                        renameWorkspace = null
+                    },
+                    enabled = renameText.isNotBlank(),
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { renameWorkspace = null }) { Text("Cancel") } },
+        )
+    }
     Spacer(Modifier.height(24.dp))
 }
 
@@ -4021,6 +4314,8 @@ private fun BrowserMenu(
     onShowDownloads: () -> Unit,
     onShowSiteSettings: () -> Unit,
     onOpenPrivacyDashboard: () -> Unit,
+    onOpenSecurityDiagnostics: () -> Unit,
+    onOpenWorkspaces: () -> Unit,
     onOpenCommandPalette: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onToggleReadingList: () -> Unit,
@@ -4095,6 +4390,16 @@ private fun BrowserMenu(
                     text = { Text("Privacy dashboard") },
                     leadingIcon = { Icon(Icons.Outlined.Security, contentDescription = null) },
                     onClick = onOpenPrivacyDashboard,
+                )
+                DropdownMenuItem(
+                    text = { Text("Site info & security") },
+                    leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                    onClick = onOpenSecurityDiagnostics,
+                )
+                DropdownMenuItem(
+                    text = { Text("Workspaces") },
+                    leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
+                    onClick = onOpenWorkspaces,
                 )
                 DropdownMenuItem(
                     text = { Text("Save to reading list") },
@@ -5435,9 +5740,10 @@ private fun SettingsScreen(
     onSetReduceMotion: (Boolean) -> Unit,
     webDav: WebDavSettingsState,
     onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
-    onDisableWebDav: () -> Unit,
-    onRunWebDavSync: () -> Unit,
-    onSetDesktopSites: (Boolean) -> Unit,
+     onDisableWebDav: () -> Unit,
+     onRunWebDavSync: () -> Unit,
+     onResolveWebDavConflict: (String) -> Unit,
+     onSetDesktopSites: (Boolean) -> Unit,
     onSetHomepage: (String) -> Unit,
     onClearSitePermissions: () -> Unit,
     onOpenPrivacyDashboard: () -> Unit,
@@ -5785,13 +6091,43 @@ private fun SettingsScreen(
                     TextButton(onClick = onDisableWebDav) { Text("Disable") }
                 }
             }
-            if (webDav.configured) {
-                Text(
-                    if (webDav.lastSyncAt == null) "Waiting for the first scheduled sync" else "Last sync: ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(webDav.lastSyncAt))}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+             if (webDav.configured) {
+                 Text(
+                     if (webDav.lastSyncAt == null) "Waiting for the first scheduled sync" else "Last sync: ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(webDav.lastSyncAt))}",
+                     style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 )
+                 if (webDav.conflictPending) {
+                     Card(
+                         modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                     ) {
+                         Column(Modifier.padding(12.dp)) {
+                             Text("Sync conflict detected", style = MaterialTheme.typography.titleSmall)
+                             Text(
+                                 "Another device changed this bundle while Dextra was uploading. Choose how to continue.",
+                                 style = MaterialTheme.typography.bodySmall,
+                             )
+                             Row(
+                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
+                             ) {
+                                 TextButton(onClick = { onResolveWebDavConflict("remote") }) { Text("Keep remote") }
+                                 TextButton(onClick = { onResolveWebDavConflict("local") }) { Text("Keep local") }
+                                 TextButton(onClick = { onResolveWebDavConflict("merge") }) { Text("Merge") }
+                             }
+                         }
+                     }
+                 }
+                 webDav.lastError?.let { error ->
+                     Text(
+                         "Last sync error: $error",
+                         modifier = Modifier.padding(top = 6.dp),
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.error,
+                     )
+                 }
+             }
         }
         SettingSection("Downloads") {
           Text(

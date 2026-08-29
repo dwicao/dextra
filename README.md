@@ -63,7 +63,11 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Android lock-screen media controls for active non-private tabs.
 - Accessibility text scaling, high-contrast controls, reduced-motion behavior, and per-site page zoom.
 - Optional periodic encrypted WebDAV synchronization with HTTPS-only transport and Keystore-protected credentials.
+- WebDAV conflict detection with explicit keep-remote, keep-local, and merge resolution.
 - WebAuthn related-origin approval prompts for passkey flows.
+- Workspace tab sessions with separate normal tabs, groups, and active-tab state.
+- Site permission center with per-origin allow, block, ask, and reset controls.
+- Security diagnostics with HTTPS certificate details, SHA-256 fingerprint, DNS mode, and blocker statistics.
 - Crash reports for Java uncaught exceptions.
 
 ## Architecture
@@ -154,6 +158,7 @@ Current automated tests cover URL handling, navigation policy, Firefox Add-on UR
 - Web Push provider delivery and service-worker notification behavior.
 - Android print UI, separate browser document windows, and PWA launcher icon refresh.
 - Memory, frame pacing, battery, and startup benchmarks.
+- Instrumentation smoke coverage for browser UI rendering and activity recreation.
 
 ## Repository Layout
 
@@ -173,6 +178,6 @@ app/src/test/    JVM regression tests
 
 ## Scope
 
-The project focuses on a fast, private, secure, reliable, and efficient browser for Samsung DeX. Workspaces and AI features are not part of the current product scope unless explicitly requested.
+The project focuses on a fast, private, secure, reliable, and efficient browser for Samsung DeX. Workspace tab sessions are part of the current product scope; AI features are not.
 
 No license has been declared yet.

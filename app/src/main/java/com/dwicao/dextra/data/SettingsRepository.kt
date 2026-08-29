@@ -66,6 +66,8 @@ data class BrowserSettings(
     val accessibilityTextScale: Float = 1f,
     val highContrast: Boolean = false,
     val reduceMotion: Boolean = false,
+    val workspaces: List<TabWorkspace> = emptyList(),
+    val activeWorkspaceId: String = DEFAULT_WORKSPACE_ID,
 )
 
 data class ExtensionInstallRecord(
@@ -90,6 +92,19 @@ data class SavedTabGroup(
     val color: Long = 0xFF4E4BB5L,
     val collapsed: Boolean = false,
 )
+
+data class TabWorkspace(
+    val id: String,
+    val title: String,
+    val color: Long = 0xFF4E4BB5L,
+    val createdAt: Long,
+    val lastUsedAt: Long,
+    val tabs: List<SavedTab> = emptyList(),
+    val activeTabIndex: Int = 0,
+    val tabGroups: List<SavedTabGroup> = emptyList(),
+)
+
+const val DEFAULT_WORKSPACE_ID = "default"
 
 data class SessionSnapshot(
     val id: String,
@@ -150,6 +165,8 @@ class SettingsRepository(private val context: Context) {
         val accessibilityTextScale = stringPreferencesKey("accessibility_text_scale")
         val highContrast = booleanPreferencesKey("high_contrast")
         val reduceMotion = booleanPreferencesKey("reduce_motion")
+        val workspaces = stringPreferencesKey("workspaces")
+        val activeWorkspaceId = stringPreferencesKey("active_workspace_id")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -325,6 +342,7 @@ class SettingsRepository(private val context: Context) {
         tabs: List<SavedTab>,
         activeTabIndex: Int,
         groups: List<SavedTabGroup> = emptyList(),
+        workspaceList: List<TabWorkspace>? = null,
     ) {
         context.settingsDataStore.edit { preferences ->
             val payload = JSONArray().apply {
@@ -355,6 +373,45 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.openTabs] = payload.toString()
             preferences[Keys.tabGroups] = groupPayload.toString()
             preferences[Keys.activeTabIndex] = activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
+            val workspaceId = preferences[Keys.activeWorkspaceId] ?: DEFAULT_WORKSPACE_ID
+            val existing = workspaceList ?: preferences.workspaces()
+            val now = System.currentTimeMillis()
+            val workspace = TabWorkspace(
+                id = workspaceId,
+                title = existing.firstOrNull { it.id == workspaceId }?.title ?: "Personal",
+                color = existing.firstOrNull { it.id == workspaceId }?.color ?: 0xFF4E4BB5L,
+                createdAt = existing.firstOrNull { it.id == workspaceId }?.createdAt ?: now,
+                lastUsedAt = now,
+                tabs = tabs.filterNot { it.isPrivate },
+                activeTabIndex = activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)),
+                tabGroups = groups,
+            )
+            val workspaces = (existing.filterNot { it.id == workspaceId } + workspace).takeLast(MAX_WORKSPACES)
+            preferences[Keys.workspaces] = JSONArray(workspaces.map(::workspaceToJson)).toString()
+            preferences[Keys.activeWorkspaceId] = workspaceId
+        }
+    }
+
+    suspend fun saveWorkspaceState(
+        workspaces: List<TabWorkspace>,
+        activeWorkspaceId: String,
+        tabs: List<SavedTab>,
+        activeTabIndex: Int,
+        groups: List<SavedTabGroup>,
+    ) {
+        context.settingsDataStore.edit { preferences ->
+            val boundedTabs = tabs.filterNot { it.isPrivate }.take(MAX_WORKSPACE_TABS)
+            val boundedIndex = activeTabIndex.coerceIn(0, (boundedTabs.size - 1).coerceAtLeast(0))
+            val boundedWorkspaces = workspaces
+                .filter { it.id.isNotBlank() }
+                .distinctBy { it.id }
+                .take(MAX_WORKSPACES)
+                .map { it.copy(tabs = it.tabs.filterNot(SavedTab::isPrivate).take(MAX_WORKSPACE_TABS)) }
+            preferences[Keys.workspaces] = JSONArray(boundedWorkspaces.map(::workspaceToJson)).toString()
+            preferences[Keys.activeWorkspaceId] = activeWorkspaceId
+            preferences[Keys.openTabs] = JSONArray(boundedTabs.map { it.toJson() }).toString()
+            preferences[Keys.tabGroups] = JSONArray(groups.map { it.toJson() }).toString()
+            preferences[Keys.activeTabIndex] = boundedIndex
         }
     }
 
@@ -493,6 +550,23 @@ class SettingsRepository(private val context: Context) {
         accessibilityTextScale = get(Keys.accessibilityTextScale)?.toFloatOrNull()?.coerceIn(1f, 1.5f) ?: 1f,
         highContrast = get(Keys.highContrast) ?: false,
         reduceMotion = get(Keys.reduceMotion) ?: false,
+        workspaces = workspaces().ifEmpty {
+            val now = System.currentTimeMillis()
+            listOf(
+                TabWorkspace(
+                    id = DEFAULT_WORKSPACE_ID,
+                    title = "Personal",
+                    createdAt = now,
+                    lastUsedAt = now,
+                    tabs = savedTabs(),
+                    activeTabIndex = get(Keys.activeTabIndex) ?: 0,
+                    tabGroups = savedTabGroups(),
+                ),
+            )
+        },
+        activeWorkspaceId = get(Keys.activeWorkspaceId)
+            ?.takeIf { id -> workspaces().any { it.id == id } }
+            ?: DEFAULT_WORKSPACE_ID,
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -598,6 +672,30 @@ class SettingsRepository(private val context: Context) {
         }
     }.getOrDefault(emptyList())
 
+    private fun Preferences.workspaces(): List<TabWorkspace> = runCatching {
+        val values = JSONArray(get(Keys.workspaces).orEmpty())
+        (0 until values.length()).mapNotNull { index ->
+            val value = values.optJSONObject(index) ?: return@mapNotNull null
+            val id = value.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val tabs = value.optJSONArray("tabs")?.let { array ->
+                (0 until array.length()).mapNotNull { tabIndex -> array.optJSONObject(tabIndex)?.toSavedTab() }
+            }.orEmpty().filterNot { it.isPrivate }.take(MAX_WORKSPACE_TABS)
+            val groups = value.optJSONArray("groups")?.let { array ->
+                (0 until array.length()).mapNotNull { groupIndex -> array.optJSONObject(groupIndex)?.toSavedTabGroup() }
+            }.orEmpty()
+            TabWorkspace(
+                id = id,
+                title = value.optString("title").ifBlank { "Workspace" }.take(40),
+                color = value.optLong("color", 0xFF4E4BB5L),
+                createdAt = value.optLong("createdAt", System.currentTimeMillis()),
+                lastUsedAt = value.optLong("lastUsedAt", 0L),
+                tabs = tabs,
+                activeTabIndex = value.optInt("activeTabIndex", 0),
+                tabGroups = groups,
+            )
+        }.take(MAX_WORKSPACES)
+    }.getOrDefault(emptyList())
+
     private fun Preferences.shortcutBindings(): Map<BrowserCommandId, KeyChord> = get(Keys.shortcutBindings)
         ?.split('\n')
         ?.mapNotNull { line ->
@@ -662,6 +760,17 @@ class SettingsRepository(private val context: Context) {
         put("collapsed", collapsed)
     }
 
+    private fun workspaceToJson(workspace: TabWorkspace): JSONObject = JSONObject().apply {
+        put("id", workspace.id)
+        put("title", workspace.title)
+        put("color", workspace.color)
+        put("createdAt", workspace.createdAt)
+        put("lastUsedAt", workspace.lastUsedAt)
+        put("activeTabIndex", workspace.activeTabIndex)
+        put("tabs", JSONArray(workspace.tabs.map { it.toJson() }))
+        put("groups", JSONArray(workspace.tabGroups.map { it.toJson() }))
+    }
+
     private fun JSONObject.toSavedTab(): SavedTab? {
         val url = optString("url").takeIf(String::isNotBlank) ?: return null
         return SavedTab(
@@ -700,5 +809,7 @@ class SettingsRepository(private val context: Context) {
         const val MAX_ADBLOCK_FILTERS = 100
         const val MAX_USER_SCRIPTS = 100
         const val MAX_RECENTLY_CLOSED_TABS = 10
+        const val MAX_WORKSPACES = 12
+        const val MAX_WORKSPACE_TABS = 64
     }
 }

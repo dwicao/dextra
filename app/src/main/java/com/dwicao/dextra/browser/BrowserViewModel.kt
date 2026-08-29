@@ -53,6 +53,8 @@ import com.dwicao.dextra.data.SessionSnapshot
 import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.SitePermission
+import com.dwicao.dextra.data.TabWorkspace
+import com.dwicao.dextra.data.DEFAULT_WORKSPACE_ID
 import com.dwicao.dextra.data.SettingsRepository
 import com.dwicao.dextra.data.SyncRepository
 import com.dwicao.dextra.data.WebDavConfig
@@ -89,6 +91,7 @@ import org.mozilla.geckoview.TranslationsController
 import android.print.PrintAttributes
 import android.print.PrintManager
 import java.net.HttpURLConnection
+import javax.net.ssl.HttpsURLConnection
 import java.net.URL
 import java.net.URI
 import java.io.File
@@ -99,6 +102,8 @@ import java.security.KeyPairGenerator
 import java.security.spec.ECGenParameterSpec
 import java.security.interfaces.ECPublicKey
 import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import java.text.DateFormat
 import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 
@@ -136,6 +141,8 @@ enum class BrowserOverlay {
     DOWNLOADS,
     KEYBOARD_SHORTCUTS,
     PRIVACY,
+    SECURITY,
+    WORKSPACES,
 }
 
 enum class ContextMenuAction {
@@ -305,6 +312,31 @@ data class BlockerStats(
     val byOrigin: Map<String, Int> = emptyMap(),
 )
 
+data class SecurityCertificateInfo(
+    val subject: String,
+    val issuer: String,
+    val validFrom: String,
+    val validTo: String,
+    val sha256: String,
+)
+
+data class SecurityDiagnostics(
+    val tabId: String,
+    val url: String,
+    val origin: String?,
+    val host: String?,
+    val port: Int?,
+    val isSecure: Boolean,
+    val isLoading: Boolean = false,
+    val certificate: SecurityCertificateInfo? = null,
+    val permissions: List<SitePermission> = emptyList(),
+    val siteSetting: SiteSetting? = null,
+    val blockedRequests: Int = 0,
+    val dnsOverHttpsEnabled: Boolean = false,
+    val dnsProvider: String = "",
+    val error: String? = null,
+)
+
 data class OfflineArticle(
     val title: String,
     val content: String,
@@ -333,6 +365,7 @@ data class ExtensionInstallPrompt(
 
 private const val MAX_EXTENSION_PACKAGE_BYTES = 64L * 1024L * 1024L
 private const val MAX_OPEN_TABS = 64
+private const val MAX_WORKSPACES = 12
 private const val DOWNLOAD_CHANNEL_ID = "dextra_downloads"
 private const val MAX_BOOKMARK_IMPORT_BYTES = 5 * 1024 * 1024
 private const val PROGRESS_UPDATE_INTERVAL_MS = 100L
@@ -352,6 +385,9 @@ private fun WebDavConfig.toUiState(): WebDavSettingsState = WebDavSettingsState(
     intervalHours = intervalHours,
     enabled = enabled,
     lastSyncAt = lastSyncAt,
+    conflictPending = conflictPending,
+    conflictDetectedAt = conflictDetectedAt,
+    lastError = lastError,
 )
 
 data class ExtensionUpdatePrompt(
@@ -408,6 +444,7 @@ data class BrowserUiState(
     val closedTabCount: Int = 0,
     val webAuthnPrompt: WebAuthnPromptState? = null,
     val webDav: WebDavSettingsState = WebDavSettingsState(),
+    val securityDiagnostics: SecurityDiagnostics? = null,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -925,6 +962,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     activeTabId = id,
                     overlay = BrowserOverlay.NONE,
                     siteSettingsOpen = false,
+                    securityDiagnostics = null,
                     splitPrimaryTabId = if (splitSelection) it.splitPrimaryTabId else null,
                     splitSecondaryTabId = if (splitSelection) it.splitSecondaryTabId else null,
                     splitPaneFocused = splitSelection && id == it.splitSecondaryTabId,
@@ -1250,6 +1288,59 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistOpenTabs()
     }
 
+    fun createWorkspace(title: String) {
+        val current = _state.value
+        val workspaces = workspaceSnapshots(current)
+        if (workspaces.size >= MAX_WORKSPACES) {
+            showSnackbar("Workspace limit reached ($MAX_WORKSPACES)")
+            return
+        }
+        val now = System.currentTimeMillis()
+        val workspace = TabWorkspace(
+            id = UUID.randomUUID().toString(),
+            title = title.trim().take(40).ifBlank { "Workspace ${workspaces.size + 1}" },
+            createdAt = now,
+            lastUsedAt = now,
+        )
+        saveAndActivateWorkspace(workspaces + workspace, workspace)
+    }
+
+    fun switchWorkspace(workspaceId: String) {
+        val current = _state.value
+        val target = workspaceSnapshots(current).firstOrNull { it.id == workspaceId } ?: return
+        if (target.id == current.settings.activeWorkspaceId) return
+        saveAndActivateWorkspace(workspaceSnapshots(current), target)
+    }
+
+    fun renameWorkspace(workspaceId: String, title: String) {
+        val normalized = title.trim().take(40)
+        if (normalized.isBlank()) return
+        _state.update { state ->
+            state.copy(settings = state.settings.copy(
+                workspaces = workspaceSnapshots(state).map { workspace ->
+                    if (workspace.id == workspaceId) workspace.copy(title = normalized) else workspace
+                },
+            ))
+        }
+        persistOpenTabs(immediate = true)
+    }
+
+    fun deleteWorkspace(workspaceId: String) {
+        val current = _state.value
+        val workspaces = workspaceSnapshots(current)
+        if (workspaces.size <= 1 || workspaces.none { it.id == workspaceId }) {
+            showSnackbar("Keep at least one workspace")
+            return
+        }
+        val remaining = workspaces.filterNot { it.id == workspaceId }
+        if (workspaceId == current.settings.activeWorkspaceId) {
+            saveAndActivateWorkspace(remaining, remaining.maxByOrNull(TabWorkspace::lastUsedAt) ?: remaining.first())
+        } else {
+            _state.update { it.copy(settings = it.settings.copy(workspaces = remaining)) }
+            persistOpenTabs(immediate = true)
+        }
+    }
+
     fun moveTabToGroup(tabId: String, groupId: String?) {
         if (groupId != null && _state.value.settings.tabGroups.none { it.id == groupId }) return
         if (_state.value.tabs.none { it.id == tabId }) return
@@ -1435,7 +1526,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false, sessionState = null)
         }
         _state.update {
-            if (it.activeTabId == tabId) it.copy(webAppManifest = null, siteSettingsOpen = false, readerMode = null, translation = null)
+            if (it.activeTabId == tabId) it.copy(
+                webAppManifest = null,
+                siteSettingsOpen = false,
+                readerMode = null,
+                translation = null,
+                securityDiagnostics = null,
+            )
             else it
         }
         refreshSiteSetting(tabId)
@@ -1747,6 +1844,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun onAppForeground() {
         val current = _state.value
         updateSessionActivity(current.activeTabId, current.splitSecondaryTabId)
+        refreshWebDavState()
     }
 
     fun reloadOrStop() {
@@ -2743,6 +2841,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             passphrase = passphrase,
             intervalHours = intervalHours.coerceIn(1, 168),
             enabled = true,
+            conflictPending = false,
+            conflictDetectedAt = null,
+            pendingResolution = null,
+            lastError = null,
         )
         viewModelScope.launch(Dispatchers.IO) {
             webDavStore.save(config)
@@ -2771,16 +2873,40 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         showSnackbar("WebDAV sync queued")
     }
 
+    fun resolveWebDavConflict(resolution: String) {
+        if (resolution !in setOf("remote", "local", "merge")) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val config = webDavStore.load() ?: return@launch
+            val updated = config.copy(pendingResolution = resolution)
+            webDavStore.save(updated)
+            WebDavSyncScheduler.runNow(getApplication())
+            withContext(Dispatchers.Main.immediate) {
+                _state.update { it.copy(webDav = updated.toUiState()) }
+                showSnackbar("WebDAV conflict resolution queued")
+            }
+        }
+    }
+
     fun deleteHistoryEntry(entry: HistoryEntry) {
         viewModelScope.launch { dao.deleteHistory(entry.id) }
     }
 
     fun setOverlay(overlay: BrowserOverlay) {
         _state.update { it.copy(overlay = overlay) }
+        if (overlay == BrowserOverlay.SETTINGS) refreshWebDavState()
+    }
+
+    private fun refreshWebDavState() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val config = webDavStore.load() ?: return@launch
+            withContext(Dispatchers.Main.immediate) {
+                _state.update { it.copy(webDav = config.toUiState()) }
+            }
+        }
     }
 
     fun dismissOverlay() {
-        setOverlay(BrowserOverlay.NONE)
+        _state.update { it.copy(overlay = BrowserOverlay.NONE, securityDiagnostics = null) }
     }
 
     fun setThemeMode(mode: ThemeMode) {
@@ -3121,11 +3247,83 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             {
                 viewModelScope.launch {
                     dao.clearSitePermissions()
+                    _state.update { it.copy(securityDiagnostics = it.securityDiagnostics?.copy(permissions = emptyList())) }
                     showSnackbar("Site permissions cleared")
                 }
             },
             { showSnackbar("Could not clear site permissions") },
         )
+    }
+
+    fun setSitePermission(origin: String, permission: String, decision: String) {
+        if (!NavigationPolicy.isWebUrl(origin) || permission.isBlank()) return
+        if (decision !in setOf("allow", "block", "ask")) return
+        viewModelScope.launch {
+            if (decision == "ask") {
+                dao.deleteSitePermission(origin, permission)
+            } else {
+                dao.upsertSitePermission(
+                    SitePermission(
+                        origin = origin,
+                        permission = permission,
+                        decision = decision,
+                        updatedAt = System.currentTimeMillis(),
+                    ),
+                )
+            }
+            _state.value.securityDiagnostics?.takeIf { it.origin == origin }?.let { diagnostics ->
+                _state.update { it.copy(securityDiagnostics = diagnostics.copy(permissions = dao.getSitePermissions(origin))) }
+            }
+        }
+    }
+
+    fun openSecurityDiagnostics() {
+        val tab = activeTab() ?: run {
+            showSnackbar("There is no active page")
+            return
+        }
+        val origin = NavigationPolicy.origin(tab.url)
+        val uri = runCatching { Uri.parse(tab.url) }.getOrNull()
+        val base = SecurityDiagnostics(
+            tabId = tab.id,
+            url = tab.url,
+            origin = origin,
+            host = uri?.host,
+            port = uri?.port?.takeIf { it > 0 } ?: if (tab.url.startsWith("https://")) 443 else null,
+            isSecure = tab.isSecure,
+            isLoading = tab.url.startsWith("https://", ignoreCase = true),
+            blockedRequests = origin?.let { adBlockStats.byOrigin[it] } ?: 0,
+            dnsOverHttpsEnabled = _state.value.settings.dnsOverHttpsEnabled,
+            dnsProvider = _state.value.settings.dnsProvider.label,
+            error = if (!NavigationPolicy.isWebUrl(tab.url)) "Security information is unavailable for this page" else null,
+        )
+        _state.update { it.copy(securityDiagnostics = base, overlay = BrowserOverlay.SECURITY) }
+        if (origin == null || !NavigationPolicy.isWebUrl(tab.url)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val certificate = if (tab.url.startsWith("https://", ignoreCase = true)) {
+                runCatching { fetchCertificate(tab.url) }.getOrNull()
+            } else null
+            val error = if (tab.url.startsWith("https://", ignoreCase = true) && certificate == null) {
+                "The certificate could not be inspected from the current network"
+            } else null
+            val permissions = dao.getSitePermissions(origin)
+            val setting = dao.getSiteSetting(origin)
+            withContext(Dispatchers.Main.immediate) {
+                if (_state.value.securityDiagnostics?.tabId == tab.id) {
+                    _state.update {
+                        it.copy(
+                            securityDiagnostics = base.copy(
+                                certificate = certificate,
+                                isLoading = false,
+                                permissions = permissions,
+                                siteSetting = setting,
+                                error = error,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun clearSiteData(origin: String) {
@@ -3150,6 +3348,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     if (currentSiteOrigin() == origin) {
                         _state.update { it.copy(siteSetting = null) }
                         _state.value.activeTabId?.let(::refreshSiteSetting)
+                    }
+                    _state.value.securityDiagnostics?.takeIf { it.origin == origin }?.let { diagnostics ->
+                        _state.update { it.copy(securityDiagnostics = diagnostics.copy(permissions = emptyList(), siteSetting = null)) }
                     }
                     showSnackbar("Cleared data for $origin")
                 }
@@ -3202,6 +3403,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         _state.update { state ->
                             state.copy(siteSetting = if (currentSiteOrigin() == origin) null else state.siteSetting)
                         }
+                        _state.value.securityDiagnostics?.takeIf { it.origin == origin }?.let { diagnostics ->
+                            _state.update { it.copy(securityDiagnostics = diagnostics.copy(permissions = emptyList(), siteSetting = null)) }
+                        }
                         _state.value.tabs
                             .filter { NavigationPolicy.origin(it.url) == origin && it.hasPage }
                             .forEach { it.session.reload() }
@@ -3225,6 +3429,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     trackerBlockedByTab.clear()
                     pageZoomByTab.clear()
                     _state.update { it.copy(siteSetting = null, blockerStats = BlockerStats()) }
+                    _state.update { it.copy(securityDiagnostics = it.securityDiagnostics?.copy(permissions = emptyList(), siteSetting = null)) }
                     syncActiveTabZoom()
                     syncAdBlockSettings(_state.value.settings)
                     syncUserScripts(_state.value.settings)
@@ -3671,7 +3876,74 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 },
                 activeTabIndex = activeIndex.coerceAtLeast(0),
                 groups = current.settings.tabGroups,
+                workspaceList = workspaceSnapshots(current),
             )
+        }
+    }
+
+    private fun workspaceSnapshots(state: BrowserUiState): List<TabWorkspace> {
+        val stored = state.settings.workspaces
+        if (stored.isNotEmpty()) return stored
+        val now = System.currentTimeMillis()
+        return listOf(
+            TabWorkspace(
+                id = state.settings.activeWorkspaceId.ifBlank { DEFAULT_WORKSPACE_ID },
+                title = "Personal",
+                createdAt = now,
+                lastUsedAt = now,
+                tabs = savedTabsFromState(),
+                activeTabIndex = state.tabs.indexOfFirst { it.id == state.activeTabId }.coerceAtLeast(0),
+                tabGroups = state.settings.tabGroups,
+            ),
+        )
+    }
+
+    private fun saveAndActivateWorkspace(workspaces: List<TabWorkspace>, target: TabWorkspace) {
+        val current = _state.value
+        val activatedTarget = target.copy(lastUsedAt = System.currentTimeMillis())
+        val currentWorkspace = workspaceSnapshots(current).firstOrNull { it.id == current.settings.activeWorkspaceId }
+            ?: workspaceSnapshots(current).first()
+        val currentTabs = savedTabsFromState()
+        val currentIndex = currentTabs.indexOfFirst { it.id == current.activeTabId }.coerceAtLeast(0)
+        val updated = workspaces.map { workspace ->
+            when (workspace.id) {
+                currentWorkspace.id -> currentWorkspace.copy(
+                    tabs = currentTabs,
+                    activeTabIndex = currentIndex,
+                    tabGroups = current.settings.tabGroups,
+                    lastUsedAt = System.currentTimeMillis(),
+                )
+                activatedTarget.id -> activatedTarget
+                else -> workspace
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.saveWorkspaceState(updated, activatedTarget.id, activatedTarget.tabs, activatedTarget.activeTabIndex, activatedTarget.tabGroups)
+            withContext(Dispatchers.Main.immediate) {
+                val state = _state.value
+                state.tabs.forEach { tab -> runCatching { tab.session.close() } }
+                _state.update {
+                    it.copy(
+                        settings = it.settings.copy(
+                            workspaces = updated,
+                            activeWorkspaceId = activatedTarget.id,
+                            openTabs = activatedTarget.tabs,
+                            activeTabIndex = activatedTarget.activeTabIndex,
+                            tabGroups = activatedTarget.tabGroups,
+                        ),
+                        tabs = emptyList(),
+                        activeTabId = null,
+                        splitPrimaryTabId = null,
+                        splitSecondaryTabId = null,
+                        splitPaneFocused = false,
+                        overlay = BrowserOverlay.NONE,
+                    )
+                }
+                restoreSavedTabs(activatedTarget.tabs, activatedTarget.activeTabIndex)
+                if (_state.value.tabs.isEmpty()) createTab()
+                persistOpenTabs(immediate = true)
+                showSnackbar("Switched to ${target.title}")
+            }
         }
     }
 
@@ -4513,6 +4785,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { byte -> "%02x".format(byte) }
 
+    private fun fetchCertificate(url: String): SecurityCertificateInfo {
+        val connection = (URL(url).openConnection() as? HttpsURLConnection)
+            ?: error("HTTPS connection unavailable")
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 5_000
+        connection.instanceFollowRedirects = false
+        connection.requestMethod = "HEAD"
+        connection.setRequestProperty("User-Agent", BrowserClientIdentity.userAgent)
+        return try {
+            connection.connect()
+            val certificate = connection.serverCertificates.firstOrNull() as? X509Certificate
+                ?: error("No X.509 certificate")
+            val fingerprint = MessageDigest.getInstance("SHA-256")
+                .digest(certificate.encoded)
+                .joinToString(":") { byte -> "%02X".format(byte.toInt() and 0xff) }
+            SecurityCertificateInfo(
+                subject = certificate.subjectX500Principal.name.take(240),
+                issuer = certificate.issuerX500Principal.name.take(240),
+                validFrom = DateFormat.getDateTimeInstance().format(certificate.notBefore),
+                validTo = DateFormat.getDateTimeInstance().format(certificate.notAfter),
+                sha256 = fingerprint,
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun webAppId(startUrl: String): String = sha256(startUrl).take(24)
 
     private fun refreshWebAppShortcut(app: InstalledWebApp) {
@@ -4725,6 +5024,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onPageStart(session: GeckoSession, url: String) {
             attachAdBlockContentDelegate(session)
             mediaSessions.remove(tabId)
+            _state.update {
+                if (it.securityDiagnostics?.tabId == tabId) {
+                    it.copy(securityDiagnostics = null, overlay = BrowserOverlay.NONE)
+                } else it
+            }
             if (_state.value.activeTabId == tabId && _state.value.findInPage != null) closeFindInPage()
             if (_state.value.activeTabId == tabId) _state.update { it.copy(translation = null) }
             lastProgressUpdateAt.remove(tabId)

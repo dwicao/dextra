@@ -45,6 +45,48 @@ class WebDavSyncWorker(
             val settingsRepository = SettingsRepository(applicationContext)
             val syncRepository = SyncRepository(applicationContext, dao)
             val remote = WebDavClient.fetch(config)
+            if (config.conflictPending) {
+                val resolution = config.pendingResolution
+                if (remote == null || resolution == null) {
+                    throw WebDavConflictException()
+                }
+                when (resolution) {
+                    "remote" -> {
+                        val imported = syncRepository.importBytes(remote.bytes, config.passphrase)
+                        imported.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
+                        store.save(config.copy(
+                            lastEtag = remote.etag,
+                            lastSyncAt = System.currentTimeMillis(),
+                            conflictPending = false,
+                            conflictDetectedAt = null,
+                            pendingResolution = null,
+                            lastError = null,
+                        ))
+                    }
+                    "local", "merge" -> {
+                        if (resolution == "merge") {
+                            val imported = syncRepository.importBytes(remote.bytes, config.passphrase)
+                            imported.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
+                        }
+                        val settings = settingsRepository.settings.first()
+                        val uploaded = WebDavClient.putAtomically(
+                            config,
+                            syncRepository.exportBytes(settings, config.passphrase),
+                            remote.etag,
+                        )
+                        store.save(config.copy(
+                            lastEtag = uploaded.etag ?: remote.etag,
+                            lastSyncAt = System.currentTimeMillis(),
+                            conflictPending = false,
+                            conflictDetectedAt = null,
+                            pendingResolution = null,
+                            lastError = null,
+                        ))
+                    }
+                    else -> throw IOException("Unknown WebDAV conflict resolution")
+                }
+                return@runCatching
+            }
             if (remote != null && (config.lastEtag == null || remote.etag != config.lastEtag)) {
                 val imported = syncRepository.importBytes(remote.bytes, config.passphrase)
                 imported.root.optJSONObject("settings")?.let { importedSettings ->
@@ -53,11 +95,27 @@ class WebDavSyncWorker(
             }
             val settings = settingsRepository.settings.first()
             val uploaded = WebDavClient.putAtomically(config, syncRepository.exportBytes(settings, config.passphrase), remote?.etag)
-            store.save(config.copy(lastEtag = uploaded.etag ?: remote?.etag, lastSyncAt = System.currentTimeMillis()))
+            store.save(config.copy(
+                lastEtag = uploaded.etag ?: remote?.etag,
+                lastSyncAt = System.currentTimeMillis(),
+                conflictPending = false,
+                conflictDetectedAt = null,
+                pendingResolution = null,
+                lastError = null,
+            ))
         }.fold(
             onSuccess = { Result.success() },
             onFailure = { error ->
-                if (error is BadPaddingException || error is IllegalArgumentException || error is org.json.JSONException) {
+                if (error is WebDavConflictException) {
+                    store.save(config.copy(
+                        conflictPending = true,
+                        conflictDetectedAt = System.currentTimeMillis(),
+                        pendingResolution = null,
+                        lastError = "Remote bundle changed while uploading",
+                    ))
+                    Result.failure()
+                } else if (error is BadPaddingException || error is IllegalArgumentException || error is org.json.JSONException) {
+                    store.save(config.copy(lastError = error.message ?: "Invalid sync bundle"))
                     Result.failure()
                 } else {
                     Result.retry()
@@ -146,7 +204,9 @@ private object WebDavClient {
         var moved = false
         return try {
             if (move.responseCode !in 200..299) {
-                if (move.responseCode == HttpURLConnection.HTTP_PRECON_FAILED) throw WebDavConflictException()
+                if (move.responseCode == HttpURLConnection.HTTP_PRECON_FAILED || move.responseCode == HttpURLConnection.HTTP_CONFLICT) {
+                    throw WebDavConflictException()
+                }
                 throw IOException("WebDAV MOVE failed: ${move.responseCode}")
             }
             moved = true

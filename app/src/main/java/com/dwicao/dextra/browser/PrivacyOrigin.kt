@@ -2,6 +2,7 @@ package com.dwicao.dextra.browser
 
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.SiteSetting
+import org.mozilla.geckoview.GeckoSession
 
 data class PrivacyOrigin(
     val origin: String,
@@ -56,3 +57,10 @@ fun buildPrivacyOrigins(
 }
 
 private fun Int?.orZero(): Int = this ?: 0
+
+fun sitePermissionLabel(permission: String): String = when (permission.toIntOrNull()) {
+    GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION -> "Location"
+    GeckoSession.PermissionDelegate.PERMISSION_DESKTOP_NOTIFICATION -> "Notifications"
+    GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE -> "Autoplay media"
+    else -> "Additional access ($permission)"
+}

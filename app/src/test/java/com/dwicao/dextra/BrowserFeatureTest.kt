@@ -1,8 +1,13 @@
 package com.dwicao.dextra
 
 import com.dwicao.dextra.browser.BrowserUrl
+import com.dwicao.dextra.browser.buildPrivacyOrigins
+import com.dwicao.dextra.browser.sitePermissionLabel
 import com.dwicao.dextra.data.CustomSearchEngine
 import com.dwicao.dextra.data.SearchEngine
+import com.dwicao.dextra.data.SitePermission
+import com.dwicao.dextra.data.SiteSetting
+import org.mozilla.geckoview.GeckoSession
 import com.dwicao.dextra.data.SyncCrypto
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -51,5 +56,20 @@ class BrowserFeatureTest {
         }
 
         assertTrue(rejected)
+    }
+
+    @Test
+    fun privacyCenterGroupsPermissionsOverridesAndBlockedRequests() {
+        val origins = buildPrivacyOrigins(
+            permissions = listOf(SitePermission("https://example.com", GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION.toString(), "allow", 10L)),
+            settings = listOf(SiteSetting("https://example.com", zoomPercent = 125, updatedAt = 20L)),
+            blockedByOrigin = mapOf("https://example.com" to 3),
+        )
+
+        assertEquals(1, origins.size)
+        assertEquals(1, origins.single().permissionCount)
+        assertTrue(origins.single().hasSiteOverrides)
+        assertEquals(3, origins.single().blockedCount)
+        assertEquals("Location", sitePermissionLabel(GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION.toString()))
     }
 }

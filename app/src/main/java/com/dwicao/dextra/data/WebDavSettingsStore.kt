@@ -20,6 +20,10 @@ data class WebDavConfig(
     val enabled: Boolean = true,
     val lastEtag: String? = null,
     val lastSyncAt: Long? = null,
+    val conflictPending: Boolean = false,
+    val conflictDetectedAt: Long? = null,
+    val pendingResolution: String? = null,
+    val lastError: String? = null,
 )
 
 data class WebDavSettingsState(
@@ -30,6 +34,9 @@ data class WebDavSettingsState(
     val intervalHours: Int = 24,
     val enabled: Boolean = false,
     val lastSyncAt: Long? = null,
+    val conflictPending: Boolean = false,
+    val conflictDetectedAt: Long? = null,
+    val lastError: String? = null,
 )
 
 /** Keeps the WebDAV password and sync passphrase encrypted at rest with Android Keystore. */
@@ -56,6 +63,10 @@ class WebDavSettingsStore(private val context: Context) {
             enabled = value.optBoolean("enabled", true),
             lastEtag = value.optString("lastEtag").takeIf(String::isNotBlank),
             lastSyncAt = value.optLong("lastSyncAt", 0L).takeIf { it > 0L },
+            conflictPending = value.optBoolean("conflictPending", false),
+            conflictDetectedAt = value.optLong("conflictDetectedAt", 0L).takeIf { it > 0L },
+            pendingResolution = value.optString("pendingResolution").takeIf(String::isNotBlank),
+            lastError = value.optString("lastError").takeIf(String::isNotBlank),
         )
     }.getOrNull()
 
@@ -71,6 +82,10 @@ class WebDavSettingsStore(private val context: Context) {
             .put("enabled", config.enabled)
             .put("lastEtag", config.lastEtag)
             .put("lastSyncAt", config.lastSyncAt)
+            .put("conflictPending", config.conflictPending)
+            .put("conflictDetectedAt", config.conflictDetectedAt)
+            .put("pendingResolution", config.pendingResolution)
+            .put("lastError", config.lastError)
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.ENCRYPT_MODE, key())
         }

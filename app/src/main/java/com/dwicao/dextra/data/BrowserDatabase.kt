@@ -170,8 +170,14 @@ interface BrowserDao {
     @Query("SELECT * FROM site_permissions WHERE origin = :origin AND permission = :permission LIMIT 1")
     suspend fun getSitePermission(origin: String, permission: String): SitePermission?
 
+    @Query("SELECT * FROM site_permissions WHERE origin = :origin ORDER BY updatedAt DESC")
+    suspend fun getSitePermissions(origin: String): List<SitePermission>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSitePermission(permission: SitePermission)
+
+    @Query("DELETE FROM site_permissions WHERE origin = :origin AND permission = :permission")
+    suspend fun deleteSitePermission(origin: String, permission: String)
 
     @Query("DELETE FROM site_permissions")
     suspend fun clearSitePermissions()

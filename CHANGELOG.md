@@ -16,7 +16,11 @@ All notable changes to Dextra are documented here. The commit log at the end rec
 - Android lock-screen media controls for active non-private media.
 - Accessibility text scaling, high contrast, reduced motion, and larger navigation targets.
 - Periodic encrypted WebDAV synchronization with ETag-aware atomic uploads.
+- WebDAV conflict detection with explicit remote, local, and merge resolution.
 - WebAuthn related-origin approval prompts for passkey flows.
+- Workspace tab sessions with isolated normal-tab snapshots and workspace management.
+- Per-origin permission controls and HTTPS security diagnostics with certificate fingerprints.
+- Instrumentation smoke tests for UI rendering and activity recreation.
 
 ## [0.5.0] - 2026-08-29
 
