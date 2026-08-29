@@ -12,7 +12,9 @@ import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.ui.DextraApp
 
 class BrowserWindowActivity : ComponentActivity() {
-    private val browserViewModel: BrowserViewModel by viewModels()
+    private val browserViewModel: BrowserViewModel by viewModels {
+        BrowserViewModel.Factory(application, standaloneWindow = true)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -21,6 +23,7 @@ class BrowserWindowActivity : ComponentActivity() {
             startUrl = intent?.dataString.orEmpty(),
             privateMode = intent?.getBooleanExtra(EXTRA_PRIVATE, false) == true,
         )
+        browserViewModel.handleMediaTabIntent(intent?.getStringExtra(MediaNotificationController.EXTRA_MEDIA_TAB_ID))
         window.decorView.setOnDragListener { _, event ->
             if (event.action == android.view.DragEvent.ACTION_DROP) browserViewModel.handleDroppedData(event.clipData)
             true
@@ -45,6 +48,7 @@ class BrowserWindowActivity : ComponentActivity() {
             startUrl = intent.dataString.orEmpty(),
             privateMode = intent.getBooleanExtra(EXTRA_PRIVATE, false),
         )
+        browserViewModel.handleMediaTabIntent(intent.getStringExtra(MediaNotificationController.EXTRA_MEDIA_TAB_ID))
     }
 
     override fun onStart() {

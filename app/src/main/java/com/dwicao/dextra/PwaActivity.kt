@@ -10,12 +10,15 @@ import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.ui.DextraApp
 
 class PwaActivity : ComponentActivity() {
-    private val browserViewModel: BrowserViewModel by viewModels()
+    private val browserViewModel: BrowserViewModel by viewModels {
+        BrowserViewModel.Factory(application, standalonePwa = true)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         browserViewModel.enterPwaMode(intent?.dataString.orEmpty())
+        browserViewModel.handleMediaTabIntent(intent?.getStringExtra(MediaNotificationController.EXTRA_MEDIA_TAB_ID))
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val state = browserViewModel.state.value
@@ -33,6 +36,7 @@ class PwaActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         browserViewModel.enterPwaMode(intent.dataString.orEmpty())
+        browserViewModel.handleMediaTabIntent(intent.getStringExtra(MediaNotificationController.EXTRA_MEDIA_TAB_ID))
     }
 
     override fun onStart() {

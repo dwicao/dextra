@@ -199,6 +199,9 @@ interface BrowserDao {
     @Query("DELETE FROM site_permissions")
     suspend fun clearSitePermissions()
 
+    @Query("DELETE FROM site_permissions WHERE profileId = :profileId")
+    suspend fun deleteSitePermissionsForProfile(profileId: String)
+
     @Query("SELECT * FROM site_permissions ORDER BY updatedAt DESC")
     fun observeSitePermissions(): Flow<List<SitePermission>>
 
@@ -232,6 +235,9 @@ interface BrowserDao {
     @Query("DELETE FROM site_settings")
     suspend fun clearSiteSettings()
 
+    @Query("DELETE FROM site_settings WHERE profileId = :profileId")
+    suspend fun deleteSiteSettingsForProfile(profileId: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertReadingListEntry(entry: ReadingListEntry)
 
@@ -259,11 +265,25 @@ interface BrowserDao {
     @Query("SELECT * FROM downloads")
     suspend fun getDownloads(): List<DownloadEntry>
 
+    @Query("DELETE FROM downloads WHERE workspaceId = :workspaceId")
+    suspend fun deleteDownloadsForWorkspace(workspaceId: String)
+
     @Query("SELECT * FROM downloads WHERE downloadId = :downloadId LIMIT 1")
     suspend fun getDownload(downloadId: Long): DownloadEntry?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertDownload(download: DownloadEntry)
+
+    @Query("UPDATE downloads SET localUri = :localUri WHERE downloadId = :downloadId AND status = :completeStatus")
+    suspend fun setDownloadUriIfComplete(downloadId: Long, localUri: String, completeStatus: String): Int
+
+    @Query("UPDATE downloads SET status = :failedStatus, reason = :reason WHERE downloadId = :downloadId AND status = :completeStatus")
+    suspend fun markDownloadFailedIfComplete(
+        downloadId: Long,
+        failedStatus: String,
+        reason: String,
+        completeStatus: String,
+    ): Int
 
     @Query("DELETE FROM downloads WHERE downloadId = :downloadId")
     suspend fun deleteDownload(downloadId: Long)

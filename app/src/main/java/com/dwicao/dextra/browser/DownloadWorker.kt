@@ -47,20 +47,34 @@ class DownloadWorker(
         if (download.status == DownloadStatus.PAUSED.label || download.status == DownloadStatus.CANCELED.label) {
             return Result.success()
         }
-        val engine = DownloadEngine(CoroutineScope(currentCoroutineContext())) { id, update ->
-            dao.getDownload(id)?.let { current ->
-                dao.upsertDownload(
-                    current.copy(
-                        status = update.status,
-                        bytesDownloaded = update.bytesDownloaded ?: current.bytesDownloaded,
-                        totalBytes = update.totalBytes ?: current.totalBytes,
-                        speedBytesPerSecond = update.speedBytesPerSecond ?: current.speedBytesPerSecond,
-                        filePath = update.filePath ?: current.filePath,
-                        reason = update.reason,
-                    ),
-                )
-            }
+        if (download.status == DownloadStatus.FAILED.label) {
+            if (download.attempts >= MAX_RETRY_ATTEMPTS) return Result.success()
+            dao.upsertDownload(download.copy(status = DownloadStatus.QUEUED.label, reason = "Retrying"))
         }
+        val engine = DownloadEngine(
+            scope = CoroutineScope(currentCoroutineContext()),
+            onUpdate = { id, update ->
+                dao.getDownload(id)?.let { current ->
+                    if (current.status == DownloadStatus.CANCELED.label ||
+                        (current.status == DownloadStatus.PAUSED.label && update.status != DownloadStatus.QUEUED.label)
+                    ) return@let
+                    dao.upsertDownload(
+                        current.copy(
+                            status = update.status,
+                            bytesDownloaded = update.bytesDownloaded ?: current.bytesDownloaded,
+                            totalBytes = update.totalBytes ?: current.totalBytes,
+                            speedBytesPerSecond = update.speedBytesPerSecond ?: current.speedBytesPerSecond,
+                            filePath = update.filePath ?: current.filePath,
+                            reason = update.reason,
+                        ),
+                    )
+                }
+            },
+            isCancelled = {
+                val current = dao.getDownload(downloadId)
+                current == null || current.status in setOf(DownloadStatus.PAUSED.label, DownloadStatus.CANCELED.label)
+            },
+        )
         return DownloadQueueGate.mutex.withLock {
             val current = dao.getDownload(downloadId) ?: return@withLock Result.success()
             if (current.status != DownloadStatus.QUEUED.label && current.status != DownloadStatus.DOWNLOADING.label) {
@@ -79,16 +93,38 @@ class DownloadWorker(
             engine.execute(current)
 
             val completed = dao.getDownload(downloadId) ?: return@withLock Result.success()
+            var finalDownload = completed
             if (completed.status == DownloadStatus.COMPLETE.label && completed.localUri == null && completed.filePath != null) {
                 val publicUri = publishDownload(completed)
-                dao.upsertDownload(completed.copy(localUri = publicUri))
+                if (publicUri != null) {
+                    if (dao.setDownloadUriIfComplete(downloadId, publicUri, DownloadStatus.COMPLETE.label) == 0) {
+                        runCatching { applicationContext.contentResolver.delete(Uri.parse(publicUri), null, null) }
+                        return@withLock Result.success()
+                    }
+                    finalDownload = completed.copy(localUri = publicUri)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q || completed.destinationTreeUri != null) {
+                    val reason = "Download finished but could not be published"
+                    if (dao.markDownloadFailedIfComplete(
+                            downloadId,
+                            DownloadStatus.FAILED.label,
+                            reason,
+                            DownloadStatus.COMPLETE.label,
+                        ) == 0
+                    ) {
+                        completed.filePath?.let { path ->
+                            runCatching { File(path).delete() }
+                        }
+                        return@withLock Result.success()
+                    }
+                    finalDownload = completed.copy(status = DownloadStatus.FAILED.label, reason = reason)
+                }
             }
-            if (completed.status == DownloadStatus.FAILED.label && completed.attempts < MAX_RETRY_ATTEMPTS) {
-                dao.upsertDownload(completed.copy(attempts = completed.attempts + 1, reason = "Retry scheduled"))
+            if (finalDownload.status == DownloadStatus.FAILED.label && finalDownload.attempts < MAX_RETRY_ATTEMPTS) {
+                dao.upsertDownload(finalDownload.copy(attempts = finalDownload.attempts + 1, reason = "Retry scheduled"))
                 return@withLock Result.retry()
             }
-            if (completed.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.FAILED.label)) {
-                notifyDownload(completed)
+            if (finalDownload.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.FAILED.label)) {
+                notifyDownload(finalDownload)
             }
             Result.success()
         }

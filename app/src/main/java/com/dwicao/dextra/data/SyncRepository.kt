@@ -5,6 +5,7 @@ import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import javax.crypto.Cipher
@@ -128,7 +129,9 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             .put("salt", Base64.getEncoder().encodeToString(encrypted.salt))
             .put("iv", Base64.getEncoder().encodeToString(encrypted.iv))
             .put("data", Base64.getEncoder().encodeToString(encrypted.data))
-        return envelope.toString().toByteArray(Charsets.UTF_8)
+        return envelope.toString().toByteArray(Charsets.UTF_8).also {
+            require(it.size <= MAX_BYTES) { "Encrypted sync bundle is too large" }
+        }
     }
 
     suspend fun import(
@@ -164,25 +167,49 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         )
     }
 
+    suspend fun contentFingerprint(bytes: ByteArray, passphrase: String): String {
+        val root = decodeRoot(bytes, passphrase)
+        root.remove("createdAt")
+        return MessageDigest.getInstance("SHA-256")
+            .digest(root.toString().toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
     suspend fun importBytes(
         bytes: ByteArray,
         passphrase: String,
         targetProfileId: String = DEFAULT_WORKSPACE_ID,
         selection: SyncSelection = SyncSelection(),
+        preserveSourceProfiles: Boolean = false,
+        mergeRecords: Boolean = false,
     ): SyncData {
         require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
         require(bytes.size <= MAX_BYTES) { "Sync bundle is too large" }
         val root = decodeRoot(bytes, passphrase)
+        val importedWorkspaceIds = if (selection.settings || preserveSourceProfiles) {
+            root.optJSONObject("settings")?.optJSONArray("workspaces")?.let { workspaces ->
+                (0 until workspaces.length()).mapNotNull { index ->
+                    workspaces.optJSONObject(index)?.optString("id")?.takeIf(String::isNotBlank)
+                }.toSet()
+            }.orEmpty()
+        } else {
+            emptySet()
+        }
+        val existingBookmarks = if (mergeRecords) dao.getBookmarks().associateBy { it.url } else emptyMap()
+        val existingReadingList = if (mergeRecords) dao.getReadingList().associateBy { it.url } else emptyMap()
         var imported = 0
         if (selection.bookmarks) root.optJSONArray("bookmarks")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_BOOKMARKS)) array.getJSONObject(i).let {
-                dao.insertBookmark(Bookmark(
+                val bookmark = Bookmark(
                     url = it.getString("url"),
                     title = it.getString("title"),
                     createdAt = it.optLong("createdAt", System.currentTimeMillis()),
                     folder = it.optString("folder").takeIf(String::isNotBlank),
-                ))
-                imported++
+                )
+                if (!mergeRecords || (existingBookmarks[bookmark.url]?.createdAt ?: Long.MIN_VALUE) <= bookmark.createdAt) {
+                    dao.insertBookmark(bookmark)
+                    imported++
+                }
             }
         }
         if (selection.history) root.optJSONArray("history")?.let { array ->
@@ -197,33 +224,55 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         }
         if (selection.readingList) root.optJSONArray("readingList")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_READING_LIST)) array.getJSONObject(i).let {
-                dao.upsertReadingListEntry(ReadingListEntry(
+                val entry = ReadingListEntry(
                     url = it.getString("url"), title = it.getString("title"),
                     savedAt = it.optLong("savedAt", System.currentTimeMillis()), isRead = it.optBoolean("isRead"),
-                ))
+                )
+                if (!mergeRecords || (existingReadingList[entry.url]?.savedAt ?: Long.MIN_VALUE) <= entry.savedAt) {
+                    dao.upsertReadingListEntry(entry)
+                }
             }
         }
         if (selection.sitePermissions) root.optJSONArray("sitePermissions")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_SITE_PERMISSIONS)) array.getJSONObject(i).let {
-                dao.upsertSitePermission(SitePermission(
+                val permission = SitePermission(
                     it.getString("origin"), it.getString("permission"), it.getString("decision"),
-                    it.optLong("updatedAt", System.currentTimeMillis()), profileId = targetProfileId,
-                ))
+                    it.optLong("updatedAt", System.currentTimeMillis()),
+                    profileId = it.optString("profileId").takeIf { id -> id in importedWorkspaceIds } ?: targetProfileId,
+                )
+                val existing = dao.getSitePermission(permission.profileId, permission.origin, permission.permission)
+                if (!mergeRecords || existing == null || existing.updatedAt <= permission.updatedAt) {
+                    dao.upsertSitePermission(permission)
+                }
             }
         }
         if (selection.siteSettings) root.optJSONArray("siteSettings")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_SITE_SETTINGS)) array.getJSONObject(i).let {
-                dao.upsertSiteSetting(SiteSetting(
+                val setting = SiteSetting(
                     it.getString("origin"), it.optBooleanOrNull("desktopSites"),
                     it.optBooleanOrNull("adBlockingEnabled"), it.optBooleanOrNull("userScriptsEnabled"),
                     it.optIntOrNull("zoomPercent"), it.optString("translationTarget").takeIf(String::isNotBlank),
-                    it.optLong("updatedAt", System.currentTimeMillis()), profileId = targetProfileId,
+                    it.optLong("updatedAt", System.currentTimeMillis()),
+                    profileId = it.optString("profileId").takeIf { id -> id in importedWorkspaceIds } ?: targetProfileId,
                     httpsOnly = it.optBooleanOrNull("httpsOnly"),
                     cookieBannerMode = it.optIntOrNull("cookieBannerMode"),
-                ))
+                )
+                val existing = dao.getSiteSetting(setting.profileId, setting.origin)
+                if (!mergeRecords || existing == null || existing.updatedAt <= setting.updatedAt) {
+                    dao.upsertSiteSetting(setting)
+                }
             }
         }
         return SyncData(root, imported, root.optJSONObject("settings")?.takeIf { selection.settings })
+    }
+
+    fun mergeSettings(remoteRoot: JSONObject, local: BrowserSettings): JSONObject {
+        val merged = settingsJson(local)
+        val remote = remoteRoot.optJSONObject("settings") ?: return merged
+        merged.put("openTabs", mergeTabArrays(merged.optJSONArray("openTabs"), remote.optJSONArray("openTabs"), MAX_SYNC_TABS))
+        merged.put("tabGroups", mergeObjectArrays(merged.optJSONArray("tabGroups"), remote.optJSONArray("tabGroups"), "id", MAX_SYNC_GROUPS))
+        merged.put("workspaces", mergeWorkspaces(merged.optJSONArray("workspaces"), remote.optJSONArray("workspaces")))
+        return merged
     }
 
     private fun decodeRoot(bytes: ByteArray, passphrase: String): JSONObject {
@@ -314,6 +363,49 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
     private fun JSONObject.optBooleanOrNull(key: String): Boolean? = if (has(key) && !isNull(key)) getBoolean(key) else null
     private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) getInt(key) else null
 
+    private fun mergeWorkspaces(local: JSONArray?, remote: JSONArray?): JSONArray {
+        val values = linkedMapOf<String, JSONObject>()
+        fun add(value: JSONObject) {
+            val id = value.optString("id").takeIf(String::isNotBlank) ?: return
+            val existing = values[id]
+            values[id] = if (existing == null) {
+                value
+            } else {
+                JSONObject(existing.toString()).apply {
+                    put("tabs", mergeTabArrays(existing.optJSONArray("tabs"), value.optJSONArray("tabs"), MAX_SYNC_TABS))
+                    put("groups", mergeObjectArrays(existing.optJSONArray("groups"), value.optJSONArray("groups"), "id", MAX_SYNC_GROUPS))
+                }
+            }
+        }
+        local?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        remote?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        return JSONArray(values.values.take(MAX_SYNC_WORKSPACES))
+    }
+
+    private fun mergeTabArrays(local: JSONArray?, remote: JSONArray?, limit: Int): JSONArray {
+        val values = linkedMapOf<String, JSONObject>()
+        fun add(value: JSONObject) {
+            val key = value.optString("id").takeIf(String::isNotBlank)
+                ?: value.optString("url").takeIf(String::isNotBlank)
+                ?: return
+            values.putIfAbsent(key, value)
+        }
+        local?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        remote?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        return JSONArray(values.values.take(limit))
+    }
+
+    private fun mergeObjectArrays(local: JSONArray?, remote: JSONArray?, keyName: String, limit: Int): JSONArray {
+        val values = linkedMapOf<String, JSONObject>()
+        fun add(value: JSONObject) {
+            val key = value.optString(keyName).takeIf(String::isNotBlank) ?: return
+            values.putIfAbsent(key, value)
+        }
+        local?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        remote?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        return JSONArray(values.values.take(limit))
+    }
+
     private fun savedTabJson(tab: SavedTab): JSONObject = JSONObject().apply {
         put("url", tab.url)
         put("private", false)
@@ -338,6 +430,9 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         const val MAX_READING_LIST = 5_000
         const val MAX_SITE_PERMISSIONS = 5_000
         const val MAX_SITE_SETTINGS = 5_000
+        const val MAX_SYNC_TABS = 64
+        const val MAX_SYNC_GROUPS = 100
+        const val MAX_SYNC_WORKSPACES = 12
         const val MIN_PASSPHRASE_LENGTH = 8
     }
 }

@@ -27,6 +27,7 @@ data class DownloadUpdate(
 
 class DownloadEngine(
     private val scope: CoroutineScope,
+    private val isCancelled: suspend () -> Boolean = { false },
     private val onUpdate: suspend (Long, DownloadUpdate) -> Unit,
 ) {
     private val jobs = ConcurrentHashMap<Long, Job>()
@@ -190,6 +191,7 @@ class DownloadEngine(
                     var smoothedSpeed = 0L
                     while (true) {
                         coroutineContext.ensureActive()
+                        if (isCancelled()) throw CancellationException()
                         val read = input.read(buffer)
                         if (read == -1) break
                         outputStream.write(buffer, 0, read)

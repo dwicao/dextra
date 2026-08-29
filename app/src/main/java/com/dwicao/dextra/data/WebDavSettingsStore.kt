@@ -24,6 +24,9 @@ data class WebDavConfig(
     val conflictDetectedAt: Long? = null,
     val pendingResolution: String? = null,
     val lastError: String? = null,
+    val lastLocalRevision: Long? = null,
+    val lastRemoteFingerprint: String? = null,
+    val lastLocalFingerprint: String? = null,
 )
 
 data class WebDavSettingsState(
@@ -67,6 +70,10 @@ class WebDavSettingsStore(private val context: Context) {
             conflictDetectedAt = value.optLong("conflictDetectedAt", 0L).takeIf { it > 0L },
             pendingResolution = value.optString("pendingResolution").takeIf(String::isNotBlank),
             lastError = value.optString("lastError").takeIf(String::isNotBlank),
+            lastLocalRevision = value.optLong("lastLocalRevision", Long.MIN_VALUE)
+                .takeIf { it != Long.MIN_VALUE },
+            lastRemoteFingerprint = value.optString("lastRemoteFingerprint").takeIf(String::isNotBlank),
+            lastLocalFingerprint = value.optString("lastLocalFingerprint").takeIf(String::isNotBlank),
         )
     }.getOrNull()
 
@@ -86,6 +93,9 @@ class WebDavSettingsStore(private val context: Context) {
             .put("conflictDetectedAt", config.conflictDetectedAt)
             .put("pendingResolution", config.pendingResolution)
             .put("lastError", config.lastError)
+            .put("lastLocalRevision", config.lastLocalRevision)
+            .put("lastRemoteFingerprint", config.lastRemoteFingerprint)
+            .put("lastLocalFingerprint", config.lastLocalFingerprint)
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.ENCRYPT_MODE, key())
         }

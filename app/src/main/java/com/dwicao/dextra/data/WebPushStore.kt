@@ -25,6 +25,7 @@ data class StoredWebPushSubscription(
     val browserPublicKey: ByteArray,
     val authSecret: ByteArray,
     val createdAt: Long,
+    val profileId: String = DEFAULT_WORKSPACE_ID,
 )
 
 /** Encrypted local storage for Web Push subscription material. */
@@ -39,7 +40,7 @@ class WebPushStore(private val context: Context) {
 
     @Synchronized
     fun save(subscription: StoredWebPushSubscription) {
-        val updated = (_subscriptions.value.filterNot { it.scope == subscription.scope } + subscription)
+        val updated = (_subscriptions.value.filterNot { it.scope == subscription.scope && it.profileId == subscription.profileId } + subscription)
             .sortedByDescending { it.createdAt }
             .take(MAX_SUBSCRIPTIONS)
         write(updated)
@@ -47,8 +48,8 @@ class WebPushStore(private val context: Context) {
     }
 
     @Synchronized
-    fun delete(scope: String) {
-        val updated = _subscriptions.value.filterNot { it.scope == scope }
+    fun delete(scope: String, profileId: String = DEFAULT_WORKSPACE_ID) {
+        val updated = _subscriptions.value.filterNot { it.scope == scope && it.profileId == profileId }
         write(updated)
         _subscriptions.value = updated
     }
@@ -59,8 +60,8 @@ class WebPushStore(private val context: Context) {
         _subscriptions.value = emptyList()
     }
 
-    fun get(scope: String): StoredWebPushSubscription? =
-        _subscriptions.value.firstOrNull { it.scope == scope }
+    fun get(scope: String, profileId: String = DEFAULT_WORKSPACE_ID): StoredWebPushSubscription? =
+        _subscriptions.value.firstOrNull { it.scope == scope && it.profileId == profileId }
 
     private fun read(): List<StoredWebPushSubscription> {
         if (!file.isFile || file.length() == 0L) return emptyList()
@@ -87,6 +88,7 @@ class WebPushStore(private val context: Context) {
                     browserPublicKey = publicKey,
                     authSecret = auth,
                     createdAt = value.optLong("createdAt", 0L),
+                    profileId = value.optString("profileId").ifBlank { DEFAULT_WORKSPACE_ID },
                 )
             }
         }
@@ -103,6 +105,7 @@ class WebPushStore(private val context: Context) {
                     put("browserPublicKey", Base64.encodeToString(subscription.browserPublicKey, Base64.NO_WRAP))
                     put("authSecret", Base64.encodeToString(subscription.authSecret, Base64.NO_WRAP))
                     put("createdAt", subscription.createdAt)
+                    put("profileId", subscription.profileId)
                 }
             })
             val cipher = Cipher.getInstance(TRANSFORMATION)

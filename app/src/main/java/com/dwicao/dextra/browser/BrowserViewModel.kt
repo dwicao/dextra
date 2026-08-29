@@ -20,6 +20,8 @@ import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
@@ -34,6 +36,7 @@ import com.dwicao.dextra.GeckoRuntimeHolder
 import com.dwicao.dextra.DextraApplication
 import com.dwicao.dextra.PwaActivity
 import com.dwicao.dextra.BrowserWindowActivity
+import com.dwicao.dextra.MainActivity
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.AddressVault
 import com.dwicao.dextra.data.BackupRepository
@@ -215,6 +218,7 @@ data class BrowserContextMenu(
 data class ContentPermissionPrompt(
     val id: String,
     val tabId: String,
+    val profileId: String,
     val origin: String,
     val label: String,
     val permission: Int,
@@ -363,6 +367,7 @@ data class SecurityCertificateInfo(
 
 data class SecurityDiagnostics(
     val tabId: String,
+    val profileId: String = DEFAULT_WORKSPACE_ID,
     val url: String,
     val origin: String?,
     val host: String?,
@@ -517,8 +522,30 @@ data class BrowserUiState(
     val compatibilityEvents: List<CompatibilityEvent> = emptyList(),
 )
 
-class BrowserViewModel(application: Application) : AndroidViewModel(application) {
+class BrowserViewModel private constructor(
+    application: Application,
+    private val initialStandalonePwa: Boolean,
+    private val initialStandaloneWindow: Boolean,
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(application, false, false)
+
+    class Factory(
+        private val application: Application,
+        private val standalonePwa: Boolean = false,
+        private val standaloneWindow: Boolean = false,
+    ) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            BrowserViewModel(application, standalonePwa, standaloneWindow) as T
+    }
+
     private val runtime = GeckoRuntimeHolder.get(application)
+    private val standaloneProfileId = if (initialStandalonePwa || initialStandaloneWindow) {
+        "standalone-${UUID.randomUUID()}"
+    } else null
+    private val standaloneContextId = if (initialStandalonePwa || initialStandaloneWindow) {
+        "dextra-standalone-${UUID.randomUUID()}"
+    } else null
     private val database = BrowserDatabase.get(application)
     private val dao: BrowserDao = database.browserDao()
     private val settingsRepository = SettingsRepository(application)
@@ -530,7 +557,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val webPushStore = WebPushStore(application)
     private val performanceMonitor = PerformanceMonitor()
     private val siteHttpsOnlyByOrigin = mutableMapOf<String, Boolean>()
-    private val _state = MutableStateFlow(BrowserUiState())
+    private val _state = MutableStateFlow(
+        BrowserUiState(
+            standalonePwa = initialStandalonePwa,
+            standaloneWindow = initialStandaloneWindow,
+        ),
+    )
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val extensionActionObjects = mutableMapOf<String, WebExtension.Action>()
     private val recentlyClosedTabs = ArrayDeque<ClosedTabEntry>()
@@ -546,6 +578,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val restoringExtensionIds = ConcurrentHashMap.newKeySet<String>()
     private var restoredSavedTabs = false
     private var restoredClosedTabs = false
+    private var lastAppliedSyncToken: String? = null
     private var firstFrameRecorded = false
     private var appInForeground = false
     private var privacyExitCleanupJob: Job? = null
@@ -558,6 +591,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private var pendingMediaTabId: String? = null
     private var pendingSyncImport: Pair<Uri, String>? = null
     private var syncPreviewRequestId = 0L
+    private var workspaceSwitchGeneration = 0L
+    private var localTabsGeneration = 0L
     @Volatile
     private var pendingExtensionPackagePath: String? = null
     @Volatile
@@ -572,7 +607,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private val webPushDelegate = object : WebPushDelegate {
         override fun onSubscribe(scope: String, appServerKey: ByteArray?): GeckoResult<WebPushSubscription> {
-            val existing = webPushStore.get(scope)
+            if (getApplication<DextraApplication>().hasPrivateTabs()) return GeckoResult.fromValue<WebPushSubscription>(null)
+            val profileId = activeProfileId()
+            val existing = webPushStore.get(scope, profileId)
             if (existing != null) return GeckoResult.fromValue(webPushStore.run { existing.toGeckoSubscription() })
             val origin = NavigationPolicy.origin(scope) ?: return GeckoResult.fromValue<WebPushSubscription>(null)
             if (isPrivateCredentialOrigin(origin)) return GeckoResult.fromValue<WebPushSubscription>(null)
@@ -593,7 +630,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onGetSubscription(scope: String): GeckoResult<WebPushSubscription> {
-            val subscription = webPushStore.get(scope)
+            if (getApplication<DextraApplication>().hasPrivateTabs()) return GeckoResult.fromValue<WebPushSubscription>(null)
+            val subscription = webPushStore.get(scope, activeProfileId())
             return if (subscription == null) {
                 GeckoResult.fromValue<WebPushSubscription>(null)
             } else {
@@ -603,8 +641,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         override fun onUnsubscribe(scope: String): GeckoResult<Void> {
             val result = GeckoResult<Void>()
+            if (getApplication<DextraApplication>().hasPrivateTabs()) {
+                result.complete(null)
+                return result
+            }
+            val profileId = activeProfileId()
             viewModelScope.launch(Dispatchers.IO) {
-                runCatching { webPushStore.delete(scope) }
+                runCatching { webPushStore.delete(scope, profileId) }
                     .onSuccess { result.complete(null) }
                     .onFailure { result.completeExceptionally(it) }
             }
@@ -620,7 +663,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             GeckoResult.fromValue(loginEntriesFor(null))
 
         override fun onLoginSave(login: org.mozilla.geckoview.Autocomplete.LoginEntry) {
-            if (login.origin.isBlank() || isPrivateCredentialOrigin(login.origin)) return
+            if (login.origin.isBlank() || getApplication<DextraApplication>().hasPrivateTabs() || isPrivateCredentialOrigin(login.origin)) return
             val credential = StoredCredential(
                 id = login.guid ?: UUID.randomUUID().toString(),
                 origin = login.origin,
@@ -650,12 +693,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         override fun onAddressFetch(): GeckoResult<Array<org.mozilla.geckoview.Autocomplete.Address>> =
             GeckoResult.fromValue(
-                if (activeTab()?.isPrivate == true) emptyArray()
+                if (getApplication<DextraApplication>().hasPrivateTabs() || activeTab()?.isPrivate == true) emptyArray()
                 else _state.value.addresses.mapNotNull(::toGeckoAddress).toTypedArray(),
             )
 
         override fun onAddressSave(address: org.mozilla.geckoview.Autocomplete.Address) {
-            if (activeTab()?.isPrivate == true || address.name.isNullOrBlank()) return
+            if (getApplication<DextraApplication>().hasPrivateTabs() || activeTab()?.isPrivate == true || address.name.isNullOrBlank()) return
             val stored = StoredAddress(
                 id = address.guid?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString(),
                 name = address.name,
@@ -698,6 +741,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             message: Any,
             sender: WebExtension.MessageSender,
         ): GeckoResult<Any>? {
+            if (_state.value.tabs.firstOrNull { it.session === sender.session }?.isPrivate == true) return null
             val json = message as? JSONObject ?: return null
             if (json.optString("type") != "blockedStats") return null
             val byOrigin = linkedMapOf<String, Int>()
@@ -824,7 +868,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _state.update { it.copy(lastCrashReport = report) }
         }
         viewModelScope.launch {
-            credentialVault.load()
+            withContext(Dispatchers.IO) { credentialVault.load() }
             credentialVault.credentials.collect { credentials ->
                 _state.update {
                     it.copy(
@@ -845,41 +889,48 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         viewModelScope.launch {
-            addressVault.load()
+            withContext(Dispatchers.IO) { addressVault.load() }
             addressVault.addresses.collect { addresses ->
                 _state.update { it.copy(addresses = addresses) }
             }
         }
         viewModelScope.launch {
-            webPushStore.load()
+            withContext(Dispatchers.IO) { webPushStore.load() }
             webPushStore.subscriptions.collect { subscriptions ->
                 _state.update { it.copy(webPushSubscriptions = subscriptions) }
             }
         }
-        runtime.setAutocompleteStorageDelegate(autocompleteStorageDelegate)
-        runtime.webPushController.setDelegate(webPushDelegate)
+        val application = getApplication<DextraApplication>()
+        if (!_state.value.standalonePwa && !_state.value.standaloneWindow && application.claimAutocompleteDelegate(this)) {
+            runtime.setAutocompleteStorageDelegate(autocompleteStorageDelegate)
+        }
+        val standalone = _state.value.standalonePwa || _state.value.standaloneWindow
+        if (!standalone) runtime.webPushController.setDelegate(webPushDelegate)
         viewModelScope.launch {
             settingsRepository.settings.collect { settings ->
-                val previousSettings = _state.value.settings
                 val desktopSitesChanged = _state.value.settings.desktopSites != settings.desktopSites
                 val adBlockingChanged = _state.value.settings.adBlockingEnabled != settings.adBlockingEnabled ||
                     _state.value.settings.adBlockFilters != settings.adBlockFilters
                 val userScriptsChanged = _state.value.settings.userScriptUrls != settings.userScriptUrls ||
                     _state.value.settings.disabledUserScriptUrls != settings.disabledUserScriptUrls
-                val syncedSessionChanged = restoredSavedTabs && (
-                    settings.openTabs != savedTabsFromState() ||
-                        settings.tabGroups != previousSettings.tabGroups ||
-                        settings.activeWorkspaceId != previousSettings.activeWorkspaceId
-                    )
+                val remoteSessionApplied = SyncSessionPolicy.shouldRestore(
+                    restoredSavedTabs = restoredSavedTabs,
+                    syncApplyToken = settings.syncApplyToken,
+                    lastAppliedSyncToken = lastAppliedSyncToken,
+                    standalone = _state.value.standalonePwa || _state.value.standaloneWindow,
+                )
                 _state.update { current -> current.copy(settings = settings) }
                 applyDnsOverHttps(settings.dnsOverHttpsEnabled, settings.dnsProvider)
                 applyContentColorScheme(settings.themeMode)
                 applyCookieBannerMode(settings.cookieBannerMode)
                 if (!restoredSavedTabs) {
                     restoredSavedTabs = true
+                    lastAppliedSyncToken = settings.syncApplyToken
                     restoreRecentlyClosedTabs(settings.recentlyClosedTabs)
-                    restoreSavedTabs(settings.openTabs, settings.activeTabIndex)
-                    if (_state.value.tabs.isEmpty()) createTab()
+                    if (!_state.value.standalonePwa && !_state.value.standaloneWindow) {
+                        restoreSavedTabs(settings.openTabs, settings.activeTabIndex)
+                        if (_state.value.tabs.isEmpty()) createTab()
+                    }
                     pendingMediaTabId?.let { tabId ->
                         pendingMediaTabId = null
                         selectTab(tabId)
@@ -901,7 +952,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         openWindowUri(uri, pendingWindowPrivate)
                         pendingWindowPrivate = false
                     }
-                } else if (syncedSessionChanged) {
+                } else if (remoteSessionApplied) {
+                    lastAppliedSyncToken = settings.syncApplyToken
                     restoreSyncedSession(settings)
                 }
                 _state.value.tabs.forEach { tab ->
@@ -934,13 +986,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
-        runtime.webExtensionController.setPromptDelegate(extensionPromptDelegate)
-        runtime.webExtensionController.setAddonManagerDelegate(addonManagerDelegate)
-        refreshInstalledExtensions()
-        installAdBlocker()
-        viewModelScope.launch {
-            delay(2_000)
-            restoreOfflineExtensions()
+        if (!standalone) {
+            runtime.webExtensionController.setPromptDelegate(extensionPromptDelegate)
+            runtime.webExtensionController.setAddonManagerDelegate(addonManagerDelegate)
+            refreshInstalledExtensions()
+            installAdBlocker()
+            viewModelScope.launch {
+                delay(2_000)
+                restoreOfflineExtensions()
+            }
         }
         restoreDownloads()
     }
@@ -1093,9 +1147,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 splitPaneFocused = false,
             )
         }
+        if (privateMode) getApplication<DextraApplication>().markPrivateTabOpened()
         updateExtensionActiveTab(previousActiveTabId, id)
         updateSessionActivity(id)
-        persistOpenTabs()
+        persistOpenTabs(immediate = true)
         val canRestoreState = savedSessionState?.let {
             runCatching { GeckoSession.SessionState.fromString(it) }.getOrNull() != null
         } == true
@@ -1134,7 +1189,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         val current = _state.value
-        current.tabs.forEach { tab -> runCatching { tab.session.close() } }
+        current.tabs.forEach { tab -> releaseTabResources(tab, remember = false) }
         _state.update {
             it.copy(
                 settings = it.settings.copy(tabGroups = snapshot.tabGroups),
@@ -1384,15 +1439,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun closeTab(id: String) {
         val current = _state.value
         val closing = current.tabs.firstOrNull { it.id == id } ?: return
-        rejectPermissionsForTab(id)
-        pageZoomByTab.remove(id)
-        lastProgressUpdateAt.remove(id)
-        trackerBlockedByTab.remove(id)
-        mediaSessions.remove(id)
-        translationDetectedByTab.remove(id)
-        getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.clear(id)
+        releaseTabResources(closing)
         rebuildBlockerStats()
-        rememberClosedTab(closing)
         if (closing.id == current.activeTabId) {
             closeExtensionPopup()
             closeFindInPage()
@@ -1415,8 +1463,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             setExtensionTabActive(replacementId, true)
             syncActiveTabZoom()
-            persistOpenTabs()
-            runCatching { closing.session.close() }
+            persistOpenTabs(immediate = true)
             return
         }
 
@@ -1442,8 +1489,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             setExtensionTabActive(newActive, true)
             syncActiveTabZoom()
         }
-        persistOpenTabs()
-        runCatching { closing.session.close() }
+        persistOpenTabs(immediate = true)
     }
 
     fun toggleTabPinned(id: String) {
@@ -1455,7 +1501,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     .sortedWith(compareByDescending { tab -> tab.pinned }),
             )
         }
-        persistOpenTabs()
+        persistOpenTabs(immediate = true)
     }
 
     fun moveTabBefore(tabId: String, targetId: String) {
@@ -1468,7 +1514,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             add(indexOfFirst { it.id == target.id }.coerceAtLeast(0), moving)
         }
         _state.update { it.copy(tabs = reordered) }
-        persistOpenTabs()
+        persistOpenTabs(immediate = true)
     }
 
     fun moveTabAfter(tabId: String, targetId: String) {
@@ -1502,6 +1548,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun createWorkspace(title: String) {
+        if (_state.value.standalonePwa || _state.value.standaloneWindow) return
         val current = _state.value
         val workspaces = workspaceSnapshots(current)
         if (workspaces.size >= MAX_WORKSPACES) {
@@ -1520,6 +1567,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun switchWorkspace(workspaceId: String) {
+        if (_state.value.standalonePwa || _state.value.standaloneWindow) return
         val current = _state.value
         val target = workspaceSnapshots(current).firstOrNull { it.id == workspaceId } ?: return
         if (target.id == current.settings.activeWorkspaceId) return
@@ -1527,6 +1575,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun renameWorkspace(workspaceId: String, title: String) {
+        if (_state.value.standalonePwa || _state.value.standaloneWindow) return
         val normalized = title.trim().take(40)
         if (normalized.isBlank()) return
         _state.update { state ->
@@ -1540,6 +1589,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteWorkspace(workspaceId: String) {
+        if (_state.value.standalonePwa || _state.value.standaloneWindow) return
         val current = _state.value
         val workspaces = workspaceSnapshots(current)
         if (workspaces.size <= 1 || workspaces.none { it.id == workspaceId }) {
@@ -1547,6 +1597,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         val remaining = workspaces.filterNot { it.id == workspaceId }
+        workspaces.firstOrNull { it.id == workspaceId }?.let(::deleteWorkspaceData)
         if (workspaceId == current.settings.activeWorkspaceId) {
             saveAndActivateWorkspace(remaining, remaining.maxByOrNull(TabWorkspace::lastUsedAt) ?: remaining.first())
         } else {
@@ -2052,16 +2103,45 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun onAppBackground() {
         appInForeground = false
         _state.value.tabs.forEach { tab -> runCatching { tab.session.flushSessionState() } }
-        persistOpenTabs(immediate = true)
-        recordSessionRecovery()
+        viewModelScope.launch {
+            delay(300)
+            val application = getApplication<DextraApplication>()
+            if (!appInForeground && !application.hasStartedActivities()) {
+                persistOpenTabs(immediate = true)
+                recordSessionRecovery()
+            }
+        }
         credentialVault.lock()
         if (_state.value.isPictureInPictureMode) return
         if (_state.value.settings.clearSiteDataOnExit) {
             privacyExitCleanupJob?.cancel()
             privacyExitCleanupJob = viewModelScope.launch {
                 delay(5_000)
-                if (!appInForeground) {
-                    runtime.storageController.clearData(StorageController.ClearFlags.SITE_DATA)
+                if (!appInForeground && !getApplication<DextraApplication>().hasStartedActivities() &&
+                    !_state.value.isPictureInPictureMode && _state.value.settings.clearSiteDataOnExit
+                ) {
+                    runtime.storageController.clearData(
+                        StorageController.ClearFlags.SITE_DATA or StorageController.ClearFlags.PERMISSIONS,
+                    ).accept(
+                        {
+                            viewModelScope.launch {
+                                dao.clearSitePermissions()
+                                dao.clearSiteSettings()
+                                pageZoomByTab.clear()
+                                _state.update {
+                                    it.copy(
+                                        siteSetting = null,
+                                        securityDiagnostics = it.securityDiagnostics?.copy(
+                                            permissions = emptyList(),
+                                            siteSetting = null,
+                                        ),
+                                    )
+                                }
+                                syncActiveTabZoom()
+                            }
+                        },
+                        { error -> Log.w("Dextra", "Could not clear persisted site settings on exit", error) },
+                    )
                 }
             }
         }
@@ -2198,12 +2278,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val current = _state.value
         val keep = current.tabs.firstOrNull { it.id == id } ?: return
         val closing = current.tabs.filterNot { it.id == id }
-        closing.forEach {
-            rememberClosedTab(it)
-            rejectPermissionsForTab(it.id)
-            trackerBlockedByTab.remove(it.id)
-            mediaSessions.remove(it.id)
-        }
+        closing.forEach(::releaseTabResources)
         _state.update {
             it.copy(
                 tabs = listOf(keep.copy(isSleeping = false)),
@@ -2216,8 +2291,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         updateExtensionActiveTab(current.activeTabId, id)
         updateSessionActivity(id)
-        persistOpenTabs()
-        closing.forEach { tab -> runCatching { tab.session.close() } }
+        rebuildBlockerStats()
+        persistOpenTabs(immediate = true)
     }
 
     private fun closeTabsToRight(id: String) {
@@ -2225,12 +2300,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val index = current.tabs.indexOfFirst { it.id == id }
         if (index < 0 || index == current.tabs.lastIndex) return
         val closing = current.tabs.drop(index + 1)
-        closing.forEach {
-            rememberClosedTab(it)
-            rejectPermissionsForTab(it.id)
-            trackerBlockedByTab.remove(it.id)
-            mediaSessions.remove(it.id)
-        }
+        closing.forEach(::releaseTabResources)
         val newActive = if (closing.any { it.id == current.activeTabId }) id else current.activeTabId
         _state.update {
             it.copy(
@@ -2249,8 +2319,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         if (newActive != current.activeTabId) updateExtensionActiveTab(current.activeTabId, newActive)
         updateSessionActivity(newActive)
-        persistOpenTabs()
-        closing.forEach { tab -> runCatching { tab.session.close() } }
+        rebuildBlockerStats()
+        persistOpenTabs(immediate = true)
     }
 
     private fun closeTabsToLeft(id: String) {
@@ -2258,12 +2328,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val index = current.tabs.indexOfFirst { it.id == id }
         if (index <= 0) return
         val closing = current.tabs.take(index)
-        closing.forEach {
-            rememberClosedTab(it)
-            rejectPermissionsForTab(it.id)
-            trackerBlockedByTab.remove(it.id)
-            mediaSessions.remove(it.id)
-        }
+        closing.forEach(::releaseTabResources)
         val newActive = if (closing.any { it.id == current.activeTabId }) id else current.activeTabId
         _state.update {
             it.copy(
@@ -2282,8 +2347,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         if (newActive != current.activeTabId) updateExtensionActiveTab(current.activeTabId, newActive)
         updateSessionActivity(newActive)
-        persistOpenTabs()
-        closing.forEach { tab -> runCatching { tab.session.close() } }
+        rebuildBlockerStats()
+        persistOpenTabs(immediate = true)
     }
 
     fun reloadCrashedTab() {
@@ -2542,7 +2607,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun revokeWebPushSubscription(subscription: StoredWebPushSubscription) {
-        viewModelScope.launch(Dispatchers.IO) { webPushStore.delete(subscription.scope) }
+        viewModelScope.launch(Dispatchers.IO) { webPushStore.delete(subscription.scope, subscription.profileId) }
     }
 
     fun clearWebPushSubscriptions() {
@@ -2685,10 +2750,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearCurrentSiteSettings() {
+        val tab = activeTab() ?: return
         val origin = currentSiteOrigin() ?: return
+        val profileId = activeProfileId()
         viewModelScope.launch {
-            dao.deleteSiteSetting(activeProfileId(), origin)
+            dao.deleteSiteSetting(profileId, origin)
             removeSiteCookieBannerMode(origin)
+            if (activeProfileId() != profileId || activeTab()?.id != tab.id) return@launch
             _state.update { it.copy(siteSetting = null) }
             activeTab()?.let { tab ->
                 applyDesktopSiteSetting(tab.session, _state.value.settings.desktopSites)
@@ -2852,7 +2920,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun openPwaUri(startUrl: String) {
         val current = _state.value
-        current.tabs.forEach { tab -> runCatching { tab.session.close() } }
+        current.tabs.forEach { tab -> releaseTabResources(tab, remember = false) }
         _state.update {
             it.copy(
                 tabs = emptyList(),
@@ -2869,7 +2937,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun openWindowUri(startUrl: String, privateMode: Boolean) {
         val current = _state.value
-        current.tabs.forEach { tab -> runCatching { tab.session.close() } }
+        current.tabs.forEach { tab -> releaseTabResources(tab, remember = false) }
         _state.update {
             it.copy(
                 tabs = emptyList(),
@@ -3142,20 +3210,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             showSnackbar("WebDAV sync passphrase must be at least 8 characters")
             return
         }
-        val config = WebDavConfig(
-            endpoint = normalizedEndpoint,
-            username = username.trim().take(200),
-            password = password,
-            remoteFile = normalizedRemoteFile,
-            passphrase = passphrase,
-            intervalHours = intervalHours.coerceIn(1, 168),
-            enabled = true,
-            conflictPending = false,
-            conflictDetectedAt = null,
-            pendingResolution = null,
-            lastError = null,
-        )
+        val normalizedUsername = username.trim().take(200)
+        val localRevision = _state.value.settings.openTabsRevision
         viewModelScope.launch(Dispatchers.IO) {
+            val existingConfig = webDavStore.load()
+            val existingPassword = existingConfig
+                ?.takeIf { it.endpoint == normalizedEndpoint && it.username == normalizedUsername }
+                ?.password
+                .orEmpty()
+            val effectivePassword = password.ifBlank { existingPassword }
+            val sameSyncTarget = existingConfig != null &&
+                existingConfig.endpoint == normalizedEndpoint &&
+                existingConfig.username == normalizedUsername &&
+                existingConfig.password == effectivePassword &&
+                existingConfig.remoteFile == normalizedRemoteFile &&
+                existingConfig.passphrase == passphrase
+            val config = WebDavConfig(
+                endpoint = normalizedEndpoint,
+                username = normalizedUsername,
+                password = effectivePassword,
+                remoteFile = normalizedRemoteFile,
+                passphrase = passphrase,
+                intervalHours = intervalHours.coerceIn(1, 168),
+                enabled = true,
+                lastEtag = existingConfig?.takeIf { sameSyncTarget }?.lastEtag,
+                lastSyncAt = existingConfig?.takeIf { sameSyncTarget }?.lastSyncAt,
+                lastLocalRevision = existingConfig?.takeIf { sameSyncTarget }?.lastLocalRevision ?: localRevision,
+                lastRemoteFingerprint = existingConfig?.takeIf { sameSyncTarget }?.lastRemoteFingerprint,
+                lastLocalFingerprint = existingConfig?.takeIf { sameSyncTarget }?.lastLocalFingerprint,
+                conflictPending = false,
+                conflictDetectedAt = null,
+                pendingResolution = null,
+                lastError = null,
+            )
             webDavStore.save(config)
             WebDavSyncScheduler.schedule(getApplication(), config.intervalHours)
             withContext(Dispatchers.Main.immediate) {
@@ -3169,6 +3256,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             webDavStore.clear()
             WebDavSyncScheduler.cancel(getApplication())
+            WebDavSyncScheduler.cancelNow(getApplication())
             withContext(Dispatchers.Main.immediate) {
                 _state.update { it.copy(webDav = WebDavSettingsState()) }
                 showSnackbar("WebDAV sync disabled")
@@ -3232,6 +3320,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun recordCompatibilityEvent(tabId: String, severity: String, message: String) {
+        if (isPrivateTab(tabId)) return
         _state.update { state ->
             state.copy(
                 compatibilityEvents = (state.compatibilityEvents + CompatibilityEvent(
@@ -3270,7 +3359,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun recordNetworkActivity(tabId: String, url: String, kind: String, status: String) {
-        if (url.isBlank()) return
+        if (url.isBlank() || isPrivateTab(tabId)) return
         _state.update { state ->
             state.copy(
                 networkActivity = (state.networkActivity + NetworkActivity(
@@ -3665,15 +3754,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setStartPageQuickLinks(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setStartPageSettings(_state.value.settings.startPage.copy(showQuickLinks = enabled))
-        }
+        viewModelScope.launch { settingsRepository.updateStartPage { it.copy(showQuickLinks = enabled) } }
     }
 
     fun setStartPagePrivacyTip(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setStartPageSettings(_state.value.settings.startPage.copy(showPrivacyTip = enabled))
-        }
+        viewModelScope.launch { settingsRepository.updateStartPage { it.copy(showPrivacyTip = enabled) } }
     }
 
     fun addStartPageLink(label: String, url: String) {
@@ -3684,16 +3769,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         viewModelScope.launch {
-            val current = _state.value.settings.startPage
             val link = StartPageLink(label = normalizedLabel, url = normalizedUrl)
-            settingsRepository.setStartPageSettings(current.copy(customLinks = (current.customLinks + link).takeLast(12)))
+            settingsRepository.updateStartPage { current ->
+                current.copy(customLinks = (current.customLinks + link).takeLast(12))
+            }
         }
     }
 
     fun removeStartPageLink(link: StartPageLink) {
         viewModelScope.launch {
-            val current = _state.value.settings.startPage
-            settingsRepository.setStartPageSettings(current.copy(customLinks = current.customLinks.filterNot { it.id == link.id }))
+            settingsRepository.updateStartPage { current ->
+                current.copy(customLinks = current.customLinks.filterNot { it.id == link.id })
+            }
         }
     }
 
@@ -3746,10 +3833,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             else GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY,
         )
         if (remember) {
-            val profileId = activeProfileId()
             viewModelScope.launch {
                 _state.value.tabs.firstOrNull { it.id == prompt.tabId }
-                    ?.takeIf { !it.isPrivate }
+                    ?.takeIf { !it.isPrivate && activeProfileId() == prompt.profileId }
                     ?.let {
                         dao.upsertSitePermission(
                             SitePermission(
@@ -3757,7 +3843,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                                 permission = prompt.permission.toString(),
                                 decision = if (allow) "allow" else "block",
                                 updatedAt = System.currentTimeMillis(),
-                                profileId = profileId,
+                                profileId = prompt.profileId,
                             ),
                         )
                     }
@@ -3798,6 +3884,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setSitePermission(origin: String, permission: String, decision: String) {
         if (!NavigationPolicy.isWebUrl(origin) || permission.isBlank()) return
         if (decision !in setOf("allow", "block", "ask")) return
+        if (activeTab()?.isPrivate == true) {
+            showSnackbar("Site permissions are not stored for private tabs")
+            return
+        }
         val profileId = activeProfileId()
         viewModelScope.launch {
             if (decision == "ask") {
@@ -3813,7 +3903,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     ),
                 )
             }
-            _state.value.securityDiagnostics?.takeIf { it.origin == origin }?.let { diagnostics ->
+            _state.value.securityDiagnostics?.takeIf { it.origin == origin && it.profileId == profileId }?.let { diagnostics ->
                 _state.update { it.copy(securityDiagnostics = diagnostics.copy(permissions = dao.getSitePermissions(profileId, origin))) }
             }
         }
@@ -3824,24 +3914,29 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             showSnackbar("There is no active page")
             return
         }
+        if (tab.isPrivate) {
+            showSnackbar("Security diagnostics are unavailable in private tabs")
+            return
+        }
         val origin = NavigationPolicy.origin(tab.url)
         val uri = runCatching { Uri.parse(tab.url) }.getOrNull()
+        val profileId = activeProfileId()
         val base = SecurityDiagnostics(
             tabId = tab.id,
+            profileId = profileId,
             url = tab.url,
             origin = origin,
             host = uri?.host,
             port = uri?.port?.takeIf { it > 0 } ?: if (tab.url.startsWith("https://")) 443 else null,
             isSecure = tab.isSecure,
             isLoading = tab.url.startsWith("https://", ignoreCase = true),
-            blockedRequests = origin?.let { adBlockStats.byOrigin[it] } ?: 0,
+            blockedRequests = origin?.let { _state.value.blockerStats.byOrigin[it] } ?: 0,
             dnsOverHttpsEnabled = _state.value.settings.dnsOverHttpsEnabled,
             dnsProvider = _state.value.settings.dnsProvider.label,
             error = if (!NavigationPolicy.isWebUrl(tab.url)) "Security information is unavailable for this page" else null,
         )
         _state.update { it.copy(securityDiagnostics = base, overlay = BrowserOverlay.SECURITY) }
         if (origin == null || !NavigationPolicy.isWebUrl(tab.url)) return
-        val profileId = activeProfileId()
         viewModelScope.launch(Dispatchers.IO) {
             val certificate = if (tab.url.startsWith("https://", ignoreCase = true)) {
                 runCatching { fetchCertificate(tab.url) }.getOrNull()
@@ -3852,7 +3947,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val permissions = dao.getSitePermissions(profileId, origin)
             val setting = dao.getSiteSetting(profileId, origin)
             withContext(Dispatchers.Main.immediate) {
-                if (_state.value.securityDiagnostics?.tabId == tab.id) {
+                if (_state.value.securityDiagnostics?.tabId == tab.id && _state.value.securityDiagnostics?.profileId == profileId) {
                     _state.update {
                         it.copy(
                             securityDiagnostics = base.copy(
@@ -3874,12 +3969,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             showSnackbar("This site origin is invalid")
             return
         }
-        runtime.storageController.clearDataFromHost(host, StorageController.ClearFlags.SITE_DATA).accept(
+        val profileId = activeProfileId()
+        runtime.storageController.clearDataFromHost(
+            host,
+            StorageController.ClearFlags.SITE_DATA or StorageController.ClearFlags.PERMISSIONS,
+        ).accept(
             {
                 viewModelScope.launch {
-                    dao.deleteSitePermissions(activeProfileId(), origin)
-                    dao.deleteSiteSetting(activeProfileId(), origin)
+                    dao.deleteSitePermissions(origin)
+                    dao.deleteSiteSetting(origin)
                     removeSiteCookieBannerMode(origin)
+                    if (activeProfileId() != profileId) return@launch
                     _state.value.tabs
                         .filter { NavigationPolicy.origin(it.url) == origin }
                         .forEach { tab ->
@@ -3889,11 +3989,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     syncActiveTabZoom()
                     syncAdBlockSettings(_state.value.settings)
                     syncUserScripts(_state.value.settings)
-                    if (currentSiteOrigin() == origin) {
+                    if (activeProfileId() == profileId && currentSiteOrigin() == origin) {
                         _state.update { it.copy(siteSetting = null) }
                         _state.value.activeTabId?.let(::refreshSiteSetting)
                     }
-                    _state.value.securityDiagnostics?.takeIf { it.origin == origin }?.let { diagnostics ->
+                    _state.value.securityDiagnostics?.takeIf { it.origin == origin && it.profileId == profileId }?.let { diagnostics ->
                         _state.update { it.copy(securityDiagnostics = diagnostics.copy(permissions = emptyList(), siteSetting = null)) }
                     }
                     showSnackbar("Cleared data for $origin")
@@ -3909,6 +4009,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         val blockedForOrigin = adBlockStats.byOrigin[origin] ?: 0
+        val profileId = activeProfileId()
         adBlockStats = adBlockStats.copy(
             totalBlocked = (adBlockStats.totalBlocked - blockedForOrigin).coerceAtLeast(0),
             byOrigin = adBlockStats.byOrigin - origin,
@@ -3934,6 +4035,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     dao.getDownloads()
                         .filter { NavigationPolicy.origin(it.url) == origin }
                         .forEach { download ->
+                            WorkManager.getInstance(getApplication()).cancelUniqueWork(downloadWorkName(download.downloadId))
                             cleanupDownloadFiles(download)
                             download.localUri?.let { uri ->
                                 runCatching { getApplication<Application>().contentResolver.delete(Uri.parse(uri), null, null) }
@@ -3941,14 +4043,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             dao.deleteDownload(download.downloadId)
                         }
                     credentialVault.deleteOrigin(origin)
-                    dao.deleteSitePermissions(activeProfileId(), origin)
-                    dao.deleteSiteSetting(activeProfileId(), origin)
+                    dao.deleteSitePermissions(origin)
+                    dao.deleteSiteSetting(origin)
                     removeSiteCookieBannerMode(origin)
                     withContext(Dispatchers.Main.immediate) {
+                        if (activeProfileId() != profileId) return@withContext
                         _state.update { state ->
                             state.copy(siteSetting = if (currentSiteOrigin() == origin) null else state.siteSetting)
                         }
-                        _state.value.securityDiagnostics?.takeIf { it.origin == origin }?.let { diagnostics ->
+                        _state.value.securityDiagnostics?.takeIf { it.origin == origin && it.profileId == profileId }?.let { diagnostics ->
                             _state.update { it.copy(securityDiagnostics = diagnostics.copy(permissions = emptyList(), siteSetting = null)) }
                         }
                         _state.value.tabs
@@ -3965,7 +4068,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearAllSiteData() {
-        runtime.storageController.clearData(StorageController.ClearFlags.SITE_DATA).accept(
+        runtime.storageController.clearData(
+            StorageController.ClearFlags.SITE_DATA or StorageController.ClearFlags.PERMISSIONS,
+        ).accept(
             {
                 viewModelScope.launch {
                     dao.getSiteSettings().forEach { setting -> removeSiteCookieBannerMode(setting.origin) }
@@ -4195,7 +4300,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (download.status != DownloadStatus.FAILED.label) return
         viewModelScope.launch {
             dao.getDownload(download.downloadId)?.let {
-                val retry = it.copy(status = DownloadStatus.QUEUED.label, reason = null)
+                val retry = it.copy(status = DownloadStatus.QUEUED.label, reason = null, attempts = 0)
                 dao.upsertDownload(retry)
                 scheduleDownload(retry)
             }
@@ -4274,6 +4379,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 session: GeckoSession,
                 state: TranslationsController.SessionTranslation.TranslationState?,
             ) {
+                if (!isCurrentTabSession(tabId, session)) return
                 state ?: return
                 val detected = state.detectedLanguages?.docLangTag?.takeIf(String::isNotBlank)
                 detected?.let { translationDetectedByTab[tabId] = it }
@@ -4293,6 +4399,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         })
         session.setMediaSessionDelegate(object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
+                if (!isCurrentTabSession(tabId, session)) return
                 mediaSessions[tabId] = mediaSession
                 val tab = _state.value.tabs.firstOrNull { it.id == tabId }
                 updateTab(tabId) {
@@ -4306,17 +4413,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     artist = null,
                     album = null,
                     privateTab = tab?.isPrivate == true,
+                    targetActivity = when {
+                        _state.value.standalonePwa -> PwaActivity::class.java
+                        _state.value.standaloneWindow -> BrowserWindowActivity::class.java
+                        else -> MainActivity::class.java
+                    },
                 )
                 if (tab?.isPrivate != true) showSnackbar("Media controls enabled")
             }
 
             override fun onDeactivated(session: GeckoSession, mediaSession: MediaSession) {
+                if (!isCurrentTabSession(tabId, session)) return
                 if (mediaSessions[tabId] === mediaSession) mediaSessions.remove(tabId)
                 getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.clear(tabId)
                 updateTab(tabId) { it.copy(hasActiveMedia = false, isMediaPlaying = false) }
             }
 
             override fun onMetadata(session: GeckoSession, mediaSession: MediaSession, metadata: MediaSession.Metadata) {
+                if (!isCurrentTabSession(tabId, session)) return
                 getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.updateMetadata(
                     tabId,
                     metadata.title.orEmpty(),
@@ -4326,6 +4440,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
 
             override fun onPositionState(session: GeckoSession, mediaSession: MediaSession, positionState: MediaSession.PositionState) {
+                if (!isCurrentTabSession(tabId, session)) return
                 getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.updatePosition(
                     tabId,
                     positionState.duration,
@@ -4335,16 +4450,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
 
             override fun onPlay(session: GeckoSession, mediaSession: MediaSession) {
+                if (!isCurrentTabSession(tabId, session)) return
                 updateTab(tabId) { it.copy(hasActiveMedia = true, isMediaPlaying = true) }
                 getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.setPlaying(tabId, true)
             }
 
             override fun onPause(session: GeckoSession, mediaSession: MediaSession) {
+                if (!isCurrentTabSession(tabId, session)) return
                 updateTab(tabId) { it.copy(isMediaPlaying = false) }
                 getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.setPlaying(tabId, false)
             }
 
             override fun onStop(session: GeckoSession, mediaSession: MediaSession) {
+                if (!isCurrentTabSession(tabId, session)) return
                 updateTab(tabId) { it.copy(hasActiveMedia = false, isMediaPlaying = false) }
                 getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.clear(tabId)
             }
@@ -4380,12 +4498,34 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun isCurrentTabSession(tabId: String, session: GeckoSession): Boolean =
+        _state.value.tabs.firstOrNull { it.id == tabId }?.session === session
+
     private fun rememberClosedTab(tab: BrowserTabState) {
         if (tab.url.isBlank() || !tab.hasPage) return
         recentlyClosedTabs.addFirst(ClosedTabEntry(tab.url, tab.title, tab.isPrivate, tab.pinned, tab.groupId, tab.sessionState))
         while (recentlyClosedTabs.size > 10) recentlyClosedTabs.removeLast()
         _state.update { it.copy(closedTabCount = recentlyClosedTabs.size) }
         persistRecentlyClosedTabs()
+    }
+
+    private fun releaseTabResources(tab: BrowserTabState, remember: Boolean = true) {
+        if (remember) rememberClosedTab(tab)
+        if (tab.isPrivate) getApplication<DextraApplication>().markPrivateTabClosed()
+        rejectPermissionsForTab(tab.id)
+        pageZoomByTab.remove(tab.id)
+        lastProgressUpdateAt.remove(tab.id)
+        trackerBlockedByTab.remove(tab.id)
+        mediaSessions.remove(tab.id)
+        translationDetectedByTab.remove(tab.id)
+        getApplication<DextraApplication>().mediaNotificationController.clear(tab.id)
+        _state.update { state ->
+            state.copy(
+                networkActivity = state.networkActivity.filterNot { it.tabId == tab.id },
+                compatibilityEvents = state.compatibilityEvents.filterNot { it.tabId == tab.id },
+            )
+        }
+        runCatching { tab.session.close() }
     }
 
     private fun restoreRecentlyClosedTabs(savedTabs: List<SavedTab>) {
@@ -4426,6 +4566,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun restoreSavedTabs(savedTabs: List<SavedTab>, activeIndex: Int) {
+        if (restoredSavedTabs) dismissTransientUi()
         val tabsToRestore = savedTabs
             .filter { !it.isPrivate && NavigationPolicy.isWebUrl(it.url) }
             .take(MAX_OPEN_TABS)
@@ -4433,7 +4574,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         val current = _state.value
         setExtensionTabActive(current.activeTabId, false)
-        current.tabs.forEach { tab -> runCatching { tab.session.close() } }
+        current.tabs.forEach { tab -> releaseTabResources(tab, remember = false) }
         val restoredIds = mutableSetOf<String>()
         val restored = tabsToRestore.map { saved ->
             val id = saved.id?.takeIf(restoredIds::add) ?: UUID.randomUUID().toString().also(restoredIds::add)
@@ -4469,7 +4610,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun restoreSyncedSession(settings: BrowserSettings) {
-        _state.value.tabs.forEach { tab -> runCatching { tab.session.close() } }
+        persistJob?.cancel()
+        _state.value.tabs.forEach { tab -> releaseTabResources(tab, remember = false) }
         _state.update {
             it.copy(
                 tabs = emptyList(),
@@ -4487,6 +4629,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun persistOpenTabs(immediate: Boolean = false) {
         if (!restoredSavedTabs || _state.value.standalonePwa || _state.value.standaloneWindow) return
+        localTabsGeneration++
         val current = _state.value
         val pageTabs = savedTabsFromState()
         val activeIndex = pageTabs.indexOfFirst { it.id == current.activeTabId }
@@ -4537,7 +4680,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 title = "Personal",
                 createdAt = now,
                 lastUsedAt = now,
-                tabs = savedTabsFromState(),
+                tabs = savedTabsFromState(state),
                 activeTabIndex = state.tabs.indexOfFirst { it.id == state.activeTabId }.coerceAtLeast(0),
                 tabGroups = state.settings.tabGroups,
             ),
@@ -4545,6 +4688,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun saveAndActivateWorkspace(workspaces: List<TabWorkspace>, target: TabWorkspace) {
+        val operation = ++workspaceSwitchGeneration
+        val capturedTabsGeneration = localTabsGeneration
         val current = _state.value
         val activatedTarget = target.copy(lastUsedAt = System.currentTimeMillis())
         val currentWorkspace = workspaceSnapshots(current).firstOrNull { it.id == current.settings.activeWorkspaceId }
@@ -4564,10 +4709,32 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
+            if (operation != workspaceSwitchGeneration) return@launch
+            if (capturedTabsGeneration != localTabsGeneration) return@launch
             settingsRepository.saveWorkspaceState(updated, activatedTarget.id, activatedTarget.tabs, activatedTarget.activeTabIndex, activatedTarget.tabGroups)
             withContext(Dispatchers.Main.immediate) {
+                if (operation != workspaceSwitchGeneration) return@withContext
+                if (capturedTabsGeneration != localTabsGeneration) {
+                    val latest = _state.value
+                    withContext(Dispatchers.IO) {
+                        val latestTabs = savedTabsFromState(latest)
+                        val latestIndex = latestTabs.indexOfFirst { it.id == latest.activeTabId }.coerceAtLeast(0)
+                        settingsRepository.saveWorkspaceState(
+                            workspaces = workspaceSnapshots(latest),
+                            activeWorkspaceId = latest.settings.activeWorkspaceId,
+                            tabs = latestTabs,
+                            activeTabIndex = latestIndex,
+                            groups = latest.settings.tabGroups,
+                        )
+                    }
+                    showSnackbar("Workspace switch canceled because the tab set changed")
+                    return@withContext
+                }
                 val state = _state.value
-                state.tabs.forEach { tab -> runCatching { tab.session.close() } }
+                state.tabs.forEach { tab -> releaseTabResources(tab, remember = false) }
+                pageZoomByTab.clear()
+                trackerBlockedByTab.clear()
+                adBlockStats = BlockerStats()
                 _state.update {
                     it.copy(
                         settings = it.settings.copy(
@@ -4583,17 +4750,55 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         splitSecondaryTabId = null,
                         splitPaneFocused = false,
                         overlay = BrowserOverlay.NONE,
+                        siteSetting = null,
+                        securityDiagnostics = null,
+                        translation = null,
+                        readerMode = null,
+                        webAppManifest = null,
+                        cookieBannerDetected = false,
+                        cookieBannerHandled = false,
+                        blockerStats = BlockerStats(),
                     )
                 }
                 restoreSavedTabs(activatedTarget.tabs, activatedTarget.activeTabIndex)
                 if (_state.value.tabs.isEmpty()) createTab()
+                _state.value.activeTabId?.let(::refreshSiteSetting)
+                syncAdBlockSettings(_state.value.settings)
+                syncUserScripts(_state.value.settings)
                 persistOpenTabs(immediate = true)
                 showSnackbar("Switched to ${target.title}")
             }
         }
     }
 
-    private fun savedTabsFromState(): List<SavedTab> = _state.value.tabs.filter {
+    private fun deleteWorkspaceData(workspace: TabWorkspace) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val downloads = dao.getDownloads().filter { it.workspaceId == workspace.id }
+                downloads.forEach { download ->
+                    WorkManager.getInstance(getApplication()).cancelUniqueWork(downloadWorkName(download.downloadId))
+                    cleanupDownloadFiles(download)
+                    download.localUri?.let { uri ->
+                        runCatching { getApplication<Application>().contentResolver.delete(Uri.parse(uri), null, null) }
+                    }
+                }
+                dao.deleteDownloadsForWorkspace(workspace.id)
+                dao.deleteSitePermissionsForProfile(workspace.id)
+                dao.deleteSiteSettingsForProfile(workspace.id)
+                delay(250)
+                downloads.forEach(::cleanupDownloadFiles)
+                workspace.contextId?.let { contextId ->
+                    withContext(Dispatchers.Main.immediate) {
+                        runCatching { runtime.storageController.clearDataForSessionContext(contextId) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun savedTabsFromState(): List<SavedTab> = savedTabsFromState(_state.value)
+
+    private fun savedTabsFromState(state: BrowserUiState): List<SavedTab> = state.tabs.filter {
         !it.isPrivate && it.hasPage && NavigationPolicy.isWebUrl(it.url)
     }.map {
         SavedTab(
@@ -4641,18 +4846,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun rebuildBlockerStats() {
-        val trackerCount = trackerBlockedByTab.values.sum()
-        val trackerByOrigin = trackerBlockedByTab.mapNotNull { (tabId, count) ->
+        val privateTabIds = _state.value.tabs.filter { it.isPrivate }.mapTo(hashSetOf()) { it.id }
+        val trackerCount = trackerBlockedByTab.filterKeys { it !in privateTabIds }.values.sum()
+        val trackerByOrigin = trackerBlockedByTab.filterKeys { it !in privateTabIds }.mapNotNull { (tabId, count) ->
             val origin = _state.value.tabs.firstOrNull { it.id == tabId }?.let { NavigationPolicy.origin(it.url) }
             origin?.let { it to count }
         }.groupingBy { it.first }.fold(0) { total, item -> total + item.second }
-        val byOrigin = (adBlockStats.byOrigin.keys + trackerByOrigin.keys).associateWith { origin ->
-            (adBlockStats.byOrigin[origin] ?: 0) + (trackerByOrigin[origin] ?: 0)
+        val privateOrigins = _state.value.tabs.asSequence()
+            .filter { it.isPrivate }
+            .mapNotNull { NavigationPolicy.origin(it.url) }
+            .toSet()
+        val visibleAdBlockStats = adBlockStats.byOrigin.filterKeys { it !in privateOrigins }
+        val byOrigin = (visibleAdBlockStats.keys + trackerByOrigin.keys).associateWith { origin ->
+            (visibleAdBlockStats[origin] ?: 0) + (trackerByOrigin[origin] ?: 0)
         }.filterValues { it > 0 }
         _state.update {
             it.copy(
                 blockerStats = BlockerStats(
-                    totalBlocked = adBlockStats.totalBlocked + trackerCount,
+                    totalBlocked = visibleAdBlockStats.values.sum() + trackerCount,
                     byOrigin = byOrigin,
                 ),
             )
@@ -4660,6 +4871,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun updateTrackerStats(tabId: String, count: Int) {
+        if (isPrivateTab(tabId)) return
         trackerBlockedByTab[tabId] = count.coerceAtLeast(0)
         rebuildBlockerStats()
     }
@@ -4672,7 +4884,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.value.tabs.any { it.isPrivate && NavigationPolicy.origin(it.url) == origin }
 
     private fun loginEntriesFor(origin: String?): Array<org.mozilla.geckoview.Autocomplete.LoginEntry> {
-        if (!credentialVault.unlocked.value) return emptyArray()
+        if (!credentialVault.unlocked.value || getApplication<DextraApplication>().hasPrivateTabs()) return emptyArray()
         if ((origin != null && isPrivateCredentialOrigin(origin)) || (origin == null && activeTab()?.isPrivate == true)) {
             return emptyArray()
         }
@@ -4740,6 +4952,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             browserPublicKey = browserPublicKey,
             authSecret = authSecret,
             createdAt = System.currentTimeMillis(),
+            profileId = activeProfileId(),
         )
         return CreatedWebPushSubscription(
             record = record,
@@ -4774,7 +4987,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val profileId = activeProfileId()
         viewModelScope.launch {
             val setting = dao.getSiteSetting(profileId, origin)
-            if (_state.value.activeTabId == tabId && currentSiteOrigin() == origin) {
+            if (_state.value.activeTabId == tabId && activeProfileId() == profileId && currentSiteOrigin() == origin) {
                 _state.update { it.copy(siteSetting = setting) }
                 applyDesktopSiteSetting(tab.session, setting?.desktopSites ?: _state.value.settings.desktopSites)
                 applySiteCookieBannerMode(origin, setting?.cookieBannerMode)
@@ -4791,8 +5004,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             showSnackbar("Site settings are unavailable in private tabs")
             return
         }
+        val profileId = activeProfileId()
         viewModelScope.launch {
-            val profileId = activeProfileId()
             val current = dao.getSiteSetting(profileId, origin)
                 ?: SiteSetting(origin = origin, updatedAt = System.currentTimeMillis(), profileId = profileId)
             val updated = transform(current).copy(origin = origin, profileId = profileId, updatedAt = System.currentTimeMillis())
@@ -4804,6 +5017,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 dao.upsertSiteSetting(updated)
             }
+            if (activeProfileId() != profileId || activeTab()?.id != tab.id || currentSiteOrigin() != origin) return@launch
             _state.update { it.copy(siteSetting = updated.takeUnless {
                 it.desktopSites == null && it.adBlockingEnabled == null &&
                     it.userScriptsEnabled == null && it.zoomPercent == null && it.translationTarget == null
@@ -4815,10 +5029,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             syncActiveTabZoom()
             syncAdBlockSettings(_state.value.settings)
             applySiteCookieBannerMode(origin, updated.cookieBannerMode)
-            if (tab.hasPage && updated.httpsOnly == true && tab.url.startsWith("http://", ignoreCase = true)) {
-                tab.session.loadUri(NavigationPolicy.upgradeToHttps(tab.url))
-            } else if (tab.hasPage && updated.desktopSites != current.desktopSites) {
-                tab.session.reload()
+            val currentTab = activeTab()?.takeIf { it.id == tab.id } ?: return@launch
+            if (currentTab.hasPage && updated.httpsOnly == true && currentTab.url.startsWith("http://", ignoreCase = true)) {
+                currentTab.session.loadUri(NavigationPolicy.upgradeToHttps(currentTab.url))
+            } else if (currentTab.hasPage && updated.desktopSites != current.desktopSites) {
+                currentTab.session.reload()
             }
         }
     }
@@ -4827,11 +5042,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(snackbar = message) }
     }
 
-    private fun activeProfileId(): String = _state.value.settings.activeWorkspaceId.ifBlank { DEFAULT_WORKSPACE_ID }
+    private fun activeProfileId(): String = standaloneProfileId
+        ?: _state.value.settings.activeWorkspaceId.ifBlank { DEFAULT_WORKSPACE_ID }
 
     private fun sitePolicyKey(profileId: String, origin: String): String = "$profileId\u0000$origin"
 
-    private fun activeContextId(): String? = _state.value.settings.workspaces
+    private fun activeContextId(): String? = standaloneContextId ?: _state.value.settings.workspaces
         .firstOrNull { it.id == activeProfileId() }
         ?.contextId
 
@@ -4967,12 +5183,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun syncAdBlockSettings(settings: BrowserSettings) {
         val port = adBlockPort ?: return
+        val profileId = activeProfileId()
         val urls = JSONArray()
         settings.adBlockFilters.filter { it.enabled }.forEach { urls.put(it.url) }
         viewModelScope.launch(Dispatchers.IO) {
             val disabledOrigins = JSONArray()
             val enabledOrigins = JSONArray()
-            val siteSettings = dao.getSiteSettings().filter { it.profileId == activeProfileId() }
+            val siteSettings = dao.getSiteSettings().filter { it.profileId == profileId }
             siteSettings
                 .filter { it.adBlockingEnabled == false }
                 .forEach { disabledOrigins.put(it.origin) }
@@ -4980,6 +5197,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 .filter { it.adBlockingEnabled == true }
                 .forEach { enabledOrigins.put(it.origin) }
             withContext(Dispatchers.Main.immediate) {
+                if (activeProfileId() != profileId) return@withContext
                 port.postMessage(
                     JSONObject()
                         .put("type", "updateAdblock")
@@ -5014,10 +5232,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun applySiteCookieBannerMode(origin: String, mode: Int?) {
         val host = runCatching { Uri.parse(origin).host?.takeIf(String::isNotBlank) }.getOrNull() ?: return
-        if (mode == null || mode == ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_DISABLED) {
+        if (mode == null) {
             runtime.storageController.removeCookieBannerModeForDomain(host, false)
         } else {
-            runtime.storageController.setCookieBannerModeForDomain(host, mode, false)
+            runtime.storageController.setCookieBannerModeForDomain(host, mode.coerceIn(0, 2), false)
         }
     }
 
@@ -5043,16 +5261,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun syncUserScripts(settings: BrowserSettings) {
         val port = adBlockPort ?: return
+        val profileId = activeProfileId()
         val urls = JSONArray()
         settings.userScriptUrls
             .filterNot { it in settings.disabledUserScriptUrls }
             .forEach(urls::put)
         viewModelScope.launch(Dispatchers.IO) {
             val disabledOrigins = JSONArray()
-            dao.getSiteSettings().filter { it.profileId == activeProfileId() }
+            dao.getSiteSettings().filter { it.profileId == profileId }
                 .filter { it.userScriptsEnabled == false }
                 .forEach { disabledOrigins.put(it.origin) }
             withContext(Dispatchers.Main.immediate) {
+                if (activeProfileId() != profileId) return@withContext
                 port.postMessage(
                     JSONObject()
                         .put("type", "updateUserscripts")
@@ -5691,6 +5911,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             permissions: List<GeckoSession.PermissionDelegate.ContentPermission>,
             isSameDocument: Boolean,
         ) {
+            if (!isCurrentTabSession(tabId, session)) return
             val resolvedUrl = url.orEmpty()
             recordNetworkActivity(tabId, resolvedUrl, "navigation", "loaded")
             if (resolvedUrl == "about:blank") {
@@ -5703,10 +5924,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
+            if (!isCurrentTabSession(tabId, session)) return
             updateTab(tabId) { it.copy(canGoBack = canGoBack) }
         }
 
         override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) {
+            if (!isCurrentTabSession(tabId, session)) return
             updateTab(tabId) { it.copy(canGoForward = canGoForward) }
         }
 
@@ -5714,6 +5937,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session: GeckoSession,
             request: GeckoSession.NavigationDelegate.LoadRequest,
         ): GeckoResult<AllowOrDeny> {
+            if (!isCurrentTabSession(tabId, session)) return GeckoResult.deny()
             if (!NavigationPolicy.isAllowedTopLevel(request.uri, allowExtension = true)) {
                 recordNetworkActivity(tabId, request.uri, "navigation", "blocked by policy")
                 launchExternal(request.uri)
@@ -5734,11 +5958,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             uri: String?,
             error: org.mozilla.geckoview.WebRequestError,
         ): GeckoResult<String> {
+            if (!isCurrentTabSession(tabId, session)) return GeckoResult.fromValue(null)
             recordCompatibilityEvent(tabId, "error", "Load error ${error.code} for $uri")
             return GeckoResult.fromValue(null)
         }
 
         override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession> {
+            if (!isCurrentTabSession(tabId, session)) return GeckoResult.fromValue(null)
             val popupUri = upgradeToHttpsIfNeeded(uri.ifBlank { "about:blank" })
             if (!NavigationPolicy.isAllowedTopLevel(popupUri)) {
                 if (Uri.parse(popupUri).scheme != null) launchExternal(popupUri)
@@ -5761,6 +5987,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session: GeckoSession,
             history: GeckoSession.HistoryDelegate.HistoryList,
         ) {
+            if (!isCurrentTabSession(tabId, session)) return
             val currentIndex = history.currentIndex
             updateTab(tabId) {
                 it.copy(
@@ -5773,6 +6000,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private inner class ProgressDelegate(private val tabId: String) : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
+            if (!isCurrentTabSession(tabId, session)) return
             attachAdBlockContentDelegate(session)
             mediaSessions.remove(tabId)
             _state.update {
@@ -5794,6 +6022,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {
+            if (!isCurrentTabSession(tabId, session)) return
             updateTab(tabId) { it.copy(isLoading = false, progress = if (success) 100 else 0) }
             if (!success) recordCompatibilityEvent(tabId, "warning", "Page load did not complete")
             if (success) {
@@ -5820,6 +6049,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onProgressChange(session: GeckoSession, progress: Int) {
+            if (!isCurrentTabSession(tabId, session)) return
             val now = SystemClock.uptimeMillis()
             if (progress < 100 && now - (lastProgressUpdateAt[tabId] ?: 0L) < PROGRESS_UPDATE_INTERVAL_MS) return
             lastProgressUpdateAt[tabId] = now
@@ -5830,6 +6060,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session: GeckoSession,
             securityInfo: GeckoSession.ProgressDelegate.SecurityInformation,
         ) {
+            if (!isCurrentTabSession(tabId, session)) return
             updateTab(tabId) { it.copy(isSecure = securityInfo.isSecure) }
             if (!securityInfo.isSecure && _state.value.tabs.firstOrNull { it.id == tabId }?.url?.startsWith("https://", ignoreCase = true) == true) {
                 recordCompatibilityEvent(tabId, "error", "HTTPS page is not currently reported as secure")
@@ -5837,6 +6068,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onSessionStateChange(session: GeckoSession, state: GeckoSession.SessionState) {
+            if (!isCurrentTabSession(tabId, session)) return
             val serialized = state.toString().takeIf {
                 it.toByteArray(Charsets.UTF_8).size <= MAX_SESSION_STATE_BYTES
             }
@@ -5847,22 +6079,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private inner class ContentDelegate(private val tabId: String) : GeckoSession.ContentDelegate {
         override fun onTitleChange(session: GeckoSession, title: String?) {
+            if (!isCurrentTabSession(tabId, session)) return
             updateTab(tabId) { it.copy(title = title?.ifBlank { "New tab" } ?: "New tab") }
         }
 
         override fun onCookieBannerDetected(session: GeckoSession) {
+            if (!isCurrentTabSession(tabId, session)) return
             if (_state.value.activeTabId == tabId) {
                 _state.update { it.copy(cookieBannerDetected = true, cookieBannerHandled = false) }
             }
         }
 
         override fun onCookieBannerHandled(session: GeckoSession) {
+            if (!isCurrentTabSession(tabId, session)) return
             if (_state.value.activeTabId == tabId) {
                 _state.update { it.copy(cookieBannerDetected = true, cookieBannerHandled = true) }
             }
         }
 
         override fun onWebAppManifest(session: GeckoSession, manifest: JSONObject) {
+            if (!isCurrentTabSession(tabId, session)) return
             val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
             val pageOrigin = NavigationPolicy.origin(tab.url) ?: return
             val rawStartUrl = manifest.optString("start_url").ifBlank { tab.url }
@@ -5890,6 +6126,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
+            if (!isCurrentTabSession(tabId, session)) return
             recordNetworkActivity(tabId, response.uri, "response", "HTTP ${response.statusCode}")
             val contentType = response.headers["Content-Type"] ?: response.headers["content-type"]
             if (FirefoxAddons.isAmoUrl(response.uri) && FirefoxAddons.isXpiDownload(response.uri, contentType)) {
@@ -5905,6 +6142,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             screenY: Int,
             element: GeckoSession.ContentDelegate.ContextElement,
         ) {
+            if (!isCurrentTabSession(tabId, session)) return
             showContextMenu(
                 tabId = tabId,
                 x = screenX,
@@ -5918,10 +6156,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onCloseRequest(session: GeckoSession) {
+            if (!isCurrentTabSession(tabId, session)) return
             closeTab(tabId)
         }
 
         override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+            if (!isCurrentTabSession(tabId, session)) return
             val current = _state.value
             if (fullScreen) {
                 _state.update { state ->
@@ -5942,14 +6182,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onCrash(session: GeckoSession) {
+            if (!isCurrentTabSession(tabId, session)) return
             markTabCrashed("This site crashed. Reload to recover it.")
         }
 
         override fun onKill(session: GeckoSession) {
+            if (!isCurrentTabSession(tabId, session)) return
             markTabCrashed("This site was stopped. Reload to recover it.")
         }
 
         override fun onSlowScript(session: GeckoSession, scriptFileName: String): GeckoResult<org.mozilla.geckoview.SlowScriptResponse> {
+            if (!isCurrentTabSession(tabId, session)) return GeckoResult.fromValue(org.mozilla.geckoview.SlowScriptResponse.CONTINUE)
             recordCompatibilityEvent(tabId, "warning", "Slow script: $scriptFileName")
             return GeckoResult.fromValue(org.mozilla.geckoview.SlowScriptResponse.CONTINUE)
         }
@@ -5985,6 +6228,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session: GeckoSession,
             prompt: GeckoSession.PromptDelegate.WebAuthnRelatedOriginPrompt,
         ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
+            if (!isCurrentTabSession(tabId, session)) return GeckoResult.fromValue(prompt.dismiss())
             val tab = _state.value.tabs.firstOrNull { it.id == tabId }
             val origin = prompt.origin?.takeIf { NavigationPolicy.isWebUrl(it) }
             if (tab?.isPrivate == true || origin == null) return GeckoResult.fromValue(prompt.dismiss())
@@ -6013,6 +6257,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             permissions: Array<String>?,
             callback: GeckoSession.PermissionDelegate.Callback,
         ) {
+            if (!isCurrentTabSession(tabId, session)) {
+                callback.reject()
+                return
+            }
             val requested = permissions.orEmpty().toList()
             val supported = setOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
             if (requested.any { it !in supported }) {
@@ -6033,6 +6281,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session: GeckoSession,
             permission: GeckoSession.PermissionDelegate.ContentPermission,
         ): GeckoResult<Int> {
+            if (!isCurrentTabSession(tabId, session)) {
+                return GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
+            }
             val automaticDecision = when (permission.permission) {
                 GeckoSession.PermissionDelegate.PERMISSION_PERSISTENT_STORAGE,
                 GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE,
@@ -6051,8 +6302,32 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val result = GeckoResult<Int>()
             val origin = NavigationPolicy.origin(permission.uri) ?: permission.uri
             val profileId = activeProfileId()
+            if (isPrivateTab(tabId)) {
+                viewModelScope.launch {
+                    if (isCurrentTabSession(tabId, session)) {
+                        enqueueContentPermission(
+                            ContentPermissionPrompt(
+                                id = UUID.randomUUID().toString(),
+                                tabId = tabId,
+                                profileId = profileId,
+                                origin = origin,
+                                label = permissionLabel(permission.permission),
+                                permission = permission.permission,
+                                result = result,
+                            ),
+                        )
+                    } else {
+                        result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
+                    }
+                }
+                return result
+            }
             viewModelScope.launch {
                 val saved = dao.getSitePermission(profileId, origin, permission.permission.toString())
+                if (!isCurrentTabSession(tabId, session) || activeProfileId() != profileId) {
+                    result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
+                    return@launch
+                }
                 when (saved?.decision) {
                     "allow" -> result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW)
                     "block" -> result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
@@ -6060,6 +6335,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         ContentPermissionPrompt(
                             id = UUID.randomUUID().toString(),
                             tabId = tabId,
+                            profileId = profileId,
                             origin = origin,
                             label = permissionLabel(permission.permission),
                             permission = permission.permission,
@@ -6078,6 +6354,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             audio: Array<GeckoSession.PermissionDelegate.MediaSource>?,
             callback: GeckoSession.PermissionDelegate.MediaCallback,
         ) {
+            if (!isCurrentTabSession(tabId, session)) {
+                callback.reject()
+                return
+            }
             val videoSources = video.orEmpty()
             val audioSources = audio.orEmpty()
             if (videoSources.isEmpty() && audioSources.isEmpty()) {
@@ -6108,9 +6388,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         performanceMonitor.stop()
+        if (runtime.autocompleteStorageDelegate === autocompleteStorageDelegate) {
+            runtime.setAutocompleteStorageDelegate(null)
+        }
+        if (runtime.webPushController.delegate === webPushDelegate) {
+            runtime.webPushController.setDelegate(null)
+        }
+        if (runtime.webExtensionController.promptDelegate === extensionPromptDelegate) {
+            runtime.webExtensionController.setPromptDelegate(null)
+            runtime.webExtensionController.setAddonManagerDelegate(null)
+        }
+        getApplication<DextraApplication>().releaseAutocompleteDelegate(this)
         _state.value.webAuthnPrompt?.let { prompt -> prompt.result.complete(prompt.dismiss()) }
         _state.value.extensionPopup?.session?.close()
         _state.value.tabs.forEach {
+            if (it.isPrivate) getApplication<DextraApplication>().markPrivateTabClosed()
             getApplication<com.dwicao.dextra.DextraApplication>().mediaNotificationController.clear(it.id)
             it.session.close()
         }

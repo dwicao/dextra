@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
+import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,16 +33,60 @@ import org.mozilla.geckoview.WebNotificationDelegate
 class DextraApplication : Application() {
     val processStartedAtElapsed: Long = SystemClock.elapsedRealtime()
     lateinit var mediaNotificationController: MediaNotificationController
+    private val startedActivityCount = AtomicInteger(0)
+    private val privateTabCount = AtomicInteger(0)
+    @Volatile
+    private var autocompleteDelegateOwner: WeakReference<Any>? = null
 
     override fun onCreate() {
         super.onCreate()
         mediaNotificationController = MediaNotificationController(this)
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: android.app.Activity) {
+                startedActivityCount.incrementAndGet()
+            }
+
+            override fun onActivityStopped(activity: android.app.Activity) {
+                startedActivityCount.updateAndGet { count -> (count - 1).coerceAtLeast(0) }
+            }
+
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) = Unit
+            override fun onActivityResumed(activity: android.app.Activity) = Unit
+            override fun onActivityPaused(activity: android.app.Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) = Unit
+            override fun onActivityDestroyed(activity: android.app.Activity) = Unit
+        })
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching { writeCrashReports(this, thread, error) }
             if (previousHandler != null) previousHandler.uncaughtException(thread, error)
             else exitProcess(10)
         }
+    }
+
+    fun hasStartedActivities(): Boolean = startedActivityCount.get() > 0
+
+    fun hasPrivateTabs(): Boolean = privateTabCount.get() > 0
+
+    fun markPrivateTabOpened() {
+        privateTabCount.incrementAndGet()
+    }
+
+    fun markPrivateTabClosed() {
+        privateTabCount.updateAndGet { count -> (count - 1).coerceAtLeast(0) }
+    }
+
+    @Synchronized
+    fun claimAutocompleteDelegate(owner: Any): Boolean {
+        val current = autocompleteDelegateOwner?.get()
+        if (current != null && current !== owner) return false
+        autocompleteDelegateOwner = WeakReference(owner)
+        return true
+    }
+
+    @Synchronized
+    fun releaseAutocompleteDelegate(owner: Any) {
+        if (autocompleteDelegateOwner?.get() === owner) autocompleteDelegateOwner = null
     }
 
     private fun writeCrashReports(context: Context, thread: Thread, error: Throwable) {

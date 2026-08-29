@@ -260,6 +260,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val sitePermissions by viewModel.sitePermissions.collectAsStateWithLifecycle(initialValue = emptyList())
     val siteSettings by viewModel.siteSettings.collectAsStateWithLifecycle(initialValue = emptyList())
     val installedWebApps by viewModel.installedWebApps.collectAsStateWithLifecycle(initialValue = emptyList())
+     val visibleWebPushSubscriptions = state.webPushSubscriptions.filter {
+         it.profileId == state.settings.activeWorkspaceId
+     }
     val profileSitePermissions = sitePermissions.filter { it.profileId == state.settings.activeWorkspaceId }
     val profileSiteSettings = siteSettings.filter { it.profileId == state.settings.activeWorkspaceId }
     val privacyOrigins = buildPrivacyOrigins(profileSitePermissions, profileSiteSettings, state.blockerStats.byOrigin)
@@ -554,7 +557,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    credentialCount = state.credentialCount,
                   credentialVaultUnlocked = state.credentialVaultUnlocked,
                     addresses = state.addresses,
-                   webPushSubscriptions = state.webPushSubscriptions,
+                   webPushSubscriptions = visibleWebPushSubscriptions,
                    onDeleteCredential = viewModel::deleteCredential,
                    onRequestCredentialUnlock = viewModel::requestCredentialUnlock,
                    onLockCredentialVault = viewModel::lockCredentialVault,
@@ -6744,7 +6747,7 @@ private fun SettingsScreen(
        }
         SettingSection("Privacy automation") {
             Text(
-                "Automatically remove old local records. A cleanup allowlist preserves selected origins. Site-data-on-exit clears Gecko site storage for all profiles when the app really leaves the foreground.",
+                "Automatically remove old local records. A cleanup allowlist preserves selected history and download records. Recovery snapshots follow their own retention period. Site-data-on-exit clears Gecko site storage for all profiles when the app really leaves the foreground.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -7143,19 +7146,20 @@ private fun SettingsScreen(
            }
            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
                Button(
-                   onClick = {
-                       onSaveAddress(
-                           StoredAddress(
-                               id = addressId.ifBlank { UUID.randomUUID().toString() },
-                               name = addressName.trim(),
-                               givenName = "",
-                               additionalName = "",
-                               familyName = "",
-                               organization = "",
-                               streetAddress = addressStreet.trim(),
-                               addressLevel1 = addressRegion.trim(),
-                               addressLevel2 = addressCity.trim(),
-                               addressLevel3 = "",
+                    onClick = {
+                        val existing = addresses.firstOrNull { it.id == addressId }
+                        onSaveAddress(
+                            StoredAddress(
+                                id = addressId.ifBlank { UUID.randomUUID().toString() },
+                                name = addressName.trim(),
+                                givenName = existing?.givenName.orEmpty(),
+                                additionalName = existing?.additionalName.orEmpty(),
+                                familyName = existing?.familyName.orEmpty(),
+                                organization = existing?.organization.orEmpty(),
+                                streetAddress = addressStreet.trim(),
+                                addressLevel1 = addressRegion.trim(),
+                                addressLevel2 = addressCity.trim(),
+                                addressLevel3 = existing?.addressLevel3.orEmpty(),
                                postalCode = addressPostal.trim(),
                                country = addressCountry.trim(),
                                tel = addressPhone.trim(),

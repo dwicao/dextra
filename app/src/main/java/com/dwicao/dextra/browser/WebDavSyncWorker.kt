@@ -12,10 +12,13 @@ import androidx.work.WorkManager
 import com.dwicao.dextra.data.BrowserDatabase
 import com.dwicao.dextra.data.SettingsRepository
 import com.dwicao.dextra.data.SyncRepository
+import com.dwicao.dextra.data.SyncSelection
 import com.dwicao.dextra.data.WebDavConfig
 import com.dwicao.dextra.data.WebDavSettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -30,7 +33,8 @@ class WebDavSyncWorker(
     appContext: Context,
     workerParams: androidx.work.WorkerParameters,
 ) : CoroutineWorker(appContext, workerParams) {
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+    override suspend fun doWork(): Result = webDavSyncMutex.withLock {
+        withContext(Dispatchers.IO) {
         val store = WebDavSettingsStore(applicationContext)
         val config = store.load() ?: return@withContext Result.success()
         if (!config.enabled) return@withContext Result.success()
@@ -45,69 +49,133 @@ class WebDavSyncWorker(
             val settingsRepository = SettingsRepository(applicationContext)
             val syncRepository = SyncRepository(applicationContext, dao)
             val remote = WebDavClient.fetch(config)
+            val remoteFingerprint = remote?.let { syncRepository.contentFingerprint(it.bytes, config.passphrase) }
+            val remoteChanged = remote != null && if (config.lastRemoteFingerprint != null) {
+                remoteFingerprint != config.lastRemoteFingerprint
+            } else {
+                config.lastEtag == null || remote.etag != config.lastEtag
+            }
+            val settingsBeforeApply = settingsRepository.settings.first()
+            val localBundle = syncRepository.exportBytes(settingsBeforeApply, config.passphrase)
+            val localFingerprint = syncRepository.contentFingerprint(localBundle, config.passphrase)
+            val localChanged = config.lastLocalFingerprint?.let { it != localFingerprint }
+                ?: config.lastLocalRevision?.let { it != settingsBeforeApply.openTabsRevision }
+                ?: settingsBeforeApply.openTabs.isNotEmpty()
             if (config.conflictPending) {
                 val resolution = config.pendingResolution
-                if (remote == null || resolution == null) {
-                    throw WebDavConflictException()
-                }
+                if (resolution == null) throw WebDavConflictException()
                 when (resolution) {
                     "remote" -> {
-                        val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
+                        val remoteDocument = remote ?: throw WebDavConflictException()
+                        val imported = syncRepository.importBytes(remoteDocument.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                         imported.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
-                        store.save(config.copy(
-                            lastEtag = remote.etag,
+                        if (!saveIfCurrent(store, config, config.copy(
+                            lastEtag = remoteDocument.etag,
+                            lastRemoteFingerprint = remoteFingerprint,
+                            lastLocalRevision = settingsRepository.settings.first().openTabsRevision,
+                            lastLocalFingerprint = syncRepository.contentFingerprint(
+                                syncRepository.exportBytes(settingsRepository.settings.first(), config.passphrase),
+                                config.passphrase,
+                            ),
                             lastSyncAt = System.currentTimeMillis(),
                             conflictPending = false,
                             conflictDetectedAt = null,
                             pendingResolution = null,
                             lastError = null,
-                        ))
+                        ))) return@runCatching
                     }
                     "local", "merge" -> {
-                        if (resolution == "merge") {
-                            val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
-                            imported.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
+                        if (resolution == "merge" && remote != null) {
+                            val remoteDocument = remote
+                            val localSettings = settingsRepository.settings.first()
+                            val imported = syncRepository.importBytes(
+                                remoteDocument.bytes,
+                                config.passphrase,
+                                localSettings.activeWorkspaceId,
+                                SyncSelection(settings = false),
+                                preserveSourceProfiles = true,
+                                mergeRecords = true,
+                            )
+                            settingsRepository.applySyncSettings(
+                                syncRepository.mergeSettings(imported.root, localSettings),
+                            )
                         }
                         val settings = settingsRepository.settings.first()
+                        val localBytes = syncRepository.exportBytes(settings, config.passphrase)
                         val uploaded = WebDavClient.putAtomically(
                             config,
-                            syncRepository.exportBytes(settings, config.passphrase),
-                            remote.etag,
+                            localBytes,
+                            remote?.etag,
                         )
-                        store.save(config.copy(
-                            lastEtag = uploaded.etag ?: remote.etag,
+                        if (!saveIfCurrent(store, config, config.copy(
+                            lastEtag = uploaded.etag ?: remote?.etag,
+                            lastRemoteFingerprint = syncRepository.contentFingerprint(uploaded.bytes, config.passphrase),
+                            lastLocalFingerprint = syncRepository.contentFingerprint(uploaded.bytes, config.passphrase),
+                            lastLocalRevision = settingsRepository.settings.first().openTabsRevision,
                             lastSyncAt = System.currentTimeMillis(),
                             conflictPending = false,
                             conflictDetectedAt = null,
                             pendingResolution = null,
                             lastError = null,
-                        ))
+                        ))) return@runCatching
                     }
                     else -> throw IOException("Unknown WebDAV conflict resolution")
                 }
                 return@runCatching
             }
-            if (remote != null && (config.lastEtag == null || remote.etag != config.lastEtag)) {
+            if (SyncSessionPolicy.hasConflict(remoteChanged, localChanged)) throw WebDavConflictException()
+            if (remote != null && remoteChanged) {
                 val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                 imported.root.optJSONObject("settings")?.let { importedSettings ->
                     settingsRepository.applySyncSettings(importedSettings)
                 }
+                if (!saveIfCurrent(store, config, config.copy(
+                    lastEtag = remote.etag,
+                    lastRemoteFingerprint = remoteFingerprint,
+                    lastLocalRevision = settingsRepository.settings.first().openTabsRevision,
+                    lastLocalFingerprint = run {
+                        val currentSettings = settingsRepository.settings.first()
+                        syncRepository.contentFingerprint(
+                            syncRepository.exportBytes(currentSettings, config.passphrase),
+                            config.passphrase,
+                        )
+                    },
+                    lastSyncAt = System.currentTimeMillis(),
+                    conflictPending = false,
+                    conflictDetectedAt = null,
+                    pendingResolution = null,
+                    lastError = null,
+                ))) return@runCatching
+                return@runCatching
+            }
+            if (remote != null && !localChanged) {
+                if (!saveIfCurrent(store, config, config.copy(
+                    lastEtag = remote.etag,
+                    lastRemoteFingerprint = remoteFingerprint,
+                    lastSyncAt = System.currentTimeMillis(),
+                    lastError = null,
+                ))) return@runCatching
+                return@runCatching
             }
             val settings = settingsRepository.settings.first()
-            val uploaded = WebDavClient.putAtomically(config, syncRepository.exportBytes(settings, config.passphrase), remote?.etag)
-            store.save(config.copy(
+            val uploadBytes = syncRepository.exportBytes(settings, config.passphrase)
+            val uploaded = WebDavClient.putAtomically(config, uploadBytes, remote?.etag)
+            if (!saveIfCurrent(store, config, config.copy(
                 lastEtag = uploaded.etag ?: remote?.etag,
+                lastRemoteFingerprint = syncRepository.contentFingerprint(uploaded.bytes, config.passphrase),
+                lastLocalRevision = settings.openTabsRevision,
+                lastLocalFingerprint = syncRepository.contentFingerprint(uploaded.bytes, config.passphrase),
                 lastSyncAt = System.currentTimeMillis(),
                 conflictPending = false,
                 conflictDetectedAt = null,
                 pendingResolution = null,
                 lastError = null,
-            ))
+            ))) return@runCatching
         }.fold(
             onSuccess = { Result.success() },
             onFailure = { error ->
                 if (error is WebDavConflictException) {
-                    store.save(config.copy(
+                    saveIfCurrent(store, config, config.copy(
                         conflictPending = true,
                         conflictDetectedAt = System.currentTimeMillis(),
                         pendingResolution = null,
@@ -115,17 +183,38 @@ class WebDavSyncWorker(
                     ))
                     Result.failure()
                 } else if (error is BadPaddingException || error is IllegalArgumentException || error is org.json.JSONException) {
-                    store.save(config.copy(lastError = error.message ?: "Invalid sync bundle"))
+                    saveIfCurrent(store, config, config.copy(lastError = error.message ?: "Invalid sync bundle"))
                     Result.failure()
                 } else {
                     Result.retry()
                 }
             },
         )
+        }
     }
 
     private fun isHttps(value: String): Boolean = value.startsWith("https://", ignoreCase = true)
+
+    private fun saveIfCurrent(store: WebDavSettingsStore, expected: WebDavConfig, updated: WebDavConfig): Boolean {
+        return synchronized(store) {
+            val current = store.load() ?: return@synchronized false
+            if (!current.enabled || current.endpoint != expected.endpoint || current.username != expected.username ||
+                current.password != expected.password || current.remoteFile != expected.remoteFile ||
+                current.passphrase != expected.passphrase || current.intervalHours != expected.intervalHours ||
+                current.lastEtag != expected.lastEtag || current.lastLocalRevision != expected.lastLocalRevision ||
+                current.lastRemoteFingerprint != expected.lastRemoteFingerprint ||
+                current.lastLocalFingerprint != expected.lastLocalFingerprint ||
+                current.conflictPending != expected.conflictPending ||
+                current.pendingResolution != expected.pendingResolution
+            ) return@synchronized false
+            store.save(updated)
+            true
+        }
+    }
+
 }
+
+private val webDavSyncMutex = Mutex()
 
 object WebDavSyncScheduler {
     private const val UNIQUE_WORK_NAME = "dextra-webdav-sync"
@@ -146,6 +235,10 @@ object WebDavSyncScheduler {
 
     fun cancel(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
+    }
+
+    fun cancelNow(context: Context) {
+        WorkManager.getInstance(context).cancelUniqueWork("$UNIQUE_WORK_NAME-now")
     }
 
     fun runNow(context: Context) {
@@ -199,7 +292,7 @@ private object WebDavClient {
         val move = open(temporary, "MOVE", config).apply {
             setRequestProperty("Destination", remote)
             setRequestProperty("Overwrite", "T")
-            expectedEtag?.let { setRequestProperty("If-Match", it) }
+            expectedEtag?.let { setRequestProperty("If", "<$remote> ([$it])") }
         }
         var moved = false
         return try {

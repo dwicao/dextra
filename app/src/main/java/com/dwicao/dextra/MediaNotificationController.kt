@@ -60,12 +60,13 @@ class MediaNotificationController(context: Context) {
         artist: String?,
         album: String?,
         privateTab: Boolean,
+        targetActivity: Class<out android.app.Activity> = MainActivity::class.java,
     ) {
         if (privateTab) {
             clear(tabId)
             return
         }
-        target = Target(tabId, session, title, artist, album)
+        target = Target(tabId, session, title, artist, album, targetActivity)
         playing = true
         duration = 0L
         position = 0L
@@ -162,7 +163,7 @@ class MediaNotificationController(context: Context) {
         val clickIntent = PendingIntent.getActivity(
             appContext,
             4101,
-            Intent(appContext, MainActivity::class.java)
+            Intent(appContext, current.targetActivity)
                 .putExtra(EXTRA_MEDIA_TAB_ID, current.tabId)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -203,6 +204,7 @@ class MediaNotificationController(context: Context) {
         val title: String = "Dextra media",
         val artist: String? = null,
         val album: String? = null,
+        val targetActivity: Class<out android.app.Activity> = MainActivity::class.java,
     )
 
     companion object {

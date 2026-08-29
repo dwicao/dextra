@@ -45,7 +45,10 @@ class PrivacyCleanupWorker(
                 }
                 .forEach { download ->
                     download.localUri?.let { uri -> runCatching { context.contentResolver.delete(Uri.parse(uri), null, null) } }
-                    download.filePath?.let { path -> runCatching { File(path).delete() } }
+                    download.filePath?.let { path ->
+                        runCatching { File(path).delete() }
+                        (0 until 6).forEach { index -> runCatching { File("$path.part$index").delete() } }
+                    }
                     dao.deleteDownload(download.downloadId)
                 }
         }

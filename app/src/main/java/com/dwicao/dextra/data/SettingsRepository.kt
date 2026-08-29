@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.dwicao.dextra.browser.BrowserCommandId
@@ -89,6 +90,8 @@ data class BrowserSettings(
     val reduceMotion: Boolean = false,
     val workspaces: List<TabWorkspace> = emptyList(),
     val activeWorkspaceId: String = DEFAULT_WORKSPACE_ID,
+    val openTabsRevision: Long = 0L,
+    val syncApplyToken: String? = null,
 )
 
 data class ExtensionInstallRecord(
@@ -198,6 +201,8 @@ class SettingsRepository(private val context: Context) {
         val reduceMotion = booleanPreferencesKey("reduce_motion")
         val workspaces = stringPreferencesKey("workspaces")
         val activeWorkspaceId = stringPreferencesKey("active_workspace_id")
+        val openTabsRevision = longPreferencesKey("open_tabs_revision")
+        val syncApplyToken = stringPreferencesKey("sync_apply_token")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -292,6 +297,12 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setStartPageSettings(settings: StartPageSettings) {
         context.settingsDataStore.edit { it[Keys.startPage] = settings.toJson().toString() }
+    }
+
+    suspend fun updateStartPage(transform: (StartPageSettings) -> StartPageSettings) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.startPage] = transform(preferences.startPage()).toJson().toString()
+        }
     }
 
     suspend fun setTabBarWithAddressBar(enabled: Boolean) {
@@ -444,26 +455,42 @@ class SettingsRepository(private val context: Context) {
                     )
                 }
             }
-            preferences[Keys.openTabs] = payload.toString()
-            preferences[Keys.tabGroups] = groupPayload.toString()
-            preferences[Keys.activeTabIndex] = activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
+            val normalizedActiveIndex = activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
             val workspaceId = preferences[Keys.activeWorkspaceId] ?: DEFAULT_WORKSPACE_ID
             val existing = workspaceList ?: preferences.workspaces()
+            val existingWorkspace = existing.firstOrNull { it.id == workspaceId }
+            val visibleTabs = tabs.filterNot { it.isPrivate }
+            val visibleWorkspaceChanged = existingWorkspace == null ||
+                existingWorkspace.tabs != visibleTabs ||
+                existingWorkspace.activeTabIndex != normalizedActiveIndex ||
+                existingWorkspace.tabGroups != groups
             val now = System.currentTimeMillis()
+            val existingLastUsedAt = existingWorkspace?.lastUsedAt ?: now
             val workspace = TabWorkspace(
                 id = workspaceId,
-                title = existing.firstOrNull { it.id == workspaceId }?.title ?: "Personal",
-                color = existing.firstOrNull { it.id == workspaceId }?.color ?: 0xFF4E4BB5L,
-                contextId = existing.firstOrNull { it.id == workspaceId }?.contextId,
-                createdAt = existing.firstOrNull { it.id == workspaceId }?.createdAt ?: now,
-                lastUsedAt = now,
-                tabs = tabs.filterNot { it.isPrivate },
-                activeTabIndex = activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)),
+                title = existingWorkspace?.title ?: "Personal",
+                color = existingWorkspace?.color ?: 0xFF4E4BB5L,
+                contextId = existingWorkspace?.contextId,
+                createdAt = existingWorkspace?.createdAt ?: now,
+                lastUsedAt = if (visibleWorkspaceChanged) now else existingLastUsedAt,
+                tabs = visibleTabs,
+                activeTabIndex = normalizedActiveIndex,
                 tabGroups = groups,
             )
             val workspaces = (existing.filterNot { it.id == workspaceId } + workspace).takeLast(MAX_WORKSPACES)
-            preferences[Keys.workspaces] = JSONArray(workspaces.map(::workspaceToJson)).toString()
+            val workspacesPayload = JSONArray(workspaces.map(::workspaceToJson)).toString()
+            val visibleStateChanged = preferences[Keys.openTabs] != payload.toString() ||
+                preferences[Keys.tabGroups] != groupPayload.toString() ||
+                preferences[Keys.activeTabIndex] != normalizedActiveIndex ||
+                preferences[Keys.workspaces] != workspacesPayload
+            preferences[Keys.openTabs] = payload.toString()
+            preferences[Keys.tabGroups] = groupPayload.toString()
+            preferences[Keys.activeTabIndex] = normalizedActiveIndex
+            preferences[Keys.workspaces] = workspacesPayload
             preferences[Keys.activeWorkspaceId] = workspaceId
+            if (visibleStateChanged) {
+                preferences[Keys.openTabsRevision] = (preferences[Keys.openTabsRevision] ?: 0L) + 1L
+            }
         }
     }
 
@@ -487,6 +514,7 @@ class SettingsRepository(private val context: Context) {
             preferences[Keys.openTabs] = JSONArray(boundedTabs.map { it.toJson() }).toString()
             preferences[Keys.tabGroups] = JSONArray(groups.map { it.toJson() }).toString()
             preferences[Keys.activeTabIndex] = boundedIndex
+            preferences[Keys.openTabsRevision] = (preferences[Keys.openTabsRevision] ?: 0L) + 1L
         }
     }
 
@@ -653,6 +681,7 @@ class SettingsRepository(private val context: Context) {
             settings.optString("activeWorkspaceId").takeIf(String::isNotBlank)?.let {
                 preferences[Keys.activeWorkspaceId] = it.take(100)
             }
+            preferences[Keys.syncApplyToken] = UUID.randomUUID().toString()
         }
     }
 
@@ -765,6 +794,8 @@ class SettingsRepository(private val context: Context) {
         activeWorkspaceId = get(Keys.activeWorkspaceId)
             ?.takeIf { id -> workspaces().any { it.id == id } }
             ?: DEFAULT_WORKSPACE_ID,
+        openTabsRevision = get(Keys.openTabsRevision) ?: 0L,
+        syncApplyToken = get(Keys.syncApplyToken),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -914,8 +945,7 @@ class SettingsRepository(private val context: Context) {
                 id = id,
                 title = value.optString("title").ifBlank { "Workspace" }.take(40),
                 color = value.optLong("color", 0xFF4E4BB5L),
-                contextId = value.optString("contextId").takeIf(String::isNotBlank)
-                    ?: id.takeIf { it != DEFAULT_WORKSPACE_ID }?.let { "dextra-$it" },
+                contextId = value.optString("contextId").takeIf(String::isNotBlank),
                 createdAt = value.optLong("createdAt", System.currentTimeMillis()),
                 lastUsedAt = value.optLong("lastUsedAt", 0L),
                 tabs = tabs,
