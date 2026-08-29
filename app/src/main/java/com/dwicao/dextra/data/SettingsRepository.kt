@@ -61,6 +61,7 @@ data class BrowserSettings(
     val startPage: StartPageSettings = StartPageSettings(),
     val desktopSites: Boolean = false,
     val httpsOnly: Boolean = false,
+    val cookieBannerMode: Int = 0,
     val tabBarWithAddressBar: Boolean = true,
     val verticalTabs: Boolean = true,
     val dnsOverHttpsEnabled: Boolean = false,
@@ -163,6 +164,7 @@ class SettingsRepository(private val context: Context) {
         val startPage = stringPreferencesKey("start_page")
         val desktopSites = booleanPreferencesKey("desktop_sites")
         val httpsOnly = booleanPreferencesKey("https_only")
+        val cookieBannerMode = intPreferencesKey("cookie_banner_mode")
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
         val verticalTabs = booleanPreferencesKey("vertical_tabs")
         val dnsOverHttpsEnabled = booleanPreferencesKey("dns_over_https_enabled")
@@ -237,6 +239,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setHttpsOnly(enabled: Boolean) {
         context.settingsDataStore.edit { it[Keys.httpsOnly] = enabled }
+    }
+
+    suspend fun setCookieBannerMode(mode: Int) {
+        context.settingsDataStore.edit { it[Keys.cookieBannerMode] = mode.coerceIn(0, 2) }
     }
 
     suspend fun setHomepage(homepage: String) {
@@ -532,6 +538,7 @@ class SettingsRepository(private val context: Context) {
             settings.optJSONObject("startPage")?.let { preferences[Keys.startPage] = it.toString() }
             if (settings.has("desktopSites")) preferences[Keys.desktopSites] = settings.optBoolean("desktopSites")
             if (settings.has("httpsOnly")) preferences[Keys.httpsOnly] = settings.optBoolean("httpsOnly")
+            if (settings.has("cookieBannerMode")) preferences[Keys.cookieBannerMode] = settings.optInt("cookieBannerMode").coerceIn(0, 2)
             if (settings.has("tabBarWithAddressBar")) preferences[Keys.tabBarWithAddressBar] = settings.optBoolean("tabBarWithAddressBar")
             if (settings.has("verticalTabs")) preferences[Keys.verticalTabs] = settings.optBoolean("verticalTabs")
             settings.optDouble("accessibilityTextScale", 1.0).toFloat().takeIf { it.isFinite() }
@@ -583,6 +590,7 @@ class SettingsRepository(private val context: Context) {
         startPage = startPage(),
         desktopSites = get(Keys.desktopSites) ?: defaultDesktopSites(),
         httpsOnly = get(Keys.httpsOnly) ?: false,
+        cookieBannerMode = (get(Keys.cookieBannerMode) ?: 0).coerceIn(0, 2),
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
         verticalTabs = get(Keys.verticalTabs) ?: true,
         dnsOverHttpsEnabled = get(Keys.dnsOverHttpsEnabled) ?: false,

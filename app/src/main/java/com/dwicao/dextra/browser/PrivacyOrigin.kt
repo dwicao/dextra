@@ -38,7 +38,8 @@ fun buildPrivacyOrigins(
                 setting.userScriptsEnabled != null ||
                 setting.zoomPercent != null ||
                 setting.translationTarget != null ||
-                setting.httpsOnly != null,
+                setting.httpsOnly != null ||
+                setting.cookieBannerMode != null,
             blockedCount = maxOf(current?.blockedCount ?: 0, blockedByOrigin[setting.origin].orZero()),
             updatedAt = maxOf(current?.updatedAt ?: 0L, setting.updatedAt),
         )

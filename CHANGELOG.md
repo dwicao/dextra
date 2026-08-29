@@ -31,6 +31,12 @@ All notable changes to Dextra are documented here. The commit log at the end rec
 - Customizable new-tab start page with safe HTTPS quick links.
 - Extension permission center with optional permission revocation.
 - Room migrations from version 14 to 15 and 15 to 16 for download and HTTPS policy metadata.
+- Cookie banner control with global reject modes and per-site consent overrides.
+- Encrypted contact/address autofill through GeckoView, excluding payment cards.
+- Local network activity inspector for observable navigation, response, download, and blocking events.
+- Share-sheet and drag/drop transfer for normal open tabs between windows or devices.
+- Copyable DeX performance benchmark reports for physical-device QA.
+- Room migration from version 16 to 17 for cookie-banner policy metadata.
 
 ## [0.5.0] - 2026-08-29
 

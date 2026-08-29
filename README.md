@@ -35,6 +35,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Custom HTTPS search engines with `%s` query templates.
 - Homepage, search engine, theme, desktop-site, and tab layout settings.
 - Customizable new-tab start page with default quick links, privacy-tip toggles, and safe HTTPS links.
+- Cookie consent control with global reject modes and per-site banner overrides.
 - Per-site desktop mode, ad blocking, userscripts, and zoom overrides.
 - Global and per-site HTTPS-only navigation policy with automatic HTTP upgrade.
 - GeckoView tracking protection and Global Privacy Control.
@@ -42,6 +43,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - HTTPS-only remote filter lists and userscripts.
 - Mozilla-signed Firefox extension installation.
 - Extension permission center showing required/granted optional permissions and allowing optional access revocation.
+- Encrypted address/contact autofill through GeckoView's address storage delegate; cards are intentionally not stored.
 - Durable downloads through WorkManager.
 - Download queue controls with priority, Wi-Fi-only constraints, delayed scheduling, and bulk pause/resume.
 - User-selected SAF download folders and download search/status/type filters.
@@ -76,6 +78,8 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Site permission center with per-origin allow, block, ask, and reset controls.
 - Security diagnostics with HTTPS certificate details, SHA-256 fingerprint, DNS mode, and blocker statistics.
 - Local performance dashboard with startup, memory, frame pacing, jank, and DeX-like window metrics.
+- Observable network activity inspector for navigation, responses, downloads, and content-blocking events.
+- Android share/drag-drop transfer for normal workspace tabs between windows or devices without cookies or credentials.
 - Crash reports for Java uncaught exceptions.
 
 ## Architecture

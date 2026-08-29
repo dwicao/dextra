@@ -113,7 +113,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             if (selection.siteSettings) put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
                 put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
                 putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent)
-                putOpt("translationTarget", it.translationTarget); putOpt("httpsOnly", it.httpsOnly)
+                putOpt("translationTarget", it.translationTarget); putOpt("httpsOnly", it.httpsOnly); putOpt("cookieBannerMode", it.cookieBannerMode)
                 put("updatedAt", it.updatedAt); put("profileId", it.profileId)
             } }))
         }
@@ -219,6 +219,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
                     it.optIntOrNull("zoomPercent"), it.optString("translationTarget").takeIf(String::isNotBlank),
                     it.optLong("updatedAt", System.currentTimeMillis()), profileId = targetProfileId,
                     httpsOnly = it.optBooleanOrNull("httpsOnly"),
+                    cookieBannerMode = it.optIntOrNull("cookieBannerMode"),
                 ))
             }
         }
@@ -273,6 +274,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         })
         put("desktopSites", settings.desktopSites)
         put("httpsOnly", settings.httpsOnly)
+        put("cookieBannerMode", settings.cookieBannerMode)
         put("tabBarWithAddressBar", settings.tabBarWithAddressBar)
         put("verticalTabs", settings.verticalTabs)
         put("accessibilityTextScale", settings.accessibilityTextScale)

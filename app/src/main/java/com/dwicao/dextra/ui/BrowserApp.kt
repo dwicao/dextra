@@ -189,6 +189,7 @@ import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.browser.SecurityDiagnostics
 import com.dwicao.dextra.browser.PerformanceMetrics
+import com.dwicao.dextra.browser.NetworkActivity
 import com.dwicao.dextra.browser.sitePermissionLabel
 import com.dwicao.dextra.browser.PrivacyOrigin
 import com.dwicao.dextra.browser.AddressSuggestionSource
@@ -226,6 +227,7 @@ import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.TabWorkspace
 import com.dwicao.dextra.data.StoredCredential
+import com.dwicao.dextra.data.StoredAddress
 import com.dwicao.dextra.data.StoredWebPushSubscription
 import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.SearchEngine
@@ -240,6 +242,7 @@ import com.dwicao.dextra.ui.LocalDextraAccessibility
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.ScreenLength
 import kotlin.math.roundToInt
 
@@ -381,6 +384,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onSetSitePermission = viewModel::setSitePermission,
                   onOpenSecurityDiagnostics = viewModel::openSecurityDiagnostics,
                   onOpenPerformanceDashboard = viewModel::openPerformanceDashboard,
+                  onCopyPerformanceReport = viewModel::copyPerformanceReport,
+                  onOpenNetworkInspector = viewModel::openNetworkInspector,
+                  onClearNetworkActivity = viewModel::clearNetworkActivity,
+                  onShareCurrentWorkspaceTabs = viewModel::shareCurrentWorkspaceTabs,
                   workspaces = state.settings.workspaces,
                   activeWorkspaceId = state.settings.activeWorkspaceId,
                   onCreateWorkspace = viewModel::createWorkspace,
@@ -455,6 +462,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    onSetDesktopSites = viewModel::setDesktopSites,
                    httpsOnly = state.settings.httpsOnly,
                    onSetHttpsOnly = viewModel::setHttpsOnly,
+                   cookieBannerMode = state.settings.cookieBannerMode,
+                   onSetCookieBannerMode = viewModel::setCookieBannerMode,
                    onSetHomepage = viewModel::setHomepage,
                    startPage = state.settings.startPage,
                    onSetStartPageQuickLinks = viewModel::setStartPageQuickLinks,
@@ -499,6 +508,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onSetSiteUserScriptsOverride = viewModel::setCurrentSiteUserScriptsOverride,
                    onSetSiteZoomOverride = viewModel::setCurrentSiteZoomOverride,
                    onSetSiteHttpsOnly = viewModel::setCurrentSiteHttpsOnly,
+                   onSetSiteCookieBannerMode = viewModel::setCurrentSiteCookieBannerMode,
                   onClearSiteSettings = viewModel::clearCurrentSiteSettings,
                    onOpenQrCode = viewModel::openQrCode,
                     onOpenReaderMode = viewModel::openReaderMode,
@@ -524,12 +534,15 @@ fun DextraApp(viewModel: BrowserViewModel) {
                      onDeleteSessionTimeline = viewModel::deleteSessionTimeline,
                    credentials = state.credentials,
                    credentialCount = state.credentialCount,
-                   credentialVaultUnlocked = state.credentialVaultUnlocked,
+                  credentialVaultUnlocked = state.credentialVaultUnlocked,
+                    addresses = state.addresses,
                    webPushSubscriptions = state.webPushSubscriptions,
                    onDeleteCredential = viewModel::deleteCredential,
                    onRequestCredentialUnlock = viewModel::requestCredentialUnlock,
                    onLockCredentialVault = viewModel::lockCredentialVault,
                     onClearCredentials = viewModel::clearCredentials,
+                    onDeleteAddress = viewModel::deleteAddress,
+                    onClearAddresses = viewModel::clearAddresses,
                     onCopyCredentialUsername = viewModel::copyCredentialUsername,
                    onCopyCredentialPassword = viewModel::copyCredentialPassword,
                    onResolveWebPushPrompt = viewModel::resolveWebPushPrompt,
@@ -682,6 +695,10 @@ private fun BrowserScreen(
     onSetSitePermission: (String, String, String) -> Unit,
     onOpenSecurityDiagnostics: () -> Unit,
     onOpenPerformanceDashboard: () -> Unit,
+    onCopyPerformanceReport: () -> Unit,
+    onOpenNetworkInspector: () -> Unit,
+    onShareCurrentWorkspaceTabs: () -> Unit,
+    onClearNetworkActivity: () -> Unit,
     workspaces: List<TabWorkspace>,
     activeWorkspaceId: String,
     onCreateWorkspace: (String) -> Unit,
@@ -749,6 +766,8 @@ private fun BrowserScreen(
       onSetDesktopSites: (Boolean) -> Unit,
       httpsOnly: Boolean,
       onSetHttpsOnly: (Boolean) -> Unit,
+      cookieBannerMode: Int,
+      onSetCookieBannerMode: (Int) -> Unit,
       startPage: StartPageSettings,
       onSetStartPageQuickLinks: (Boolean) -> Unit,
       onSetStartPagePrivacyTip: (Boolean) -> Unit,
@@ -793,6 +812,7 @@ private fun BrowserScreen(
      onSetSiteUserScriptsOverride: (Boolean?) -> Unit,
       onSetSiteZoomOverride: (Int?) -> Unit,
       onSetSiteHttpsOnly: (Boolean?) -> Unit,
+      onSetSiteCookieBannerMode: (Int?) -> Unit,
       onClearSiteSettings: () -> Unit,
        onOpenQrCode: () -> Unit,
        onOpenReaderMode: () -> Unit,
@@ -811,14 +831,17 @@ private fun BrowserScreen(
          onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
          onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
          onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-        credentials: List<StoredCredential>,
-        credentialCount: Int,
+         credentials: List<StoredCredential>,
+         addresses: List<StoredAddress>,
+         credentialCount: Int,
         credentialVaultUnlocked: Boolean,
         webPushSubscriptions: List<StoredWebPushSubscription>,
         onDeleteCredential: (StoredCredential) -> Unit,
         onRequestCredentialUnlock: () -> Unit,
         onLockCredentialVault: () -> Unit,
-        onClearCredentials: () -> Unit,
+         onClearCredentials: () -> Unit,
+         onDeleteAddress: (StoredAddress) -> Unit,
+         onClearAddresses: () -> Unit,
         onCopyCredentialUsername: (StoredCredential) -> Unit,
         onCopyCredentialPassword: (StoredCredential) -> Unit,
         onResolveWebPushPrompt: (Boolean) -> Unit,
@@ -1050,6 +1073,8 @@ private fun BrowserScreen(
                   onSetDesktopSites = onSetDesktopSites,
                   httpsOnly = httpsOnly,
                   onSetHttpsOnly = onSetHttpsOnly,
+                  cookieBannerMode = cookieBannerMode,
+                  onSetCookieBannerMode = onSetCookieBannerMode,
                   startPage = startPage,
                   onSetStartPageQuickLinks = onSetStartPageQuickLinks,
                   onSetStartPagePrivacyTip = onSetStartPagePrivacyTip,
@@ -1062,14 +1087,17 @@ private fun BrowserScreen(
                     onSetHomepage = onSetHomepage,
                     onClearSitePermissions = onClearSitePermissions,
                   onOpenPrivacyDashboard = onOpenPrivacyDashboard,
-                   credentials = credentials,
+                    credentials = credentials,
+                    addresses = addresses,
                    credentialCount = credentialCount,
                    credentialVaultUnlocked = credentialVaultUnlocked,
                    webPushSubscriptions = webPushSubscriptions,
                    onDeleteCredential = onDeleteCredential,
                    onRequestCredentialUnlock = onRequestCredentialUnlock,
                    onLockCredentialVault = onLockCredentialVault,
-                  onClearCredentials = onClearCredentials,
+                    onClearCredentials = onClearCredentials,
+                    onDeleteAddress = onDeleteAddress,
+                    onClearAddresses = onClearAddresses,
                   onCopyCredentialUsername = onCopyCredentialUsername,
                    onCopyCredentialPassword = onCopyCredentialPassword,
                    onRevokeWebPushSubscription = onRevokeWebPushSubscription,
@@ -1233,6 +1261,14 @@ private fun BrowserScreen(
                       menuExpanded = false
                       onOpenPerformanceDashboard()
                   },
+                  onOpenNetworkInspector = {
+                      menuExpanded = false
+                      onOpenNetworkInspector()
+                  },
+                  onShareCurrentWorkspaceTabs = {
+                      menuExpanded = false
+                      onShareCurrentWorkspaceTabs()
+                  },
                   onOpenWorkspaces = {
                       menuExpanded = false
                       onSetOverlay(BrowserOverlay.WORKSPACES)
@@ -1359,6 +1395,12 @@ private fun BrowserScreen(
                          BrowserOverlay.PERFORMANCE -> PerformanceDashboardSheet(
                              metrics = state.performance,
                              onRefresh = { onOpenPerformanceDashboard() },
+                             onCopy = onCopyPerformanceReport,
+                         )
+                         BrowserOverlay.NETWORK -> NetworkActivitySheet(
+                             activity = state.networkActivity,
+                             tabs = state.tabs,
+                             onClear = onClearNetworkActivity,
                          )
                           BrowserOverlay.SETTINGS,
                          BrowserOverlay.BOOKMARKS,
@@ -1426,6 +1468,8 @@ private fun BrowserScreen(
                  onSetUserScriptsOverride = onSetSiteUserScriptsOverride,
                  onSetZoomOverride = onSetSiteZoomOverride,
                  onSetHttpsOnlyOverride = onSetSiteHttpsOnly,
+                 globalCookieBannerMode = state.settings.cookieBannerMode,
+                 onSetCookieBannerModeOverride = onSetSiteCookieBannerMode,
                  onClear = onClearSiteSettings,
                  onDismiss = onCloseSiteSettings,
              )
@@ -4408,6 +4452,7 @@ private fun SyncPreviewDialog(
 private fun PerformanceDashboardSheet(
     metrics: PerformanceMetrics,
     onRefresh: () -> Unit,
+    onCopy: () -> Unit,
 ) {
     SheetHeader("Performance dashboard", "Measure the current process and window")
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
@@ -4419,6 +4464,11 @@ private fun PerformanceDashboardSheet(
                 Icon(Icons.Outlined.Refresh, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text("Refresh")
+            }
+            OutlinedButton(onClick = onCopy) {
+                Icon(Icons.Outlined.ContentCopy, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Copy report")
             }
         }
         PerformanceMetricCard(
@@ -4465,6 +4515,62 @@ private fun PerformanceMetricCard(
             Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+}
+
+@Composable
+private fun NetworkActivitySheet(
+    activity: List<NetworkActivity>,
+    tabs: List<BrowserTabState>,
+    onClear: () -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val visible = activity.asReversed().filter { item ->
+        query.isBlank() || item.url.contains(query, ignoreCase = true) || item.kind.contains(query, ignoreCase = true) || item.status.contains(query, ignoreCase = true)
+    }
+    SheetHeader("Network activity", "Observable navigation, downloads, and blocking events")
+    Text(
+        "GeckoView does not expose every subresource request to the app. This local inspector shows the events Dextra can observe without modifying page traffic.",
+        modifier = Modifier.padding(horizontal = 20.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.weight(1f),
+            label = { Text("Filter activity") },
+            singleLine = true,
+        )
+        TextButton(onClick = onClear, enabled = activity.isNotEmpty()) { Text("Clear") }
+    }
+    if (visible.isEmpty()) {
+        EmptyLibrary("No observable network activity yet.", Icons.Outlined.Security)
+    } else {
+        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+            items(visible, key = { it.id }) { item ->
+                val tabTitle = tabs.firstOrNull { it.id == item.tabId }?.title
+                ListItem(
+                    headlineContent = { Text(item.kind.replaceFirstChar { it.uppercase() } + "  •  " + item.status, maxLines = 1) },
+                    supportingContent = {
+                        Column {
+                            Text(item.url, maxLines = 2)
+                            Text(
+                                listOfNotNull(tabTitle, java.text.DateFormat.getTimeInstance().format(java.util.Date(item.timestamp))).joinToString("  •  "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    leadingContent = { Icon(if (item.secure) Icons.Outlined.Lock else Icons.Outlined.Language, contentDescription = null) },
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
 }
 
 @Composable
@@ -4547,6 +4653,8 @@ private fun BrowserMenu(
     onOpenSecurityDiagnostics: () -> Unit,
     onOpenWorkspaces: () -> Unit,
     onOpenPerformanceDashboard: () -> Unit,
+    onOpenNetworkInspector: () -> Unit,
+    onShareCurrentWorkspaceTabs: () -> Unit,
     onOpenCommandPalette: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onToggleReadingList: () -> Unit,
@@ -4636,6 +4744,16 @@ private fun BrowserMenu(
                     text = { Text("Performance dashboard") },
                     leadingIcon = { Icon(Icons.Outlined.Speed, contentDescription = null) },
                     onClick = onOpenPerformanceDashboard,
+                )
+                DropdownMenuItem(
+                    text = { Text("Network activity") },
+                    leadingIcon = { Icon(Icons.Outlined.Security, contentDescription = null) },
+                    onClick = onOpenNetworkInspector,
+                )
+                DropdownMenuItem(
+                    text = { Text("Share open tabs") },
+                    leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                    onClick = onShareCurrentWorkspaceTabs,
                 )
                 DropdownMenuItem(
                     text = { Text("Save to reading list") },
@@ -5974,6 +6092,7 @@ private fun SiteSettingsDialog(
     setting: SiteSetting?,
     globalDesktopSites: Boolean,
     globalHttpsOnly: Boolean,
+    globalCookieBannerMode: Int,
     globalAdBlocking: Boolean,
     globalUserScripts: Boolean,
     onSetDesktopOverride: (Boolean?) -> Unit,
@@ -5981,6 +6100,7 @@ private fun SiteSettingsDialog(
     onSetUserScriptsOverride: (Boolean?) -> Unit,
     onSetZoomOverride: (Int?) -> Unit,
     onSetHttpsOnlyOverride: (Boolean?) -> Unit,
+    onSetCookieBannerModeOverride: (Int?) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -6000,6 +6120,12 @@ private fun SiteSettingsDialog(
                 SiteOverrideToggle("Desktop site", setting?.desktopSites, globalDesktopSites, onSetDesktopOverride)
                 Spacer(Modifier.height(12.dp))
                 SiteOverrideToggle("HTTPS-only", setting?.httpsOnly, globalHttpsOnly, onSetHttpsOnlyOverride)
+                Spacer(Modifier.height(12.dp))
+                CookieBannerOverride(
+                    mode = setting?.cookieBannerMode,
+                    globalMode = globalCookieBannerMode,
+                    onChange = onSetCookieBannerModeOverride,
+                )
                 Spacer(Modifier.height(12.dp))
                 SiteOverrideToggle("Ad blocking", setting?.adBlockingEnabled, globalAdBlocking, onSetAdBlockingOverride)
                 Spacer(Modifier.height(12.dp))
@@ -6060,6 +6186,47 @@ private fun SiteOverrideToggle(
 }
 
 @Composable
+private fun CookieBannerOverride(
+    mode: Int?,
+    globalMode: Int,
+    onChange: (Int?) -> Unit,
+) {
+    Text("Cookie consent", style = MaterialTheme.typography.titleSmall)
+    Text(
+        "Global is currently ${cookieBannerModeLabel(globalMode)}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FilterChip(selected = mode == null, onClick = { onChange(null) }, label = { Text("Global") })
+        FilterChip(
+            selected = mode == ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_DISABLED,
+            onClick = { onChange(ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_DISABLED) },
+            label = { Text("Off") },
+        )
+        FilterChip(
+            selected = mode == ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT,
+            onClick = { onChange(ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT) },
+            label = { Text("Reject") },
+        )
+        FilterChip(
+            selected = mode == ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT_OR_ACCEPT,
+            onClick = { onChange(ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT_OR_ACCEPT) },
+            label = { Text("Reject or accept") },
+        )
+    }
+}
+
+private fun cookieBannerModeLabel(mode: Int): String = when (mode) {
+    ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT -> "Reject"
+    ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT_OR_ACCEPT -> "Reject or accept"
+    else -> "Off"
+}
+
+@Composable
 private fun SettingsScreen(
     onBack: () -> Unit,
     themeMode: ThemeMode,
@@ -6100,18 +6267,23 @@ private fun SettingsScreen(
      onRunWebDavSync: () -> Unit,
       onResolveWebDavConflict: (String) -> Unit,
       onSetDesktopSites: (Boolean) -> Unit,
-     onSetHttpsOnly: (Boolean) -> Unit,
-    onSetHomepage: (String) -> Unit,
+      onSetHttpsOnly: (Boolean) -> Unit,
+     cookieBannerMode: Int,
+     onSetCookieBannerMode: (Int) -> Unit,
+     onSetHomepage: (String) -> Unit,
     onClearSitePermissions: () -> Unit,
     onOpenPrivacyDashboard: () -> Unit,
-    credentials: List<StoredCredential>,
-    credentialCount: Int,
+     credentials: List<StoredCredential>,
+     addresses: List<StoredAddress>,
+     credentialCount: Int,
     credentialVaultUnlocked: Boolean,
     webPushSubscriptions: List<StoredWebPushSubscription>,
     onDeleteCredential: (StoredCredential) -> Unit,
     onRequestCredentialUnlock: () -> Unit,
     onLockCredentialVault: () -> Unit,
-    onClearCredentials: () -> Unit,
+     onClearCredentials: () -> Unit,
+     onDeleteAddress: (StoredAddress) -> Unit,
+     onClearAddresses: () -> Unit,
     onCopyCredentialUsername: (StoredCredential) -> Unit,
     onCopyCredentialPassword: (StoredCredential) -> Unit,
     onRevokeWebPushSubscription: (StoredWebPushSubscription) -> Unit,
@@ -6336,6 +6508,25 @@ private fun SettingsScreen(
              checked = httpsOnly,
              onCheckedChange = onSetHttpsOnly,
          )
+         Spacer(Modifier.height(14.dp))
+         Text("Cookie consent", style = MaterialTheme.typography.titleSmall)
+         Text(
+             "Choose how GeckoView handles supported cookie banners by default.",
+             style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+         )
+         Row(
+             modifier = Modifier.horizontalScroll(rememberScrollState()),
+             horizontalArrangement = Arrangement.spacedBy(6.dp),
+         ) {
+             listOf(
+                 0 to "Off",
+                 1 to "Reject",
+                 2 to "Reject or accept",
+             ).forEach { (mode, label) ->
+                 FilterChip(selected = cookieBannerMode == mode, onClick = { onSetCookieBannerMode(mode) }, label = { Text(label) })
+             }
+         }
         Spacer(Modifier.height(14.dp))
         SettingToggle(
             title = "Tab bar beside address bar",
@@ -6652,7 +6843,42 @@ private fun SettingsScreen(
               }
           }
       }
-      SettingSection("Web Push") {
+       SettingSection("Address autofill") {
+           Text(
+               "Addresses are encrypted at rest and are offered to compatible forms through GeckoView. Private tabs never save or receive addresses.",
+               style = MaterialTheme.typography.bodySmall,
+               color = MaterialTheme.colorScheme.onSurfaceVariant,
+           )
+           if (addresses.isEmpty()) {
+               Text("No saved addresses.", modifier = Modifier.padding(top = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+           } else {
+               addresses.forEach { address ->
+                   ListItem(
+                       headlineContent = { Text(address.name, maxLines = 1) },
+                       supportingContent = {
+                           Text(
+                               listOfNotNull(address.streetAddress, address.postalCode, address.country, address.email)
+                                   .filter(String::isNotBlank)
+                                   .joinToString("  •  "),
+                               maxLines = 2,
+                           )
+                       },
+                       leadingContent = { Icon(Icons.Outlined.Home, contentDescription = null) },
+                       trailingContent = {
+                           IconButton(onClick = { onDeleteAddress(address) }) {
+                               Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete saved address")
+                           }
+                       },
+                   )
+               }
+               TextButton(onClick = onClearAddresses) {
+                   Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                   Spacer(Modifier.width(6.dp))
+                   Text("Delete all addresses")
+               }
+           }
+       }
+       SettingSection("Web Push") {
           Text(
               "Review subscriptions created by websites. Delivery is handled by the configured push provider; revoke entries here when they are no longer needed.",
               style = MaterialTheme.typography.bodySmall,

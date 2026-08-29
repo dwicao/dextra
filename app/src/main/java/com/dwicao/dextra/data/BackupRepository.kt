@@ -29,7 +29,7 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
              put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
                  put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
                  putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent)
-                 putOpt("translationTarget", it.translationTarget); putOpt("httpsOnly", it.httpsOnly)
+                 putOpt("translationTarget", it.translationTarget); putOpt("httpsOnly", it.httpsOnly); putOpt("cookieBannerMode", it.cookieBannerMode)
                  put("updatedAt", it.updatedAt); put("profileId", it.profileId)
              } }))
              put("installedWebApps", JSONArray(dao.getInstalledWebApps().map { JSONObject().apply {
@@ -83,6 +83,7 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
                       updatedAt = it.optLong("updatedAt", System.currentTimeMillis()),
                       profileId = targetProfileId,
                       httpsOnly = it.optBooleanOrNull("httpsOnly"),
+                      cookieBannerMode = it.optIntOrNull("cookieBannerMode"),
                   ))
             }
         }
