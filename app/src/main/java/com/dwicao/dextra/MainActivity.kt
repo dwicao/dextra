@@ -11,17 +11,22 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.activity.ComponentActivity
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.ui.DextraApp
+import org.mozilla.geckoview.WebNotification
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val browserViewModel: BrowserViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleWebNotificationIntent(intent)
         browserViewModel.handleIncomingIntent(intent)
         window.decorView.setOnDragListener { _, event ->
             if (event.action == android.view.DragEvent.ACTION_DROP) {
@@ -41,7 +46,7 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null || state.readerMode != null ||
-                    state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null
+                    state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null || state.webPushPrompt != null
                 ) {
                     browserViewModel.dismissTransientUi()
                     return
@@ -65,7 +70,16 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleWebNotificationIntent(intent)
         browserViewModel.handleIncomingIntent(intent)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun handleWebNotificationIntent(intent: Intent?) {
+        intent?.getParcelableExtra<WebNotification>(GeckoRuntimeHolder.EXTRA_WEB_NOTIFICATION)?.let { notification ->
+            notification.click()
+            intent.removeExtra(GeckoRuntimeHolder.EXTRA_WEB_NOTIFICATION)
+        }
     }
 
     fun enterBrowserPictureInPicture() {
@@ -76,6 +90,37 @@ class MainActivity : ComponentActivity() {
                     .build(),
             )
         }
+    }
+
+    fun authenticateCredentialVault() {
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        if (BiometricManager.from(this).canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
+            browserViewModel.reportCredentialUnlockFailure("No biometric or device credential is available")
+            return
+        }
+        val prompt = BiometricPrompt(
+            this,
+            ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    browserViewModel.unlockCredentialVault()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    if (errorCode != BiometricPrompt.ERROR_USER_CANCELED && errorCode != BiometricPrompt.ERROR_CANCELED) {
+                        browserViewModel.reportCredentialUnlockFailure(errString.toString())
+                    }
+                }
+            },
+        )
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Unlock saved logins")
+                .setSubtitle("Authenticate to use encrypted browser credentials")
+                .setAllowedAuthenticators(authenticators)
+                .build(),
+        )
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {

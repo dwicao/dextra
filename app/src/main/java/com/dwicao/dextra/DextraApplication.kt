@@ -1,13 +1,21 @@
 package com.dwicao.dextra
 
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.os.Process
 import android.provider.MediaStore
 import androidx.annotation.RequiresApi
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -17,6 +25,8 @@ import java.util.Locale
 import kotlin.system.exitProcess
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
+import org.mozilla.geckoview.WebNotification
+import org.mozilla.geckoview.WebNotificationDelegate
 
 class DextraApplication : Application() {
     override fun onCreate() {
@@ -109,6 +119,60 @@ object GeckoRuntimeHolder {
                 .extensionsWebAPIEnabled(true)
                 .webManifest(true)
                 .build(),
-        ).also { runtime = it }
+        ).also {
+            it.setWebNotificationDelegate(createWebNotificationDelegate(context.applicationContext))
+            runtime = it
+        }
     }
+
+    private fun createWebNotificationDelegate(context: Context): WebNotificationDelegate = object : WebNotificationDelegate {
+        private val notificationIds = ConcurrentHashMap<String, Int>()
+        private val nextId = AtomicInteger(10_000)
+
+        override fun onShowNotification(notification: WebNotification) {
+            if (notification.privateBrowsing) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) return
+            val manager = context.getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                manager.createNotificationChannel(
+                    NotificationChannel(WEB_NOTIFICATION_CHANNEL, "Website notifications", NotificationManager.IMPORTANCE_DEFAULT),
+                )
+            }
+            val id = nextId.getAndIncrement()
+            val key = notification.tag.orEmpty().ifBlank { notification.origin }
+            notificationIds[key] = id
+            val clickIntent = Intent(context, MainActivity::class.java)
+                .putExtra(EXTRA_WEB_NOTIFICATION, notification)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                id,
+                clickIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            manager.notify(
+                id,
+                NotificationCompat.Builder(context, WEB_NOTIFICATION_CHANNEL)
+                    .setSmallIcon(R.drawable.ic_launcher)
+                    .setContentTitle(notification.title.orEmpty().ifBlank { notification.origin })
+                    .setContentText(notification.text)
+                    .setContentIntent(pendingIntent)
+                    .setAutoCancel(true)
+                    .setOngoing(notification.requireInteraction)
+                    .build(),
+            )
+        }
+
+        override fun onCloseNotification(notification: WebNotification) {
+            val key = notification.tag.orEmpty().ifBlank { notification.origin }
+            notificationIds.remove(key)?.let { id ->
+                context.getSystemService(NotificationManager::class.java)?.cancel(id)
+            }
+        }
+    }
+
+    private const val WEB_NOTIFICATION_CHANNEL = "dextra_web_notifications"
+    const val EXTRA_WEB_NOTIFICATION = "dextra_web_notification"
 }

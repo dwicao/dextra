@@ -107,6 +107,7 @@ data class InstalledWebApp(
     val startUrl: String,
     val scope: String,
     val installedAt: Long,
+    val iconUrl: String? = null,
 )
 
 @Dao
@@ -250,7 +251,7 @@ interface BrowserDao {
     suspend fun getInstalledWebApps(): List<InstalledWebApp>
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 11, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 12, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -263,7 +264,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -387,6 +388,12 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                     """.trimIndent(),
                 )
                 database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_installed_web_apps_origin ON installed_web_apps(origin)")
+            }
+        }
+
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE installed_web_apps ADD COLUMN iconUrl TEXT")
             }
         }
     }

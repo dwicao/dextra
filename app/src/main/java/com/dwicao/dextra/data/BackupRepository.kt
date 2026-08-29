@@ -32,7 +32,7 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
              } }))
              put("installedWebApps", JSONArray(dao.getInstalledWebApps().map { JSONObject().apply {
                  put("id", it.id); put("origin", it.origin); put("name", it.name)
-                 put("startUrl", it.startUrl); put("scope", it.scope); put("installedAt", it.installedAt)
+                put("startUrl", it.startUrl); put("scope", it.scope); put("installedAt", it.installedAt); put("iconUrl", it.iconUrl)
              } }))
         }
         context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString().toByteArray(Charsets.UTF_8)) }
@@ -84,6 +84,7 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
                         startUrl = it.getString("startUrl"),
                         scope = it.getString("scope"),
                         installedAt = it.optLong("installedAt", System.currentTimeMillis()),
+                        iconUrl = it.optString("iconUrl").takeIf(String::isNotBlank),
                     ),
                 )
             }

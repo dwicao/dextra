@@ -31,10 +31,21 @@ data class StoredCredential(
 class CredentialVault(private val context: Context) {
     private val file = File(context.filesDir, "credentials.vault")
     private val _credentials = MutableStateFlow<List<StoredCredential>>(emptyList())
+    private val _unlocked = MutableStateFlow(false)
     val credentials: StateFlow<List<StoredCredential>> = _credentials.asStateFlow()
+    val unlocked: StateFlow<Boolean> = _unlocked.asStateFlow()
 
     suspend fun load() {
         _credentials.value = runCatching { read() }.getOrDefault(emptyList())
+        _unlocked.value = _credentials.value.isEmpty()
+    }
+
+    fun unlock() {
+        _unlocked.value = true
+    }
+
+    fun lock() {
+        if (_credentials.value.isNotEmpty()) _unlocked.value = false
     }
 
     @Synchronized
@@ -45,6 +56,7 @@ class CredentialVault(private val context: Context) {
         } + credential).sortedByDescending { it.updatedAt }.take(MAX_CREDENTIALS)
         write(updated)
         _credentials.value = updated
+        if (updated.isEmpty()) _unlocked.value = true
     }
 
     @Synchronized
@@ -52,6 +64,7 @@ class CredentialVault(private val context: Context) {
         val updated = _credentials.value.filterNot { it.id == id }
         write(updated)
         _credentials.value = updated
+        if (updated.isEmpty()) _unlocked.value = true
     }
 
     @Synchronized
@@ -59,12 +72,14 @@ class CredentialVault(private val context: Context) {
         val updated = _credentials.value.filterNot { it.origin == origin }
         write(updated)
         _credentials.value = updated
+        if (updated.isEmpty()) _unlocked.value = true
     }
 
     @Synchronized
     fun clear() {
         runCatching { file.delete() }
         _credentials.value = emptyList()
+        _unlocked.value = true
     }
 
     private fun read(): List<StoredCredential> {

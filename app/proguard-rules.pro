@@ -11,6 +11,8 @@
 -keep class com.dwicao.dextra.DextraApplication { *; }
 -keep class com.dwicao.dextra.MainActivity { *; }
 -keep class com.dwicao.dextra.PwaActivity { *; }
+-keep class com.dwicao.dextra.BrowserWindowActivity { *; }
+-keep class com.dwicao.dextra.WebPushReceiver { *; }
 -keep class com.dwicao.dextra.browser.BrowserViewModel { *; }
 -keep class com.dwicao.dextra.browser.DownloadWorker { *; }
 -keep class com.dwicao.dextra.data.BrowserDatabase { *; }

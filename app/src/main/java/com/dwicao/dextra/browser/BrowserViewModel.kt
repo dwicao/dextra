@@ -30,6 +30,7 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.dwicao.dextra.GeckoRuntimeHolder
 import com.dwicao.dextra.PwaActivity
+import com.dwicao.dextra.BrowserWindowActivity
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.BackupRepository
 import com.dwicao.dextra.data.Bookmark
@@ -53,6 +54,8 @@ import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.SettingsRepository
 import com.dwicao.dextra.data.ThemeMode
+import com.dwicao.dextra.data.StoredWebPushSubscription
+import com.dwicao.dextra.data.WebPushStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -75,6 +78,10 @@ import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
 import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebResponse
+import org.mozilla.geckoview.WebPushDelegate
+import org.mozilla.geckoview.WebPushSubscription
+import android.print.PrintAttributes
+import android.print.PrintManager
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URI
@@ -82,6 +89,10 @@ import java.io.File
 import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.security.KeyPairGenerator
+import java.security.spec.ECGenParameterSpec
+import java.security.interfaces.ECPublicKey
+import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.UUID
 
@@ -146,6 +157,7 @@ enum class ContextMenuAction {
     TOGGLE_BOOKMARK,
     SAVE_PAGE,
     OPEN_IN_SPLIT,
+    OPEN_IN_NEW_WINDOW,
     CLOSE_SPLIT,
     SWAP_SPLIT,
     DISMISS,
@@ -220,6 +232,20 @@ data class WebAppManifestInfo(
     val name: String,
     val startUrl: String,
     val scope: String,
+    val iconUrl: String? = null,
+)
+
+data class WebPushPrompt(
+    val id: String,
+    val origin: String,
+    val scope: String,
+    val appServerKey: ByteArray?,
+    val result: GeckoResult<WebPushSubscription>,
+)
+
+private data class CreatedWebPushSubscription(
+    val record: StoredWebPushSubscription,
+    val subscription: WebPushSubscription,
 )
 
 data class ExtensionPopupState(
@@ -283,6 +309,10 @@ private const val PROGRESS_UPDATE_INTERVAL_MS = 100L
 private const val MAX_SESSION_STATE_BYTES = 256 * 1024
 private const val MAX_OFFLINE_ARTICLE_BYTES = 2 * 1024 * 1024
 private const val MAX_READER_ARTICLE_BYTES = 2 * 1024 * 1024
+private const val MAX_HTML_EXPORT_BYTES = 5 * 1024 * 1024
+private const val MAX_PWA_ICON_BYTES = 512 * 1024
+private const val MAX_PWA_MANIFEST_BYTES = 512 * 1024
+private const val WEB_PUSH_ENDPOINT_BASE = "https://updates.push.services.mozilla.com/wpush/v2/"
 
 data class ExtensionUpdatePrompt(
     val id: String,
@@ -328,6 +358,12 @@ data class BrowserUiState(
     val blockerStats: BlockerStats = BlockerStats(),
     val credentials: List<StoredCredential> = emptyList(),
     val standalonePwa: Boolean = false,
+    val standaloneWindow: Boolean = false,
+    val webPushPrompt: WebPushPrompt? = null,
+    val webPushSubscriptions: List<StoredWebPushSubscription> = emptyList(),
+    val credentialCount: Int = 0,
+    val credentialVaultUnlocked: Boolean = false,
+    val credentialUnlockRequest: Long = 0,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -337,6 +373,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val settingsRepository = SettingsRepository(application)
     private val backupRepository = BackupRepository(application, dao)
     private val credentialVault = CredentialVault(application)
+    private val webPushStore = WebPushStore(application)
     private val _state = MutableStateFlow(BrowserUiState())
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val extensionActionObjects = mutableMapOf<String, WebExtension.Action>()
@@ -344,6 +381,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val queuedContentPermissions = ArrayDeque<ContentPermissionPrompt>()
     private val queuedAndroidPermissions = ArrayDeque<AndroidPermissionPrompt>()
     private val queuedMediaPermissions = ArrayDeque<MediaPermissionPrompt>()
+    private val queuedWebPushPrompts = ArrayDeque<WebPushPrompt>()
     private val pageZoomByTab = mutableMapOf<String, Int>()
     private val lastProgressUpdateAt = mutableMapOf<String, Long>()
     private val trackerBlockedByTab = mutableMapOf<String, Int>()
@@ -352,6 +390,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private var persistJob: Job? = null
     private var pendingIncomingUri: String? = null
     private var pendingPwaUri: String? = null
+    private var pendingWindowUri: String? = null
+    private var pendingWindowPrivate = false
     @Volatile
     private var pendingExtensionPackagePath: String? = null
     @Volatile
@@ -363,6 +403,48 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     @Volatile
     private var adBlockExtension: WebExtension? = null
     private var adBlockStats = BlockerStats()
+
+    private val webPushDelegate = object : WebPushDelegate {
+        override fun onSubscribe(scope: String, appServerKey: ByteArray?): GeckoResult<WebPushSubscription> {
+            val existing = webPushStore.get(scope)
+            if (existing != null) return GeckoResult.fromValue(webPushStore.run { existing.toGeckoSubscription() })
+            val origin = NavigationPolicy.origin(scope) ?: return GeckoResult.fromValue<WebPushSubscription>(null)
+            if (isPrivateCredentialOrigin(origin)) return GeckoResult.fromValue<WebPushSubscription>(null)
+            val result = GeckoResult<WebPushSubscription>()
+            val prompt = WebPushPrompt(
+                id = UUID.randomUUID().toString(),
+                origin = origin,
+                scope = scope,
+                appServerKey = appServerKey,
+                result = result,
+            )
+            if (_state.value.webPushPrompt == null) {
+                _state.update { it.copy(webPushPrompt = prompt) }
+            } else {
+                queuedWebPushPrompts.addLast(prompt)
+            }
+            return result
+        }
+
+        override fun onGetSubscription(scope: String): GeckoResult<WebPushSubscription> {
+            val subscription = webPushStore.get(scope)
+            return if (subscription == null) {
+                GeckoResult.fromValue<WebPushSubscription>(null)
+            } else {
+                GeckoResult.fromValue(webPushStore.run { subscription.toGeckoSubscription() })
+            }
+        }
+
+        override fun onUnsubscribe(scope: String): GeckoResult<Void> {
+            val result = GeckoResult<Void>()
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { webPushStore.delete(scope) }
+                    .onSuccess { result.complete(null) }
+                    .onFailure { result.completeExceptionally(it) }
+            }
+            return result
+        }
+    }
 
     private val autocompleteStorageDelegate = object : org.mozilla.geckoview.Autocomplete.StorageDelegate {
         override fun onLoginFetch(origin: String): GeckoResult<Array<org.mozilla.geckoview.Autocomplete.LoginEntry>> =
@@ -541,10 +623,32 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             credentialVault.load()
             credentialVault.credentials.collect { credentials ->
-                _state.update { it.copy(credentials = credentials) }
+                _state.update {
+                    it.copy(
+                        credentials = if (credentialVault.unlocked.value) credentials else emptyList(),
+                        credentialCount = credentials.size,
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            credentialVault.unlocked.collect { unlocked ->
+                _state.update { state ->
+                    state.copy(
+                        credentialVaultUnlocked = unlocked,
+                        credentials = if (unlocked) credentialVault.credentials.value else emptyList(),
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            webPushStore.load()
+            webPushStore.subscriptions.collect { subscriptions ->
+                _state.update { it.copy(webPushSubscriptions = subscriptions) }
             }
         }
         runtime.setAutocompleteStorageDelegate(autocompleteStorageDelegate)
+        runtime.webPushController.setDelegate(webPushDelegate)
         viewModelScope.launch {
             settingsRepository.settings.collect { settings ->
                 val desktopSitesChanged = _state.value.settings.desktopSites != settings.desktopSites
@@ -566,6 +670,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     pendingPwaUri?.let { uri ->
                         pendingPwaUri = null
                         openPwaUri(uri)
+                    }
+                    pendingWindowUri?.let { uri ->
+                        pendingWindowUri = null
+                        openWindowUri(uri, pendingWindowPrivate)
+                        pendingWindowPrivate = false
                     }
                 }
                 _state.value.tabs.forEach { tab ->
@@ -1169,6 +1278,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateSessionActivity(primaryId, secondaryId)
     }
 
+    fun openTabInNewWindow(tabId: String) {
+        val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        if (!tab.hasPage || !NavigationPolicy.isAllowedTopLevel(tab.url)) {
+            showSnackbar("This tab cannot be opened in a new window")
+            return
+        }
+        runCatching {
+            getApplication<Application>().startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(tab.url))
+                    .setClass(getApplication(), BrowserWindowActivity::class.java)
+                    .putExtra(BrowserWindowActivity.EXTRA_PRIVATE, tab.isPrivate)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK),
+            )
+        }.onFailure { showSnackbar("Could not open a new browser window") }
+    }
+
     fun closeSplit() {
         val current = _state.value
         if (current.splitSecondaryTabId == null) return
@@ -1400,6 +1525,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.value.contentPermission?.result?.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
         _state.value.androidPermission?.callback?.reject()
         _state.value.mediaPermission?.callback?.reject()
+        _state.value.webPushPrompt?.result?.complete(null)
+        queuedWebPushPrompts.forEach { prompt -> prompt.result.complete(null) }
         queuedContentPermissions.forEach { prompt ->
             prompt.result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
         }
@@ -1408,11 +1535,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         queuedContentPermissions.clear()
         queuedAndroidPermissions.clear()
         queuedMediaPermissions.clear()
-        _state.update { it.copy(contentPermission = null, androidPermission = null, mediaPermission = null) }
+        queuedWebPushPrompts.clear()
+        _state.update { it.copy(contentPermission = null, androidPermission = null, mediaPermission = null, webPushPrompt = null) }
     }
 
     fun onAppBackground() {
+        _state.value.tabs.forEach { tab -> runCatching { tab.session.flushSessionState() } }
         persistOpenTabs(immediate = true)
+        credentialVault.lock()
         if (_state.value.isPictureInPictureMode) return
         updateSessionActivity(null)
     }
@@ -1510,6 +1640,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.TOGGLE_BOOKMARK -> if (menu.tabId == _state.value.activeTabId) toggleBookmark()
             ContextMenuAction.SAVE_PAGE -> menu.pageUrl.takeIf(String::isNotBlank)?.let { downloadUrl(it, isPrivateTab(menu.tabId)) }
             ContextMenuAction.OPEN_IN_SPLIT -> openTabInSplit(menu.tabId)
+            ContextMenuAction.OPEN_IN_NEW_WINDOW -> openTabInNewWindow(menu.tabId)
             ContextMenuAction.CLOSE_SPLIT -> closeSplit()
             ContextMenuAction.SWAP_SPLIT -> swapSplit()
             ContextMenuAction.DISMISS -> Unit
@@ -1831,6 +1962,60 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun requestCredentialUnlock() {
+        if (_state.value.credentialCount == 0) return
+        _state.update { it.copy(credentialUnlockRequest = it.credentialUnlockRequest + 1) }
+    }
+
+    fun unlockCredentialVault() {
+        credentialVault.unlock()
+        showSnackbar("Saved logins unlocked")
+    }
+
+    fun reportCredentialUnlockFailure(message: String) {
+        showSnackbar("Could not unlock saved logins: ${message.take(80)}")
+    }
+
+    fun lockCredentialVault() {
+        credentialVault.lock()
+        showSnackbar("Saved logins locked")
+    }
+
+    fun resolveWebPushPrompt(allow: Boolean) {
+        val prompt = _state.value.webPushPrompt ?: return
+        _state.update { it.copy(webPushPrompt = queuedWebPushPrompts.removeFirstOrNull()) }
+        if (!allow) {
+            prompt.result.complete(null)
+            return
+        }
+        val subscription = runCatching { createWebPushSubscription(prompt) }.getOrNull()
+        if (subscription == null) {
+            prompt.result.complete(null)
+            showSnackbar("Could not create Web Push subscription")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                webPushStore.save(subscription.record)
+                withContext(Dispatchers.Main.immediate) {
+                    prompt.result.complete(subscription.subscription)
+                    showSnackbar("Web Push enabled for ${prompt.origin}")
+                }
+            }.onFailure {
+                prompt.result.complete(null)
+                withContext(Dispatchers.Main.immediate) { showSnackbar("Could not save Web Push subscription") }
+            }
+        }
+    }
+
+    fun revokeWebPushSubscription(subscription: StoredWebPushSubscription) {
+        viewModelScope.launch(Dispatchers.IO) { webPushStore.delete(subscription.scope) }
+    }
+
+    fun clearWebPushSubscriptions() {
+        viewModelScope.launch(Dispatchers.IO) { webPushStore.clear() }
+    }
+
     fun clearCredentials() {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { credentialVault.clear() }
@@ -2026,32 +2211,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         runCatching {
             val appId = webAppId(manifest.startUrl)
-            val shortcutId = "webapp-$appId"
+            val app = InstalledWebApp(
+                id = appId,
+                origin = NavigationPolicy.origin(manifest.startUrl) ?: error("Invalid web app origin"),
+                name = manifest.name,
+                startUrl = manifest.startUrl,
+                scope = manifest.scope,
+                installedAt = System.currentTimeMillis(),
+                iconUrl = manifest.iconUrl,
+            )
             viewModelScope.launch {
-                dao.upsertInstalledWebApp(
-                    InstalledWebApp(
-                        id = appId,
-                        origin = NavigationPolicy.origin(manifest.startUrl) ?: return@launch,
-                        name = manifest.name,
-                        startUrl = manifest.startUrl,
-                        scope = manifest.scope,
-                        installedAt = System.currentTimeMillis(),
-                    ),
-                )
+                dao.upsertInstalledWebApp(app)
             }
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(manifest.startUrl)).apply {
-                setClass(context, PwaActivity::class.java)
-                putExtra(PwaActivity.EXTRA_PWA_ID, appId)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-            }
-            shortcutManager.addDynamicShortcuts(listOf(
-                ShortcutInfo.Builder(context, shortcutId)
-                    .setShortLabel(manifest.name.take(25))
-                    .setLongLabel(manifest.name.take(80))
-                    .setIcon(Icon.createWithResource(context, com.dwicao.dextra.R.drawable.ic_launcher))
-                    .setIntent(intent)
-                    .build(),
-            ))
+            shortcutManager.addDynamicShortcuts(listOf(buildWebAppShortcut(app)))
+            refreshWebAppShortcut(app)
         }.onSuccess {
             showSnackbar("${manifest.name} added to app shortcuts")
         }.onFailure {
@@ -2063,6 +2236,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val context = getApplication<Application>()
         context.getSystemService(ShortcutManager::class.java)?.removeDynamicShortcuts(listOf("webapp-${app.id}"))
         viewModelScope.launch { dao.deleteInstalledWebApp(app.id) }
+    }
+
+    fun refreshInstalledWebApp(app: InstalledWebApp) {
+        viewModelScope.launch {
+            val refreshed = withContext(Dispatchers.IO) { fetchInstalledWebApp(app) }
+            if (refreshed == null) {
+                showSnackbar("Could not refresh ${app.name}")
+            } else {
+                dao.upsertInstalledWebApp(refreshed)
+                refreshWebAppShortcut(refreshed)
+                showSnackbar("${refreshed.name} updated")
+            }
+        }
     }
 
     fun openInstalledWebApp(app: InstalledWebApp) {
@@ -2089,6 +2275,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun enterWindowMode(startUrl: String, privateMode: Boolean = false) {
+        if (!NavigationPolicy.isAllowedTopLevel(startUrl)) return
+        _state.update { it.copy(standaloneWindow = true, overlay = BrowserOverlay.NONE) }
+        if (!restoredSavedTabs) {
+            pendingWindowUri = startUrl
+            pendingWindowPrivate = privateMode
+        } else {
+            openWindowUri(startUrl, privateMode)
+        }
+    }
+
     private fun openPwaUri(startUrl: String) {
         val current = _state.value
         current.tabs.forEach { tab -> runCatching { tab.session.close() } }
@@ -2104,6 +2301,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
         }
         createTab(initialUri = startUrl)
+    }
+
+    private fun openWindowUri(startUrl: String, privateMode: Boolean) {
+        val current = _state.value
+        current.tabs.forEach { tab -> runCatching { tab.session.close() } }
+        _state.update {
+            it.copy(
+                tabs = emptyList(),
+                activeTabId = null,
+                overlay = BrowserOverlay.NONE,
+                splitPrimaryTabId = null,
+                splitSecondaryTabId = null,
+                splitPaneFocused = false,
+                standaloneWindow = true,
+            )
+        }
+        createTab(privateMode = privateMode, initialUri = startUrl)
     }
 
     fun exportPdf(uri: Uri) {
@@ -2127,6 +2341,72 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             },
             { showSnackbar("Could not generate PDF") },
+        )
+    }
+
+    fun printActivePage() {
+        val tab = activeTab()?.takeIf { it.hasPage && NavigationPolicy.isAllowedTopLevel(it.url) } ?: run {
+            showSnackbar("There is no page to print")
+            return
+        }
+        tab.session.saveAsPdf().accept(
+            { input ->
+                viewModelScope.launch(Dispatchers.IO) {
+                    val file = runCatching {
+                        val directory = File(getApplication<Application>().cacheDir, "print").apply { mkdirs() }
+                        File(directory, "page-${System.currentTimeMillis()}.pdf").also { target ->
+                            input?.use { source -> target.outputStream().use { output -> source.copyTo(output) } }
+                                ?: error("Could not generate PDF")
+                        }
+                    }.getOrNull()
+                    withContext(Dispatchers.Main.immediate) {
+                        if (file == null) {
+                            showSnackbar("Could not prepare page for printing")
+                        } else {
+                            val printManager = getApplication<Application>().getSystemService(PrintManager::class.java)
+                            if (printManager == null) {
+                                file.delete()
+                                showSnackbar("Printing is unavailable on this device")
+                            } else {
+                                printManager.print(
+                                    tab.title.ifBlank { "Dextra page" },
+                                    PagePrintAdapter(file),
+                                    PrintAttributes.Builder().build(),
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            { showSnackbar("Could not prepare page for printing") },
+        )
+    }
+
+    @androidx.annotation.OptIn(markerClass = [org.mozilla.geckoview.ExperimentalGeckoViewApi::class])
+    fun exportHtml(uri: Uri) {
+        val tab = activeTab()?.takeIf { it.hasPage && NavigationPolicy.isAllowedTopLevel(it.url) } ?: run {
+            showSnackbar("There is no page to save")
+            return
+        }
+        tab.session.sessionPageExtractor.getPageContent().accept(
+            { html ->
+                val content = html.orEmpty()
+                if (content.toByteArray(Charsets.UTF_8).size > MAX_HTML_EXPORT_BYTES) {
+                    showSnackbar("This page is too large to save as HTML")
+                    return@accept
+                }
+                viewModelScope.launch(Dispatchers.IO) {
+                    val result = runCatching {
+                        getApplication<Application>().contentResolver.openOutputStream(uri)?.use { output ->
+                            output.write(content.toByteArray(Charsets.UTF_8))
+                        } ?: error("Could not open HTML destination")
+                    }
+                    withContext(Dispatchers.Main.immediate) {
+                        showSnackbar(if (result.isSuccess) "HTML page saved" else "Could not save HTML page")
+                    }
+                }
+            },
+            { showSnackbar("Could not extract page HTML") },
         )
     }
 
@@ -2826,6 +3106,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     GeckoSessionSettings.VIEWPORT_MODE_MOBILE
                 })
+                .displayMode(
+                    if (_state.value.standalonePwa) {
+                        GeckoSessionSettings.DISPLAY_MODE_STANDALONE
+                    } else {
+                        GeckoSessionSettings.DISPLAY_MODE_BROWSER
+                    },
+                )
                 .build(),
         )
         savedSessionState?.let { serialized ->
@@ -2925,7 +3212,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun persistOpenTabs(immediate: Boolean = false) {
-        if (!restoredSavedTabs || _state.value.standalonePwa) return
+        if (!restoredSavedTabs || _state.value.standalonePwa || _state.value.standaloneWindow) return
         val current = _state.value
         val pageTabs = savedTabsFromState()
         val activeIndex = pageTabs.indexOfFirst { it.id == current.activeTabId }
@@ -3025,6 +3312,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _state.value.tabs.any { it.isPrivate && NavigationPolicy.origin(it.url) == origin }
 
     private fun loginEntriesFor(origin: String?): Array<org.mozilla.geckoview.Autocomplete.LoginEntry> {
+        if (!credentialVault.unlocked.value) return emptyArray()
         if ((origin != null && isPrivateCredentialOrigin(origin)) || (origin == null && activeTab()?.isPrivate == true)) {
             return emptyArray()
         }
@@ -3052,6 +3340,45 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             .apply { isAccessible = true }
             .newInstance(bundle)
     }.getOrNull()
+
+    private fun createWebPushSubscription(prompt: WebPushPrompt): CreatedWebPushSubscription {
+        val keyPair = KeyPairGenerator.getInstance("EC").apply {
+            initialize(ECGenParameterSpec("secp256r1"))
+        }.generateKeyPair()
+        val publicKey = keyPair.public as ECPublicKey
+        val browserPublicKey = byteArrayOf(4) + fixedBytes(publicKey.w.affineX) + fixedBytes(publicKey.w.affineY)
+        val authSecret = ByteArray(16).also(SecureRandom()::nextBytes)
+        val endpoint = WEB_PUSH_ENDPOINT_BASE + UUID.randomUUID()
+        val record = StoredWebPushSubscription(
+            scope = prompt.scope,
+            origin = prompt.origin,
+            endpoint = endpoint,
+            appServerKey = prompt.appServerKey?.clone(),
+            browserPublicKey = browserPublicKey,
+            authSecret = authSecret,
+            createdAt = System.currentTimeMillis(),
+        )
+        return CreatedWebPushSubscription(
+            record = record,
+            subscription = WebPushSubscription(
+                record.scope,
+                record.endpoint,
+                record.appServerKey,
+                record.browserPublicKey,
+                record.authSecret,
+            ),
+        )
+    }
+
+    private fun fixedBytes(value: java.math.BigInteger): ByteArray {
+        val raw = value.toByteArray()
+        return when {
+            raw.size == 32 -> raw
+            raw.size == 33 && raw[0] == 0.toByte() -> raw.copyOfRange(1, raw.size)
+            raw.size < 32 -> ByteArray(32 - raw.size) + raw
+            else -> raw.copyOfRange(raw.size - 32, raw.size)
+        }
+    }
 
     private fun refreshSiteSetting(tabId: String) {
         val tab = _state.value.tabs.firstOrNull { it.id == tabId }
@@ -3746,6 +4073,137 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun webAppId(startUrl: String): String = sha256(startUrl).take(24)
 
+    private fun refreshWebAppShortcut(app: InstalledWebApp) {
+        val shortcutManager = getApplication<Application>().getSystemService(ShortcutManager::class.java) ?: return
+        val iconUrl = app.iconUrl ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val icon = downloadPwaIcon(iconUrl, app.origin)
+            if (icon != null) {
+                withContext(Dispatchers.Main.immediate) {
+                    shortcutManager.updateShortcuts(listOf(buildWebAppShortcut(app, icon)))
+                }
+            }
+        }
+    }
+
+    private fun buildWebAppShortcut(app: InstalledWebApp, icon: Bitmap? = null): ShortcutInfo {
+        val context = getApplication<Application>()
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(app.startUrl)).apply {
+            setClass(context, PwaActivity::class.java)
+            putExtra(PwaActivity.EXTRA_PWA_ID, app.id)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+        return ShortcutInfo.Builder(context, "webapp-${app.id}")
+            .setShortLabel(app.name.take(25))
+            .setLongLabel(app.name.take(80))
+            .setIcon(icon?.let(Icon::createWithBitmap) ?: Icon.createWithResource(context, com.dwicao.dextra.R.drawable.ic_launcher))
+            .setIntent(intent)
+            .build()
+    }
+
+    private suspend fun fetchInstalledWebApp(app: InstalledWebApp): InstalledWebApp? {
+        val document = fetchHttpText(app.startUrl, MAX_PWA_MANIFEST_BYTES * 2) ?: return null
+        val linkTag = Regex("(?is)<link\\b[^>]*>").findAll(document.first)
+            .map { it.value }
+            .firstOrNull { tag ->
+                Regex("(?is)\\brel\\s*=\\s*[\\\"']([^\\\"']+)").find(tag)?.groupValues?.getOrNull(1)
+                    ?.split(Regex("\\s+"))?.any { it.equals("manifest", ignoreCase = true) } == true
+            } ?: return null
+        val href = Regex("(?is)\\bhref\\s*=\\s*[\\\"']([^\\\"']+)").find(linkTag)?.groupValues?.getOrNull(1) ?: return null
+        val manifestUrl = runCatching { URI(document.second).resolve(href).toString() }.getOrNull() ?: return null
+        if (NavigationPolicy.origin(manifestUrl) != app.origin) return null
+        val manifestDocument = fetchHttpText(manifestUrl, MAX_PWA_MANIFEST_BYTES) ?: return null
+        val manifest = runCatching { JSONObject(manifestDocument.first) }.getOrNull() ?: return null
+        val startUrl = runCatching {
+            URI(manifestDocument.second).resolve(manifest.optString("start_url").ifBlank { app.startUrl }).toString()
+        }.getOrNull() ?: return null
+        if (!NavigationPolicy.isWebUrl(startUrl) || NavigationPolicy.origin(startUrl) != app.origin) return null
+        val scope = runCatching {
+            URI(startUrl).resolve(manifest.optString("scope").ifBlank { "/" }).toString()
+        }.getOrNull() ?: return null
+        if (NavigationPolicy.origin(scope) != app.origin || !startUrl.startsWith(scope.trimEnd('/') + "/")) return null
+        val name = manifest.optString("name").ifBlank { manifest.optString("short_name") }.trim().take(80)
+        if (name.isBlank()) return null
+        return app.copy(
+            name = name,
+            startUrl = startUrl,
+            scope = scope,
+            iconUrl = resolveManifestIcon(manifest, manifestDocument.second, app.origin),
+        )
+    }
+
+    private fun resolveManifestIcon(manifest: JSONObject, baseUrl: String, origin: String): String? =
+        manifest.optJSONArray("icons")?.let { icons ->
+            (0 until icons.length()).mapNotNull { index ->
+                val source = icons.optJSONObject(index)?.optString("src").orEmpty()
+                val resolved = runCatching { URI(baseUrl).resolve(source).toString() }.getOrNull() ?: return@mapNotNull null
+                if (NavigationPolicy.isWebUrl(resolved) && NavigationPolicy.origin(resolved) == origin) resolved else null
+            }.firstOrNull()
+        }
+
+    private suspend fun fetchHttpText(url: String, maxBytes: Int): Pair<String, String>? = withContext(Dispatchers.IO) {
+        val connection = (URL(url).openConnection() as? HttpURLConnection)?.apply {
+            connectTimeout = 8_000
+            readTimeout = 12_000
+            instanceFollowRedirects = true
+            requestMethod = "GET"
+            setRequestProperty("Accept", "text/html,application/manifest+json,application/json")
+            setRequestProperty("User-Agent", BrowserClientIdentity.userAgent)
+        } ?: return@withContext null
+        try {
+            if (connection.responseCode !in 200..299 || !NavigationPolicy.isWebUrl(connection.url.toString())) return@withContext null
+            if (connection.contentLengthLong > maxBytes) return@withContext null
+            val output = ByteArrayOutputStream()
+            connection.inputStream.use { input ->
+                val buffer = ByteArray(8 * 1024)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count == -1) break
+                    total += count
+                    if (total > maxBytes) return@withContext null
+                    output.write(buffer, 0, count)
+                }
+            }
+            output.toString(Charsets.UTF_8.name()) to connection.url.toString()
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private suspend fun downloadPwaIcon(url: String, expectedOrigin: String): Bitmap? = withContext(Dispatchers.IO) {
+        val connection = (URL(url).openConnection() as? HttpURLConnection)?.apply {
+            connectTimeout = 8_000
+            readTimeout = 12_000
+            instanceFollowRedirects = true
+            requestMethod = "GET"
+            setRequestProperty("Accept", "image/*")
+            setRequestProperty("User-Agent", BrowserClientIdentity.userAgent)
+        } ?: return@withContext null
+        try {
+            if (connection.responseCode !in 200..299 ||
+                !NavigationPolicy.isWebUrl(connection.url.toString()) ||
+                NavigationPolicy.origin(connection.url.toString()) != expectedOrigin
+            ) return@withContext null
+            if (connection.contentLengthLong > MAX_PWA_ICON_BYTES) return@withContext null
+            val output = ByteArrayOutputStream()
+            connection.inputStream.use { input ->
+                val buffer = ByteArray(8 * 1024)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count == -1) break
+                    total += count
+                    if (total > MAX_PWA_ICON_BYTES) return@withContext null
+                    output.write(buffer, 0, count)
+                }
+            }
+            BitmapFactory.decodeByteArray(output.toByteArray(), 0, output.size())
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun String.htmlEscape(): String =
         replace("&", "&amp;")
             .replace("\"", "&quot;")
@@ -3889,9 +4347,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (NavigationPolicy.origin(scope) != pageOrigin || !startUrl.startsWith(scope.trimEnd('/') + "/")) return
             val name = manifest.optString("name").ifBlank { manifest.optString("short_name") }.trim().take(80)
             if (name.isBlank()) return
+            val iconUrl = manifest.optJSONArray("icons")?.let { icons ->
+                (0 until icons.length()).mapNotNull { index ->
+                    val rawIcon = icons.optJSONObject(index)?.optString("src").orEmpty()
+                    if (rawIcon.isBlank()) return@mapNotNull null
+                    val resolved = runCatching { URI(tab.url).resolve(rawIcon).toString() }.getOrNull() ?: return@mapNotNull null
+                    if (!NavigationPolicy.isWebUrl(resolved) || NavigationPolicy.origin(resolved) != pageOrigin) return@mapNotNull null
+                    resolved
+                }.firstOrNull()
+            }
             _state.update {
                 if (it.activeTabId == tabId) {
-                    it.copy(webAppManifest = WebAppManifestInfo(tabId, name, startUrl, scope))
+                    it.copy(webAppManifest = WebAppManifestInfo(tabId, name, startUrl, scope, iconUrl))
                 } else it
             }
         }

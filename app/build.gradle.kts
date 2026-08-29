@@ -23,8 +23,8 @@ android {
         applicationId = "com.dwicao.dextra"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.4.1"
+        versionCode = 6
+        versionName = "0.5.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -84,6 +84,7 @@ dependencies {
     androidTestImplementation(platform("androidx.compose:compose-bom:2026.05.00"))
 
     implementation("androidx.activity:activity-compose:1.12.2")
+    implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3:1.4.0")
     implementation("androidx.compose.material:material-icons-extended")

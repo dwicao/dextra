@@ -18,6 +18,11 @@ class PwaActivity : ComponentActivity() {
         browserViewModel.enterPwaMode(intent?.dataString.orEmpty())
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                val state = browserViewModel.state.value
+                if (state.webPushPrompt != null || state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null) {
+                    browserViewModel.dismissTransientUi()
+                    return
+                }
                 if (!browserViewModel.goBack()) finish()
             }
         })

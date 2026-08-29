@@ -68,9 +68,11 @@ import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Refresh
@@ -210,6 +212,7 @@ import com.dwicao.dextra.data.DownloadStatus
 import com.dwicao.dextra.data.InstalledWebApp
 import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.StoredCredential
+import com.dwicao.dextra.data.StoredWebPushSubscription
 import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.ThemeMode
@@ -252,6 +255,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val pdfExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf"),
     ) { uri -> uri?.let(viewModel::exportPdf) }
+    val htmlExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/html"),
+    ) { uri -> uri?.let(viewModel::exportHtml) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
@@ -262,12 +268,13 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val activity = appContext as? Activity
     val mainActivity = activity as? MainActivity
     val isWebFullScreen = state.tabs.any { it.isFullScreen }
+    val isImmersive = isWebFullScreen || state.standalonePwa || state.standaloneWindow
 
-    LaunchedEffect(activity, isWebFullScreen) {
+    LaunchedEffect(activity, isImmersive) {
         val window = activity?.window ?: return@LaunchedEffect
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
         insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (isWebFullScreen) {
+        if (isImmersive) {
             insetsController.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             insetsController.show(WindowInsetsCompat.Type.systemBars())
@@ -288,11 +295,14 @@ fun DextraApp(viewModel: BrowserViewModel) {
             viewModel.clearSnackbar()
         }
     }
+    LaunchedEffect(state.credentialUnlockRequest) {
+        if (state.credentialUnlockRequest > 0) mainActivity?.authenticateCredentialVault()
+    }
     LaunchedEffect(state.androidPermission?.id) {
         state.androidPermission?.let { permissionLauncher.launch(it.permissions.toTypedArray()) }
     }
     LaunchedEffect(state.snackbar) {
-        if (state.snackbar == "Download started" &&
+        if ((state.snackbar == "Download started" || state.snackbar?.startsWith("Web Push enabled") == true) &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
@@ -396,6 +406,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    onOpenReaderMode = viewModel::openReaderMode,
                    onSharePage = viewModel::shareActiveUrl,
                   onExportPdf = { pdfExportLauncher.launch("dextra-page.pdf") },
+                  onPrintPage = viewModel::printActivePage,
+                  onExportHtml = { htmlExportLauncher.launch("dextra-page.html") },
                   onSaveScreenshot = viewModel::saveScreenshot,
                   onInstallWebApp = viewModel::installCurrentWebApp,
                    onEnterPictureInPicture = {
@@ -409,13 +421,22 @@ fun DextraApp(viewModel: BrowserViewModel) {
                     onCreateSessionSnapshot = viewModel::createSessionSnapshot,
                     onRestoreSessionSnapshot = viewModel::restoreSessionSnapshot,
                     onDeleteSessionSnapshot = viewModel::deleteSessionSnapshot,
-                    credentials = state.credentials,
-                    onDeleteCredential = viewModel::deleteCredential,
+                   credentials = state.credentials,
+                   credentialCount = state.credentialCount,
+                   credentialVaultUnlocked = state.credentialVaultUnlocked,
+                   webPushSubscriptions = state.webPushSubscriptions,
+                   onDeleteCredential = viewModel::deleteCredential,
+                   onRequestCredentialUnlock = viewModel::requestCredentialUnlock,
+                   onLockCredentialVault = viewModel::lockCredentialVault,
                     onClearCredentials = viewModel::clearCredentials,
                     onCopyCredentialUsername = viewModel::copyCredentialUsername,
-                    onCopyCredentialPassword = viewModel::copyCredentialPassword,
-                    onOpenInstalledWebApp = viewModel::openInstalledWebApp,
-                    onUninstallWebApp = viewModel::uninstallWebApp,
+                   onCopyCredentialPassword = viewModel::copyCredentialPassword,
+                   onResolveWebPushPrompt = viewModel::resolveWebPushPrompt,
+                   onRevokeWebPushSubscription = viewModel::revokeWebPushSubscription,
+                   onClearWebPushSubscriptions = viewModel::clearWebPushSubscriptions,
+                   onOpenInstalledWebApp = viewModel::openInstalledWebApp,
+                   onRefreshInstalledWebApp = viewModel::refreshInstalledWebApp,
+                   onUninstallWebApp = viewModel::uninstallWebApp,
                 installedExtensions = state.installedExtensions,
                 extensionInstallInProgress = state.extensionInstallInProgress,
                 onInstallExtension = viewModel::installExtension,
@@ -492,12 +513,18 @@ fun DextraApp(viewModel: BrowserViewModel) {
                     onDismiss = viewModel::dismissCrashReport,
                 )
             }
-            state.mediaPermission?.let { prompt ->
-                MediaPermissionDialog(
-                    prompt = prompt,
-                    onResolve = viewModel::resolveMediaPermission,
-                )
-            }
+             state.mediaPermission?.let { prompt ->
+                 MediaPermissionDialog(
+                     prompt = prompt,
+                     onResolve = viewModel::resolveMediaPermission,
+                 )
+             }
+             state.webPushPrompt?.let { prompt ->
+                 WebPushPermissionDialog(
+                     origin = prompt.origin,
+                     onResolve = viewModel::resolveWebPushPrompt,
+                 )
+             }
             if (state.extensionInstallInProgress && state.extensionInstallPrompt == null) {
                 ExtensionInstallProgressDialog()
             }
@@ -597,7 +624,9 @@ private fun BrowserScreen(
        onOpenQrCode: () -> Unit,
        onOpenReaderMode: () -> Unit,
       onSharePage: () -> Unit,
-       onExportPdf: () -> Unit,
+        onExportPdf: () -> Unit,
+        onPrintPage: () -> Unit,
+        onExportHtml: () -> Unit,
        onSaveScreenshot: (android.graphics.Bitmap) -> Unit,
        onInstallWebApp: () -> Unit,
        onEnterPictureInPicture: () -> Unit,
@@ -608,11 +637,20 @@ private fun BrowserScreen(
         onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
         onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
         credentials: List<StoredCredential>,
+        credentialCount: Int,
+        credentialVaultUnlocked: Boolean,
+        webPushSubscriptions: List<StoredWebPushSubscription>,
         onDeleteCredential: (StoredCredential) -> Unit,
+        onRequestCredentialUnlock: () -> Unit,
+        onLockCredentialVault: () -> Unit,
         onClearCredentials: () -> Unit,
         onCopyCredentialUsername: (StoredCredential) -> Unit,
         onCopyCredentialPassword: (StoredCredential) -> Unit,
+        onResolveWebPushPrompt: (Boolean) -> Unit,
+        onRevokeWebPushSubscription: (StoredWebPushSubscription) -> Unit,
+        onClearWebPushSubscriptions: () -> Unit,
         onOpenInstalledWebApp: (InstalledWebApp) -> Unit,
+        onRefreshInstalledWebApp: (InstalledWebApp) -> Unit,
         onUninstallWebApp: (InstalledWebApp) -> Unit,
     installedExtensions: List<InstalledExtension>,
     extensionInstallInProgress: Boolean,
@@ -746,6 +784,23 @@ private fun BrowserScreen(
         }
         else -> Unit
     }
+    if (state.standaloneWindow) {
+        WindowedBrowserLayout(
+            tab = activeTab,
+            bookmarks = bookmarks,
+            history = history,
+            onNavigate = onNavigate,
+            onHome = onHome,
+            onBack = onBack,
+            onForward = onForward,
+            onReload = onReload,
+            onToggleBookmark = onToggleBookmark,
+            onReloadCrashedTab = onReloadCrashedTab,
+            onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
+            modifier = modifier,
+        )
+        return
+    }
     if (state.standalonePwa) {
         BrowserViewport(
             tab = activeTab,
@@ -792,14 +847,22 @@ private fun BrowserScreen(
                     onSetHomepage = onSetHomepage,
                     onClearSitePermissions = onClearSitePermissions,
                   onOpenPrivacyDashboard = onOpenPrivacyDashboard,
-                  credentials = credentials,
-                  onDeleteCredential = onDeleteCredential,
+                   credentials = credentials,
+                   credentialCount = credentialCount,
+                   credentialVaultUnlocked = credentialVaultUnlocked,
+                   webPushSubscriptions = webPushSubscriptions,
+                   onDeleteCredential = onDeleteCredential,
+                   onRequestCredentialUnlock = onRequestCredentialUnlock,
+                   onLockCredentialVault = onLockCredentialVault,
                   onClearCredentials = onClearCredentials,
                   onCopyCredentialUsername = onCopyCredentialUsername,
-                  onCopyCredentialPassword = onCopyCredentialPassword,
+                   onCopyCredentialPassword = onCopyCredentialPassword,
+                   onRevokeWebPushSubscription = onRevokeWebPushSubscription,
+                   onClearWebPushSubscriptions = onClearWebPushSubscriptions,
                   installedWebApps = installedWebApps,
-                  onOpenInstalledWebApp = onOpenInstalledWebApp,
-                  onUninstallWebApp = onUninstallWebApp,
+                   onOpenInstalledWebApp = onOpenInstalledWebApp,
+                   onRefreshInstalledWebApp = onRefreshInstalledWebApp,
+                   onUninstallWebApp = onUninstallWebApp,
                     onSetTabBarWithAddressBar = onSetTabBarWithAddressBar,
                     onSetVerticalTabs = onSetVerticalTabs,
                     onOpenKeyboardShortcuts = { onSetOverlay(BrowserOverlay.KEYBOARD_SHORTCUTS) },
@@ -953,6 +1016,14 @@ private fun BrowserScreen(
                       menuExpanded = false
                       onExportPdf()
                   },
+                  onPrintPage = {
+                      menuExpanded = false
+                      onPrintPage()
+                  },
+                  onExportHtml = {
+                      menuExpanded = false
+                      onExportHtml()
+                  },
                   onCaptureScreenshot = {
                       menuExpanded = false
                       captureScreenshot()
@@ -1105,6 +1176,58 @@ private fun BrowserScreen(
                 modifier = Modifier.padding(top = 8.dp, start = 16.dp, end = 16.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun WindowedBrowserLayout(
+    tab: BrowserTabState?,
+    bookmarks: List<Bookmark>,
+    history: List<HistoryEntry>,
+    onNavigate: (String) -> Unit,
+    onHome: () -> Unit,
+    onBack: () -> Boolean,
+    onForward: () -> Unit,
+    onReload: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    onReloadCrashedTab: () -> Unit,
+    onViewReady: (String, GeckoView) -> Unit,
+    modifier: Modifier,
+) {
+    val focusRequester = remember { FocusRequester() }
+    Column(modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            BrowserNavButton(Icons.Outlined.ArrowBack, "Back", tab?.canGoBack == true) { onBack() }
+            BrowserNavButton(Icons.Outlined.ArrowForward, "Forward", tab?.canGoForward == true, onForward)
+            BrowserNavButton(Icons.Outlined.Refresh, "Reload", tab != null, onReload)
+            AddressBar(
+                tab = tab,
+                modifier = Modifier.weight(1f),
+                bookmarks = bookmarks,
+                history = history,
+                onNavigate = onNavigate,
+                onToggleBookmark = onToggleBookmark,
+                focusRequester = focusRequester,
+            )
+            BrowserNavButton(
+                if (tab?.isBookmarked == true) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+                if (tab?.isBookmarked == true) "Remove bookmark" else "Bookmark",
+                tab?.hasPage == true,
+                onToggleBookmark,
+            )
+            BrowserNavButton(Icons.Outlined.Home, "Home", true, onHome)
+        }
+        BrowserViewport(
+            tab = tab,
+            onNavigate = onNavigate,
+            onReloadCrashedTab = onReloadCrashedTab,
+            onViewReady = onViewReady,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+        )
     }
 }
 
@@ -2934,6 +3057,11 @@ private fun BrowserContextMenuPopup(
                 onClick = { onAction(ContextMenuAction.OPEN_IN_SPLIT) },
             )
             DropdownMenuItem(
+                text = { Text("Open in new window") },
+                leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                onClick = { onAction(ContextMenuAction.OPEN_IN_NEW_WINDOW) },
+            )
+            DropdownMenuItem(
                 text = { Text("Reload tab") },
                 leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.RELOAD_TAB) },
@@ -3623,6 +3751,8 @@ private fun BrowserMenu(
     onOpenReaderMode: () -> Unit,
     onSharePage: () -> Unit,
     onExportPdf: () -> Unit,
+    onPrintPage: () -> Unit,
+    onExportHtml: () -> Unit,
     onCaptureScreenshot: () -> Unit,
     onCaptureLongScreenshot: () -> Unit,
     onInstallWebApp: () -> Unit,
@@ -3707,6 +3837,16 @@ private fun BrowserMenu(
                     text = { Text("Export as PDF") },
                     leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                     onClick = onExportPdf,
+                )
+                DropdownMenuItem(
+                    text = { Text("Print page") },
+                    leadingIcon = { Icon(Icons.Outlined.Print, contentDescription = null) },
+                    onClick = onPrintPage,
+                )
+                DropdownMenuItem(
+                    text = { Text("Save page as HTML") },
+                    leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
+                    onClick = onExportHtml,
                 )
                 DropdownMenuItem(
                     text = { Text("Save screenshot") },
@@ -4837,6 +4977,21 @@ private fun MediaPermissionDialog(
 }
 
 @Composable
+private fun WebPushPermissionDialog(
+    origin: String,
+    onResolve: (Boolean) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { onResolve(false) },
+        icon = { Icon(Icons.Outlined.Notifications, contentDescription = null) },
+        title = { Text("Allow Web Push?") },
+        text = { Text("$origin wants to register a background notification subscription. You can revoke it later in Settings.") },
+        confirmButton = { TextButton(onClick = { onResolve(true) }) { Text("Allow") } },
+        dismissButton = { TextButton(onClick = { onResolve(false) }) { Text("Block") } },
+    )
+}
+
+@Composable
 private fun ExtensionUpdateDialog(
     prompt: ExtensionUpdatePrompt,
     onResolve: (Boolean) -> Unit,
@@ -4982,12 +5137,20 @@ private fun SettingsScreen(
     onClearSitePermissions: () -> Unit,
     onOpenPrivacyDashboard: () -> Unit,
     credentials: List<StoredCredential>,
+    credentialCount: Int,
+    credentialVaultUnlocked: Boolean,
+    webPushSubscriptions: List<StoredWebPushSubscription>,
     onDeleteCredential: (StoredCredential) -> Unit,
+    onRequestCredentialUnlock: () -> Unit,
+    onLockCredentialVault: () -> Unit,
     onClearCredentials: () -> Unit,
     onCopyCredentialUsername: (StoredCredential) -> Unit,
     onCopyCredentialPassword: (StoredCredential) -> Unit,
+    onRevokeWebPushSubscription: (StoredWebPushSubscription) -> Unit,
+    onClearWebPushSubscriptions: () -> Unit,
     installedWebApps: List<InstalledWebApp>,
     onOpenInstalledWebApp: (InstalledWebApp) -> Unit,
+    onRefreshInstalledWebApp: (InstalledWebApp) -> Unit,
     onUninstallWebApp: (InstalledWebApp) -> Unit,
     onSetTabBarWithAddressBar: (Boolean) -> Unit,
     onSetVerticalTabs: (Boolean) -> Unit,
@@ -5153,8 +5316,19 @@ private fun SettingsScreen(
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
-          if (credentials.isEmpty()) {
+          if (credentialCount == 0) {
               Text("No saved logins.", modifier = Modifier.padding(top = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+          } else if (!credentialVaultUnlocked) {
+              Text(
+                  "$credentialCount saved login${if (credentialCount == 1) "" else "s"} are locked.",
+                  modifier = Modifier.padding(top = 10.dp),
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              Button(onClick = onRequestCredentialUnlock, modifier = Modifier.padding(top = 8.dp)) {
+                  Icon(Icons.Outlined.Lock, contentDescription = null)
+                  Spacer(Modifier.width(8.dp))
+                  Text("Unlock with biometrics")
+              }
           } else {
               credentials.forEach { credential ->
                   ListItem(
@@ -5177,6 +5351,37 @@ private fun SettingsScreen(
                   Spacer(Modifier.width(6.dp))
                   Text("Delete all saved logins")
               }
+              TextButton(onClick = onLockCredentialVault) {
+                  Icon(Icons.Outlined.Lock, contentDescription = null)
+                  Spacer(Modifier.width(6.dp))
+                  Text("Lock saved logins")
+              }
+          }
+      }
+      SettingSection("Web Push") {
+          Text(
+              "Review subscriptions created by websites. Delivery is handled by the configured push provider; revoke entries here when they are no longer needed.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          if (webPushSubscriptions.isEmpty()) {
+              Text("No Web Push subscriptions.", modifier = Modifier.padding(top = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+          } else {
+              webPushSubscriptions.forEach { subscription ->
+                  ListItem(
+                      headlineContent = { Text(subscription.origin, maxLines = 1) },
+                      supportingContent = { Text(subscription.scope, maxLines = 1) },
+                      leadingContent = { Icon(Icons.Outlined.Notifications, contentDescription = null) },
+                      trailingContent = {
+                          TextButton(onClick = { onRevokeWebPushSubscription(subscription) }) { Text("Revoke") }
+                      },
+                  )
+              }
+              TextButton(onClick = onClearWebPushSubscriptions) {
+                  Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                  Spacer(Modifier.width(6.dp))
+                  Text("Revoke all subscriptions")
+              }
           }
       }
       SettingSection("Installed web apps") {
@@ -5196,6 +5401,9 @@ private fun SettingsScreen(
                       trailingContent = {
                           Row(verticalAlignment = Alignment.CenterVertically) {
                               TextButton(onClick = { onOpenInstalledWebApp(app) }) { Text("Open") }
+                              IconButton(onClick = { onRefreshInstalledWebApp(app) }) {
+                                  Icon(Icons.Outlined.Refresh, contentDescription = "Refresh ${app.name}")
+                              }
                               IconButton(onClick = { onUninstallWebApp(app) }) {
                                   Icon(Icons.Outlined.DeleteOutline, contentDescription = "Uninstall ${app.name}")
                               }

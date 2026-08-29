@@ -64,6 +64,13 @@ class BookmarkAndShortcutTest {
     }
 
     @Test
+    fun defaultShortcutsCoverDesktopSurfaces() {
+        assertTrue(DefaultKeyboardShortcuts.bindings.containsKey(com.dwicao.dextra.browser.BrowserCommandId.SHOW_DOWNLOADS))
+        assertTrue(DefaultKeyboardShortcuts.bindings.containsKey(com.dwicao.dextra.browser.BrowserCommandId.SHOW_SETTINGS))
+        assertTrue(DefaultKeyboardShortcuts.bindings.containsKey(com.dwicao.dextra.browser.BrowserCommandId.TOGGLE_SPLIT))
+    }
+
+    @Test
     fun addressSuggestionsPreferBookmarkAndDeduplicateHistory() {
         val suggestions = buildAddressSuggestions(
             query = "docs",

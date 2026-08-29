@@ -2,6 +2,27 @@
 
 All notable changes to Dextra are documented here.
 
+## [0.5.0] - 2026-08-29
+
+### Added
+
+- Added biometric or device-credential unlocking for the encrypted saved-login vault.
+- Added automatic saved-login vault locking when the application enters the background.
+- Added Web Push subscription approval, encrypted subscription storage, revoke controls, and Gecko push-event bridging.
+- Added Android website notification delivery with notification click routing back to GeckoView.
+- Added page printing through the Android print framework.
+- Added bounded page HTML export through GeckoView page extraction.
+- Added an Open in new window tab action with a dedicated resizable browser document activity.
+- Added keyboard, drag-and-drop URL, and browser navigation support in separate browser windows.
+- Added PWA manifest refresh, same-origin icon loading, icon-backed launcher shortcuts, and standalone display mode.
+- Added Room migration from database version 11 to 12 for PWA icon metadata.
+
+### Changed
+
+- Release version is now `0.5.0` with version code `6`.
+- PWA windows now use immersive system bars and standalone Gecko display mode.
+- Browser background handling flushes Gecko session state before locking saved credentials.
+
 ## [0.4.1] - 2026-08-29
 
 ### Added

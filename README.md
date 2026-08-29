@@ -7,7 +7,7 @@ Dextra is a GeckoView-based Android browser designed for Samsung DeX. It treats 
 This project is an early release build intended for internal testing and Samsung DeX-focused development.
 
 - Application ID: `com.dwicao.dextra`
-- Version: `0.4.1`
+- Version: `0.5.0`
 - Minimum Android version: 26
 - Target Android SDK: 36
 - Web engine: Mozilla GeckoView `154.0.20260824154132`
@@ -24,6 +24,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Tab groups with rename, collapse, move, and delete actions.
 - Tab reorder, pinning, sleeping, and inactive-tab hibernation.
 - DeX drag-and-drop URL opening and expanded browser keyboard shortcuts.
+- Browser tabs can open in separate resizable Android document windows.
 - Two-pane split view with focus, swap, and close actions.
 - Mouse secondary-click context menus for pages and tabs.
 - Searchable tab switcher, command palette, configurable keyboard shortcuts, and hover previews.
@@ -44,9 +45,13 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Privacy dashboard for reviewing and clearing per-site or all GeckoView site data.
 - Per-site "forget this site" cleanup and live ad/tracker blocking statistics.
 - QR URL sharing, PDF export, visible and bounded long screenshots.
+- Page printing and bounded HTML export.
 - Picture-in-Picture for active media and validated PWA launcher shortcuts.
 - Encrypted local login storage with GeckoView autocomplete integration.
+- Biometric/device-credential lock for saved logins with automatic background locking.
+- Web Push subscription management and Android website notifications.
 - Installed PWA management with separate Android document tasks/windows.
+- PWA manifest refresh, same-origin icons, and standalone fullscreen display mode.
 - Private tabs excluded from saved sessions, history, and favicon fetching.
 - Crash reports for Java uncaught exceptions.
 
@@ -134,6 +139,9 @@ Current automated tests cover URL handling, navigation policy, Firefox Add-on UR
 - Android permission prompts and site permission persistence.
 - WorkManager download recovery after the app is stopped.
 - Room migrations from every released database version.
+- Biometric unlock and Android notification permission flows.
+- Web Push provider delivery and service-worker notification behavior.
+- Android print UI, separate browser document windows, and PWA launcher icon refresh.
 - Memory, frame pacing, battery, and startup benchmarks.
 
 ## Repository Layout
