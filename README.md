@@ -36,6 +36,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Homepage, search engine, theme, desktop-site, and tab layout settings.
 - Customizable new-tab start page with default quick links, privacy-tip toggles, and safe HTTPS links.
 - Cookie consent control with global reject modes and per-site banner overrides.
+- Privacy automation with scheduled history/download/recovery retention, origin allowlisting, and delayed site-data cleanup on exit.
 - Per-site desktop mode, ad blocking, userscripts, and zoom overrides.
 - Global and per-site HTTPS-only navigation policy with automatic HTTP upgrade.
 - GeckoView tracking protection and Global Privacy Control.
@@ -61,6 +62,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Encrypted local login storage with GeckoView autocomplete integration.
 - Password-encrypted sync bundles for bookmarks, history, settings, and reading list transfer.
 - Sync Center preview with selective import/export for settings, bookmarks, history, reading list, permissions, and site overrides.
+- WebDAV live session sync for normal open tabs, tab groups, active workspace, and workspace snapshots.
 - Biometric/device-credential lock for saved logins with automatic background locking.
 - Web Push subscription management and Android website notifications.
 - Installed PWA management with separate Android document tasks/windows.

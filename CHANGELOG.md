@@ -37,6 +37,10 @@ All notable changes to Dextra are documented here. The commit log at the end rec
 - Share-sheet and drag/drop transfer for normal open tabs between windows or devices.
 - Copyable DeX performance benchmark reports for physical-device QA.
 - Room migration from version 16 to 17 for cookie-banner policy metadata.
+- Privacy automation with scheduled retention, origin allowlisting, and delayed site-data cleanup on exit.
+- WebDAV synchronization for normal open tabs, tab groups, active workspace, and workspace snapshots.
+- Manual encrypted address editor backed by GeckoView address autofill.
+- Observable compatibility diagnostics and multi-tab media session controls.
 
 ## [0.5.0] - 2026-08-29
 

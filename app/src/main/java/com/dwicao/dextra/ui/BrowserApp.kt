@@ -190,6 +190,7 @@ import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.browser.SecurityDiagnostics
 import com.dwicao.dextra.browser.PerformanceMetrics
 import com.dwicao.dextra.browser.NetworkActivity
+import com.dwicao.dextra.browser.CompatibilityEvent
 import com.dwicao.dextra.browser.sitePermissionLabel
 import com.dwicao.dextra.browser.PrivacyOrigin
 import com.dwicao.dextra.browser.AddressSuggestionSource
@@ -245,6 +246,7 @@ import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.ScreenLength
 import kotlin.math.roundToInt
+import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -388,6 +390,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onOpenNetworkInspector = viewModel::openNetworkInspector,
                   onClearNetworkActivity = viewModel::clearNetworkActivity,
                   onShareCurrentWorkspaceTabs = viewModel::shareCurrentWorkspaceTabs,
+                  onOpenMediaManager = viewModel::openMediaManager,
+                  onControlMedia = viewModel::controlMedia,
+                  onOpenCompatibilityDiagnostics = viewModel::openCompatibilityDiagnostics,
+                  onClearCompatibilityEvents = viewModel::clearCompatibilityEvents,
                   workspaces = state.settings.workspaces,
                   activeWorkspaceId = state.settings.activeWorkspaceId,
                   onCreateWorkspace = viewModel::createWorkspace,
@@ -464,6 +470,18 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    onSetHttpsOnly = viewModel::setHttpsOnly,
                    cookieBannerMode = state.settings.cookieBannerMode,
                    onSetCookieBannerMode = viewModel::setCookieBannerMode,
+                   historyRetentionDays = state.settings.historyRetentionDays,
+                   downloadRetentionDays = state.settings.downloadRetentionDays,
+                   recoveryRetentionDays = state.settings.recoveryRetentionDays,
+                   clearSiteDataOnExit = state.settings.clearSiteDataOnExit,
+                   privacyCleanupAllowlist = state.settings.privacyCleanupAllowlist.toList(),
+                   onSetHistoryRetentionDays = viewModel::setHistoryRetentionDays,
+                   onSetDownloadRetentionDays = viewModel::setDownloadRetentionDays,
+                   onSetRecoveryRetentionDays = viewModel::setRecoveryRetentionDays,
+                   onSetClearSiteDataOnExit = viewModel::setClearSiteDataOnExit,
+                   onAddPrivacyCleanupAllowlist = viewModel::addPrivacyCleanupAllowlist,
+                   onRemovePrivacyCleanupAllowlist = viewModel::removePrivacyCleanupAllowlist,
+                   onRunPrivacyCleanup = viewModel::runPrivacyCleanupNow,
                    onSetHomepage = viewModel::setHomepage,
                    startPage = state.settings.startPage,
                    onSetStartPageQuickLinks = viewModel::setStartPageQuickLinks,
@@ -542,6 +560,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    onLockCredentialVault = viewModel::lockCredentialVault,
                     onClearCredentials = viewModel::clearCredentials,
                     onDeleteAddress = viewModel::deleteAddress,
+                    onSaveAddress = viewModel::saveAddress,
                     onClearAddresses = viewModel::clearAddresses,
                     onCopyCredentialUsername = viewModel::copyCredentialUsername,
                    onCopyCredentialPassword = viewModel::copyCredentialPassword,
@@ -698,6 +717,10 @@ private fun BrowserScreen(
     onCopyPerformanceReport: () -> Unit,
     onOpenNetworkInspector: () -> Unit,
     onShareCurrentWorkspaceTabs: () -> Unit,
+    onOpenMediaManager: () -> Unit,
+     onControlMedia: (String, String) -> Unit,
+    onOpenCompatibilityDiagnostics: () -> Unit,
+    onClearCompatibilityEvents: () -> Unit,
     onClearNetworkActivity: () -> Unit,
     workspaces: List<TabWorkspace>,
     activeWorkspaceId: String,
@@ -768,6 +791,18 @@ private fun BrowserScreen(
       onSetHttpsOnly: (Boolean) -> Unit,
       cookieBannerMode: Int,
       onSetCookieBannerMode: (Int) -> Unit,
+      historyRetentionDays: Int,
+      downloadRetentionDays: Int,
+      recoveryRetentionDays: Int,
+      clearSiteDataOnExit: Boolean,
+      privacyCleanupAllowlist: List<String>,
+      onSetHistoryRetentionDays: (Int) -> Unit,
+      onSetDownloadRetentionDays: (Int) -> Unit,
+      onSetRecoveryRetentionDays: (Int) -> Unit,
+      onSetClearSiteDataOnExit: (Boolean) -> Unit,
+      onAddPrivacyCleanupAllowlist: (String) -> Unit,
+      onRemovePrivacyCleanupAllowlist: (String) -> Unit,
+      onRunPrivacyCleanup: () -> Unit,
       startPage: StartPageSettings,
       onSetStartPageQuickLinks: (Boolean) -> Unit,
       onSetStartPagePrivacyTip: (Boolean) -> Unit,
@@ -841,6 +876,7 @@ private fun BrowserScreen(
         onLockCredentialVault: () -> Unit,
          onClearCredentials: () -> Unit,
          onDeleteAddress: (StoredAddress) -> Unit,
+         onSaveAddress: (StoredAddress) -> Unit,
          onClearAddresses: () -> Unit,
         onCopyCredentialUsername: (StoredCredential) -> Unit,
         onCopyCredentialPassword: (StoredCredential) -> Unit,
@@ -1075,6 +1111,18 @@ private fun BrowserScreen(
                   onSetHttpsOnly = onSetHttpsOnly,
                   cookieBannerMode = cookieBannerMode,
                   onSetCookieBannerMode = onSetCookieBannerMode,
+                  historyRetentionDays = historyRetentionDays,
+                  downloadRetentionDays = downloadRetentionDays,
+                  recoveryRetentionDays = recoveryRetentionDays,
+                  clearSiteDataOnExit = clearSiteDataOnExit,
+                  privacyCleanupAllowlist = privacyCleanupAllowlist,
+                  onSetHistoryRetentionDays = onSetHistoryRetentionDays,
+                  onSetDownloadRetentionDays = onSetDownloadRetentionDays,
+                  onSetRecoveryRetentionDays = onSetRecoveryRetentionDays,
+                  onSetClearSiteDataOnExit = onSetClearSiteDataOnExit,
+                  onAddPrivacyCleanupAllowlist = onAddPrivacyCleanupAllowlist,
+                  onRemovePrivacyCleanupAllowlist = onRemovePrivacyCleanupAllowlist,
+                  onRunPrivacyCleanup = onRunPrivacyCleanup,
                   startPage = startPage,
                   onSetStartPageQuickLinks = onSetStartPageQuickLinks,
                   onSetStartPagePrivacyTip = onSetStartPagePrivacyTip,
@@ -1097,6 +1145,7 @@ private fun BrowserScreen(
                    onLockCredentialVault = onLockCredentialVault,
                     onClearCredentials = onClearCredentials,
                     onDeleteAddress = onDeleteAddress,
+                    onSaveAddress = onSaveAddress,
                     onClearAddresses = onClearAddresses,
                   onCopyCredentialUsername = onCopyCredentialUsername,
                    onCopyCredentialPassword = onCopyCredentialPassword,
@@ -1269,6 +1318,14 @@ private fun BrowserScreen(
                       menuExpanded = false
                       onShareCurrentWorkspaceTabs()
                   },
+                  onOpenMediaManager = {
+                      menuExpanded = false
+                      onOpenMediaManager()
+                  },
+                  onOpenCompatibilityDiagnostics = {
+                      menuExpanded = false
+                      onOpenCompatibilityDiagnostics()
+                  },
                   onOpenWorkspaces = {
                       menuExpanded = false
                       onSetOverlay(BrowserOverlay.WORKSPACES)
@@ -1401,6 +1458,16 @@ private fun BrowserScreen(
                              activity = state.networkActivity,
                              tabs = state.tabs,
                              onClear = onClearNetworkActivity,
+                         )
+                         BrowserOverlay.MEDIA -> MediaSessionSheet(
+                             tabs = state.tabs,
+                             onSelect = onSelectTab,
+                             onControl = onControlMedia,
+                         )
+                         BrowserOverlay.COMPATIBILITY -> CompatibilityDiagnosticsSheet(
+                             events = state.compatibilityEvents,
+                             tabs = state.tabs,
+                             onClear = onClearCompatibilityEvents,
                          )
                           BrowserOverlay.SETTINGS,
                          BrowserOverlay.BOOKMARKS,
@@ -4574,6 +4641,103 @@ private fun NetworkActivitySheet(
 }
 
 @Composable
+private fun MediaSessionSheet(
+    tabs: List<BrowserTabState>,
+    onSelect: (String) -> Unit,
+    onControl: (String, String) -> Unit,
+) {
+    val mediaTabs = tabs.filter { it.hasActiveMedia && !it.isPrivate }
+    SheetHeader("Media sessions", "Control audio and video across open tabs")
+    if (mediaTabs.isEmpty()) {
+        EmptyLibrary("No active media sessions.", Icons.Outlined.PlayArrow)
+    } else {
+        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+            items(mediaTabs, key = { it.id }) { tab ->
+                ListItem(
+                    modifier = Modifier.clickable { onSelect(tab.id) },
+                    headlineContent = { Text(tab.title.ifBlank { "Media tab" }, maxLines = 1) },
+                    supportingContent = { Text(tab.url.ifBlank { "Open page" }, maxLines = 1) },
+                    leadingContent = {
+                        Icon(
+                            if (tab.isMediaPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                            contentDescription = null,
+                        )
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { onControl(tab.id, if (tab.isMediaPlaying) "pause" else "play") }) {
+                                Icon(if (tab.isMediaPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, contentDescription = "Toggle media")
+                            }
+                            IconButton(onClick = { onControl(tab.id, "back") }) {
+                                Icon(Icons.Outlined.ChevronLeft, contentDescription = "Seek backward")
+                            }
+                            IconButton(onClick = { onControl(tab.id, "forward") }) {
+                                Icon(Icons.Outlined.ChevronRight, contentDescription = "Seek forward")
+                            }
+                            IconButton(onClick = { onControl(tab.id, "stop") }) {
+                                Icon(Icons.Outlined.Close, contentDescription = "Stop media")
+                            }
+                        }
+                    },
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+@Composable
+private fun CompatibilityDiagnosticsSheet(
+    events: List<CompatibilityEvent>,
+    tabs: List<BrowserTabState>,
+    onClear: () -> Unit,
+) {
+    SheetHeader("Compatibility diagnostics", "Observable browser warnings and page failures")
+    Text(
+        "The pinned GeckoView build does not expose a JavaScript console delegate. These diagnostics use official load, security, slow-script, and crash callbacks.",
+        modifier = Modifier.padding(horizontal = 20.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        TextButton(onClick = onClear, enabled = events.isNotEmpty()) { Text("Clear") }
+    }
+    if (events.isEmpty()) {
+        EmptyLibrary("No compatibility events recorded.", Icons.Outlined.BugReport)
+    } else {
+        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+            items(events.asReversed(), key = { it.id }) { event ->
+                val tabTitle = tabs.firstOrNull { it.id == event.tabId }?.title
+                ListItem(
+                    headlineContent = { Text("${event.severity.uppercase()}  •  ${tabTitle ?: "Closed tab"}", maxLines = 1) },
+                    supportingContent = {
+                        Column {
+                            Text(event.message, maxLines = 3)
+                            Text(
+                                java.text.DateFormat.getDateTimeInstance().format(java.util.Date(event.timestamp)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    leadingContent = {
+                        Icon(
+                            if (event.severity == "error") Icons.Outlined.BugReport else Icons.Outlined.Security,
+                            contentDescription = null,
+                            tint = if (event.severity == "error") MaterialTheme.colorScheme.error else LocalContentColor.current,
+                        )
+                    },
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
+}
+
+@Composable
 private fun NewTabPage(onNavigate: (String) -> Unit, settings: StartPageSettings) {
     Column(
         modifier = Modifier
@@ -4655,6 +4819,8 @@ private fun BrowserMenu(
     onOpenPerformanceDashboard: () -> Unit,
     onOpenNetworkInspector: () -> Unit,
     onShareCurrentWorkspaceTabs: () -> Unit,
+    onOpenMediaManager: () -> Unit,
+    onOpenCompatibilityDiagnostics: () -> Unit,
     onOpenCommandPalette: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onToggleReadingList: () -> Unit,
@@ -4754,6 +4920,16 @@ private fun BrowserMenu(
                     text = { Text("Share open tabs") },
                     leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
                     onClick = onShareCurrentWorkspaceTabs,
+                )
+                DropdownMenuItem(
+                    text = { Text("Media sessions") },
+                    leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
+                    onClick = onOpenMediaManager,
+                )
+                DropdownMenuItem(
+                    text = { Text("Compatibility diagnostics") },
+                    leadingIcon = { Icon(Icons.Outlined.BugReport, contentDescription = null) },
+                    onClick = onOpenCompatibilityDiagnostics,
                 )
                 DropdownMenuItem(
                     text = { Text("Save to reading list") },
@@ -6270,6 +6446,18 @@ private fun SettingsScreen(
       onSetHttpsOnly: (Boolean) -> Unit,
      cookieBannerMode: Int,
      onSetCookieBannerMode: (Int) -> Unit,
+     historyRetentionDays: Int,
+     downloadRetentionDays: Int,
+     recoveryRetentionDays: Int,
+     clearSiteDataOnExit: Boolean,
+     privacyCleanupAllowlist: List<String>,
+     onSetHistoryRetentionDays: (Int) -> Unit,
+     onSetDownloadRetentionDays: (Int) -> Unit,
+     onSetRecoveryRetentionDays: (Int) -> Unit,
+     onSetClearSiteDataOnExit: (Boolean) -> Unit,
+     onAddPrivacyCleanupAllowlist: (String) -> Unit,
+     onRemovePrivacyCleanupAllowlist: (String) -> Unit,
+     onRunPrivacyCleanup: () -> Unit,
      onSetHomepage: (String) -> Unit,
     onClearSitePermissions: () -> Unit,
     onOpenPrivacyDashboard: () -> Unit,
@@ -6283,6 +6471,7 @@ private fun SettingsScreen(
     onLockCredentialVault: () -> Unit,
      onClearCredentials: () -> Unit,
      onDeleteAddress: (StoredAddress) -> Unit,
+     onSaveAddress: (StoredAddress) -> Unit,
      onClearAddresses: () -> Unit,
     onCopyCredentialUsername: (StoredCredential) -> Unit,
     onCopyCredentialPassword: (StoredCredential) -> Unit,
@@ -6553,7 +6742,64 @@ private fun SettingsScreen(
               Text("Open privacy dashboard")
           }
        }
-       SettingSection("Start page") {
+        SettingSection("Privacy automation") {
+            Text(
+                "Automatically remove old local records. A cleanup allowlist preserves selected origins. Site-data-on-exit clears Gecko site storage for all profiles when the app really leaves the foreground.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            RetentionChooser("History retention", historyRetentionDays, onSetHistoryRetentionDays)
+            RetentionChooser("Download retention", downloadRetentionDays, onSetDownloadRetentionDays)
+            RetentionChooser("Recovery retention", recoveryRetentionDays, onSetRecoveryRetentionDays, includeNever = false)
+            Spacer(Modifier.height(8.dp))
+            SettingToggle(
+                title = "Clear site data on exit",
+                summary = "Clear cookies and storage when Dextra leaves the foreground",
+                checked = clearSiteDataOnExit,
+                onCheckedChange = onSetClearSiteDataOnExit,
+            )
+            Spacer(Modifier.height(8.dp))
+            var allowlistOrigin by rememberSaveable { mutableStateOf("") }
+            Text("Cleanup allowlist", style = MaterialTheme.typography.titleSmall)
+            privacyCleanupAllowlist.forEach { origin ->
+                ListItem(
+                    headlineContent = { Text(origin, maxLines = 1) },
+                    leadingContent = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                    trailingContent = {
+                        IconButton(onClick = { onRemovePrivacyCleanupAllowlist(origin) }) {
+                            Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove allowlist entry")
+                        }
+                    },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = allowlistOrigin,
+                    onValueChange = { allowlistOrigin = it },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("HTTP(S) origin") },
+                    singleLine = true,
+                )
+                Button(
+                    onClick = {
+                        onAddPrivacyCleanupAllowlist(allowlistOrigin)
+                        allowlistOrigin = ""
+                    },
+                    enabled = allowlistOrigin.isNotBlank(),
+                ) { Text("Keep") }
+            }
+            OutlinedButton(onClick = onRunPrivacyCleanup, modifier = Modifier.padding(top = 8.dp)) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Run cleanup now")
+            }
+        }
+        SettingSection("Start page") {
            Text(
                "Customize the page shown in new tabs without changing your homepage.",
                style = MaterialTheme.typography.bodySmall,
@@ -6849,11 +7095,86 @@ private fun SettingsScreen(
                style = MaterialTheme.typography.bodySmall,
                color = MaterialTheme.colorScheme.onSurfaceVariant,
            )
+           var addressId by rememberSaveable { mutableStateOf("") }
+           var addressName by rememberSaveable { mutableStateOf("") }
+           var addressStreet by rememberSaveable { mutableStateOf("") }
+           var addressCity by rememberSaveable { mutableStateOf("") }
+           var addressRegion by rememberSaveable { mutableStateOf("") }
+           var addressPostal by rememberSaveable { mutableStateOf("") }
+           var addressCountry by rememberSaveable { mutableStateOf("") }
+           var addressPhone by rememberSaveable { mutableStateOf("") }
+           var addressEmail by rememberSaveable { mutableStateOf("") }
+           fun loadAddress(address: StoredAddress) {
+               addressId = address.id
+               addressName = address.name
+               addressStreet = address.streetAddress
+               addressCity = address.addressLevel2
+               addressRegion = address.addressLevel1
+               addressPostal = address.postalCode
+               addressCountry = address.country
+               addressPhone = address.tel
+               addressEmail = address.email
+           }
+           fun resetAddress() {
+               addressId = ""
+               addressName = ""
+               addressStreet = ""
+               addressCity = ""
+               addressRegion = ""
+               addressPostal = ""
+               addressCountry = ""
+               addressPhone = ""
+               addressEmail = ""
+           }
+           Text("Add or edit a saved address", modifier = Modifier.padding(top = 10.dp), style = MaterialTheme.typography.titleSmall)
+           OutlinedTextField(addressName, { addressName = it }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), label = { Text("Label / full name") }, singleLine = true)
+           OutlinedTextField(addressStreet, { addressStreet = it }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), label = { Text("Street address") }, singleLine = true)
+           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+               OutlinedTextField(addressCity, { addressCity = it }, modifier = Modifier.weight(1f), label = { Text("City") }, singleLine = true)
+               OutlinedTextField(addressRegion, { addressRegion = it }, modifier = Modifier.weight(1f), label = { Text("Region") }, singleLine = true)
+           }
+           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+               OutlinedTextField(addressPostal, { addressPostal = it }, modifier = Modifier.weight(1f), label = { Text("Postal code") }, singleLine = true)
+               OutlinedTextField(addressCountry, { addressCountry = it }, modifier = Modifier.weight(1f), label = { Text("Country") }, singleLine = true)
+           }
+           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+               OutlinedTextField(addressPhone, { addressPhone = it }, modifier = Modifier.weight(1f), label = { Text("Phone") }, singleLine = true)
+               OutlinedTextField(addressEmail, { addressEmail = it }, modifier = Modifier.weight(1f), label = { Text("Email") }, singleLine = true)
+           }
+           Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+               Button(
+                   onClick = {
+                       onSaveAddress(
+                           StoredAddress(
+                               id = addressId.ifBlank { UUID.randomUUID().toString() },
+                               name = addressName.trim(),
+                               givenName = "",
+                               additionalName = "",
+                               familyName = "",
+                               organization = "",
+                               streetAddress = addressStreet.trim(),
+                               addressLevel1 = addressRegion.trim(),
+                               addressLevel2 = addressCity.trim(),
+                               addressLevel3 = "",
+                               postalCode = addressPostal.trim(),
+                               country = addressCountry.trim(),
+                               tel = addressPhone.trim(),
+                               email = addressEmail.trim(),
+                               updatedAt = System.currentTimeMillis(),
+                           ),
+                       )
+                       resetAddress()
+                   },
+                   enabled = addressName.isNotBlank(),
+               ) { Text(if (addressId.isBlank()) "Save address" else "Update address") }
+               if (addressId.isNotBlank()) TextButton(onClick = ::resetAddress) { Text("Cancel edit") }
+           }
            if (addresses.isEmpty()) {
                Text("No saved addresses.", modifier = Modifier.padding(top = 10.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
            } else {
                addresses.forEach { address ->
                    ListItem(
+                       modifier = Modifier.clickable { loadAddress(address) },
                        headlineContent = { Text(address.name, maxLines = 1) },
                        supportingContent = {
                            Text(
@@ -7262,6 +7583,29 @@ private fun ExtensionPermissionGroup(title: String, values: List<String>) {
     Text(title, modifier = Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall)
     values.forEach { value ->
         Text("• $value", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun RetentionChooser(
+    title: String,
+    days: Int,
+    onChange: (Int) -> Unit,
+    includeNever: Boolean = true,
+) {
+    Text(title, style = MaterialTheme.typography.titleSmall)
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        val values = if (includeNever) listOf(0, 1, 7, 30, 90) else listOf(1, 7, 30, 90, 365)
+        values.forEach { value ->
+            FilterChip(
+                selected = days == value,
+                onClick = { onChange(value) },
+                label = { Text(if (value == 0) "Off" else "$value days") },
+            )
+        }
     }
 }
 

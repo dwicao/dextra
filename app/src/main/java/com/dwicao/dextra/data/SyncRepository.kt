@@ -264,6 +264,23 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         put("customSearchEngines", JSONArray(settings.customSearchEngines.map {
             JSONObject().put("id", it.id).put("label", it.label).put("searchUrl", it.searchUrl)
         }))
+        put("activeWorkspaceId", settings.activeWorkspaceId)
+        put("activeTabIndex", settings.activeTabIndex)
+        put("openTabs", JSONArray(settings.openTabs.filterNot { it.isPrivate }.map(::savedTabJson)))
+        put("tabGroups", JSONArray(settings.tabGroups.map(::tabGroupJson)))
+        put("workspaces", JSONArray(settings.workspaces.map { workspace ->
+            JSONObject().apply {
+                put("id", workspace.id)
+                put("title", workspace.title)
+                put("color", workspace.color)
+                put("contextId", workspace.contextId)
+                put("createdAt", workspace.createdAt)
+                put("lastUsedAt", workspace.lastUsedAt)
+                put("activeTabIndex", workspace.activeTabIndex)
+                put("tabs", JSONArray(workspace.tabs.filterNot { it.isPrivate }.map(::savedTabJson)))
+                put("groups", JSONArray(workspace.tabGroups.map(::tabGroupJson)))
+            }
+        }))
         put("homepage", settings.homepage)
         put("startPage", JSONObject().apply {
             put("showQuickLinks", settings.startPage.showQuickLinks)
@@ -275,6 +292,11 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         put("desktopSites", settings.desktopSites)
         put("httpsOnly", settings.httpsOnly)
         put("cookieBannerMode", settings.cookieBannerMode)
+        put("historyRetentionDays", settings.historyRetentionDays)
+        put("downloadRetentionDays", settings.downloadRetentionDays)
+        put("recoveryRetentionDays", settings.recoveryRetentionDays)
+        put("clearSiteDataOnExit", settings.clearSiteDataOnExit)
+        put("privacyCleanupAllowlist", JSONArray(settings.privacyCleanupAllowlist.toList()))
         put("tabBarWithAddressBar", settings.tabBarWithAddressBar)
         put("verticalTabs", settings.verticalTabs)
         put("accessibilityTextScale", settings.accessibilityTextScale)
@@ -291,6 +313,23 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
 
     private fun JSONObject.optBooleanOrNull(key: String): Boolean? = if (has(key) && !isNull(key)) getBoolean(key) else null
     private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) getInt(key) else null
+
+    private fun savedTabJson(tab: SavedTab): JSONObject = JSONObject().apply {
+        put("url", tab.url)
+        put("private", false)
+        put("pinned", tab.pinned)
+        put("groupId", tab.groupId)
+        put("id", tab.id)
+        put("title", tab.title)
+        put("sessionState", tab.sessionState)
+    }
+
+    private fun tabGroupJson(group: SavedTabGroup): JSONObject = JSONObject().apply {
+        put("id", group.id)
+        put("title", group.title)
+        put("color", group.color)
+        put("collapsed", group.collapsed)
+    }
 
     private companion object {
         const val MAX_BYTES = 20 * 1024 * 1024

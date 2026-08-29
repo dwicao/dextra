@@ -62,6 +62,11 @@ data class BrowserSettings(
     val desktopSites: Boolean = false,
     val httpsOnly: Boolean = false,
     val cookieBannerMode: Int = 0,
+    val historyRetentionDays: Int = 0,
+    val downloadRetentionDays: Int = 0,
+    val recoveryRetentionDays: Int = 30,
+    val clearSiteDataOnExit: Boolean = false,
+    val privacyCleanupAllowlist: Set<String> = emptySet(),
     val tabBarWithAddressBar: Boolean = true,
     val verticalTabs: Boolean = true,
     val dnsOverHttpsEnabled: Boolean = false,
@@ -165,6 +170,11 @@ class SettingsRepository(private val context: Context) {
         val desktopSites = booleanPreferencesKey("desktop_sites")
         val httpsOnly = booleanPreferencesKey("https_only")
         val cookieBannerMode = intPreferencesKey("cookie_banner_mode")
+        val historyRetentionDays = intPreferencesKey("history_retention_days")
+        val downloadRetentionDays = intPreferencesKey("download_retention_days")
+        val recoveryRetentionDays = intPreferencesKey("recovery_retention_days")
+        val clearSiteDataOnExit = booleanPreferencesKey("clear_site_data_on_exit")
+        val privacyCleanupAllowlist = stringPreferencesKey("privacy_cleanup_allowlist")
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
         val verticalTabs = booleanPreferencesKey("vertical_tabs")
         val dnsOverHttpsEnabled = booleanPreferencesKey("dns_over_https_enabled")
@@ -243,6 +253,37 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setCookieBannerMode(mode: Int) {
         context.settingsDataStore.edit { it[Keys.cookieBannerMode] = mode.coerceIn(0, 2) }
+    }
+
+    suspend fun setHistoryRetentionDays(days: Int) {
+        context.settingsDataStore.edit { it[Keys.historyRetentionDays] = days.coerceIn(0, 3650) }
+    }
+
+    suspend fun setDownloadRetentionDays(days: Int) {
+        context.settingsDataStore.edit { it[Keys.downloadRetentionDays] = days.coerceIn(0, 3650) }
+    }
+
+    suspend fun setRecoveryRetentionDays(days: Int) {
+        context.settingsDataStore.edit { it[Keys.recoveryRetentionDays] = days.coerceIn(1, 3650) }
+    }
+
+    suspend fun setClearSiteDataOnExit(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.clearSiteDataOnExit] = enabled }
+    }
+
+    suspend fun addPrivacyCleanupAllowlist(origin: String) {
+        context.settingsDataStore.edit { preferences ->
+            val values = preferences.privacyCleanupAllowlist().plus(origin).take(MAX_PRIVACY_ALLOWLIST)
+            preferences[Keys.privacyCleanupAllowlist] = values.joinToString("\n")
+        }
+    }
+
+    suspend fun removePrivacyCleanupAllowlist(origin: String) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.privacyCleanupAllowlist] = preferences.privacyCleanupAllowlist()
+                .filterNot { it == origin }
+                .joinToString("\n")
+        }
     }
 
     suspend fun setHomepage(homepage: String) {
@@ -497,6 +538,16 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun pruneSessionTimeline(before: Long) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.sessionTimeline] = JSONArray(
+                parseSessionSnapshots(preferences[Keys.sessionTimeline].orEmpty())
+                    .filter { it.createdAt >= before }
+                    .map { it.toJson() },
+            ).toString()
+        }
+    }
+
     suspend fun setDownloadDirectoryUri(uri: String?) {
         context.settingsDataStore.edit { preferences ->
             if (uri == null) preferences.remove(Keys.downloadDirectoryUri)
@@ -539,6 +590,18 @@ class SettingsRepository(private val context: Context) {
             if (settings.has("desktopSites")) preferences[Keys.desktopSites] = settings.optBoolean("desktopSites")
             if (settings.has("httpsOnly")) preferences[Keys.httpsOnly] = settings.optBoolean("httpsOnly")
             if (settings.has("cookieBannerMode")) preferences[Keys.cookieBannerMode] = settings.optInt("cookieBannerMode").coerceIn(0, 2)
+            if (settings.has("historyRetentionDays")) preferences[Keys.historyRetentionDays] = settings.optInt("historyRetentionDays").coerceIn(0, 3650)
+            if (settings.has("downloadRetentionDays")) preferences[Keys.downloadRetentionDays] = settings.optInt("downloadRetentionDays").coerceIn(0, 3650)
+            if (settings.has("recoveryRetentionDays")) preferences[Keys.recoveryRetentionDays] = settings.optInt("recoveryRetentionDays").coerceIn(1, 3650)
+            if (settings.has("clearSiteDataOnExit")) preferences[Keys.clearSiteDataOnExit] = settings.optBoolean("clearSiteDataOnExit")
+            settings.optJSONArray("privacyCleanupAllowlist")?.let { array ->
+                preferences[Keys.privacyCleanupAllowlist] = (0 until array.length())
+                    .mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                    .filter { it.startsWith("http://") || it.startsWith("https://") }
+                    .distinct()
+                    .take(MAX_PRIVACY_ALLOWLIST)
+                    .joinToString("\n")
+            }
             if (settings.has("tabBarWithAddressBar")) preferences[Keys.tabBarWithAddressBar] = settings.optBoolean("tabBarWithAddressBar")
             if (settings.has("verticalTabs")) preferences[Keys.verticalTabs] = settings.optBoolean("verticalTabs")
             settings.optDouble("accessibilityTextScale", 1.0).toFloat().takeIf { it.isFinite() }
@@ -575,6 +638,73 @@ class SettingsRepository(private val context: Context) {
                 }.take(MAX_CUSTOM_SEARCH_ENGINES)
                 preferences[Keys.customSearchEngines] = JSONArray(engines.map(::customSearchEngineToJson)).toString()
             }
+            settings.optJSONArray("openTabs")?.let { array ->
+                preferences[Keys.openTabs] = syncedTabsJson(array).toString()
+            }
+            if (settings.has("activeTabIndex")) {
+                preferences[Keys.activeTabIndex] = settings.optInt("activeTabIndex", 0).coerceAtLeast(0)
+            }
+            settings.optJSONArray("tabGroups")?.let { array ->
+                preferences[Keys.tabGroups] = syncedGroupsJson(array).toString()
+            }
+            settings.optJSONArray("workspaces")?.let { array ->
+                preferences[Keys.workspaces] = syncedWorkspacesJson(array).toString()
+            }
+            settings.optString("activeWorkspaceId").takeIf(String::isNotBlank)?.let {
+                preferences[Keys.activeWorkspaceId] = it.take(100)
+            }
+        }
+    }
+
+    private fun syncedTabsJson(values: JSONArray): JSONArray = JSONArray().also { output ->
+        for (index in 0 until values.length().coerceAtMost(MAX_WORKSPACE_TABS)) {
+            val value = values.optJSONObject(index) ?: continue
+            val url = value.optString("url").takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: continue
+            output.put(
+                JSONObject()
+                    .put("url", url.take(2_000))
+                    .put("private", false)
+                    .put("pinned", value.optBoolean("pinned"))
+                    .put("groupId", value.optString("groupId").takeIf(String::isNotBlank))
+                    .put("id", value.optString("id").takeIf(String::isNotBlank))
+                    .put("title", value.optString("title").takeIf(String::isNotBlank)?.take(200))
+                    .put("sessionState", value.optString("sessionState").takeIf(String::isNotBlank)?.take(MAX_SESSION_STATE_CHARS)),
+            )
+        }
+    }
+
+    private fun syncedGroupsJson(values: JSONArray): JSONArray = JSONArray().also { output ->
+        for (index in 0 until values.length().coerceAtMost(MAX_TAB_GROUPS)) {
+            val value = values.optJSONObject(index) ?: continue
+            val id = value.optString("id").takeIf(String::isNotBlank) ?: continue
+            output.put(
+                JSONObject()
+                    .put("id", id.take(100))
+                    .put("title", value.optString("title").ifBlank { "Tab group" }.take(40))
+                    .put("color", value.optLong("color", 0xFF4E4BB5L))
+                    .put("collapsed", value.optBoolean("collapsed")),
+            )
+        }
+    }
+
+    private fun syncedWorkspacesJson(values: JSONArray): JSONArray = JSONArray().also { output ->
+        for (index in 0 until values.length().coerceAtMost(MAX_WORKSPACES)) {
+            val value = values.optJSONObject(index) ?: continue
+            val id = value.optString("id").takeIf(String::isNotBlank) ?: continue
+            val tabs = value.optJSONArray("tabs") ?: JSONArray()
+            val groups = value.optJSONArray("groups") ?: JSONArray()
+            output.put(
+                JSONObject()
+                    .put("id", id.take(100))
+                    .put("title", value.optString("title").ifBlank { "Workspace" }.take(40))
+                    .put("color", value.optLong("color", 0xFF4E4BB5L))
+                    .put("contextId", value.optString("contextId").takeIf(String::isNotBlank)?.take(160))
+                    .put("createdAt", value.optLong("createdAt", System.currentTimeMillis()))
+                    .put("lastUsedAt", value.optLong("lastUsedAt", 0L))
+                    .put("activeTabIndex", value.optInt("activeTabIndex", 0).coerceAtLeast(0))
+                    .put("tabs", syncedTabsJson(tabs))
+                    .put("groups", syncedGroupsJson(groups)),
+            )
         }
     }
 
@@ -591,6 +721,11 @@ class SettingsRepository(private val context: Context) {
         desktopSites = get(Keys.desktopSites) ?: defaultDesktopSites(),
         httpsOnly = get(Keys.httpsOnly) ?: false,
         cookieBannerMode = (get(Keys.cookieBannerMode) ?: 0).coerceIn(0, 2),
+        historyRetentionDays = (get(Keys.historyRetentionDays) ?: 0).coerceIn(0, 3650),
+        downloadRetentionDays = (get(Keys.downloadRetentionDays) ?: 0).coerceIn(0, 3650),
+        recoveryRetentionDays = (get(Keys.recoveryRetentionDays) ?: 30).coerceIn(1, 3650),
+        clearSiteDataOnExit = get(Keys.clearSiteDataOnExit) ?: false,
+        privacyCleanupAllowlist = privacyCleanupAllowlist().toSet(),
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
         verticalTabs = get(Keys.verticalTabs) ?: true,
         dnsOverHttpsEnabled = get(Keys.dnsOverHttpsEnabled) ?: false,
@@ -651,6 +786,13 @@ class SettingsRepository(private val context: Context) {
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
         ?.filter { it.startsWith("https://", ignoreCase = true) }
+        ?: emptyList()
+
+    private fun Preferences.privacyCleanupAllowlist(): List<String> = get(Keys.privacyCleanupAllowlist)
+        ?.split('\n')
+        ?.map(String::trim)
+        ?.filter { it.startsWith("http://") || it.startsWith("https://") }
+        ?.distinct()
         ?: emptyList()
 
     private fun Preferences.disabledUserScripts(): List<String> = get(Keys.disabledUserScripts)
@@ -904,6 +1046,9 @@ class SettingsRepository(private val context: Context) {
         const val MAX_RECENTLY_CLOSED_TABS = 10
         const val MAX_WORKSPACES = 12
         const val MAX_WORKSPACE_TABS = 64
+        const val MAX_TAB_GROUPS = 64
+        const val MAX_SESSION_STATE_CHARS = 256 * 1024
         const val MAX_START_PAGE_LINKS = 12
+        const val MAX_PRIVACY_ALLOWLIST = 100
     }
 }
