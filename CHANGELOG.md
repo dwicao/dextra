@@ -21,6 +21,11 @@ All notable changes to Dextra are documented here. The commit log at the end rec
 - Workspace tab sessions with isolated normal-tab snapshots and workspace management.
 - Per-origin permission controls and HTTPS security diagnostics with certificate fingerprints.
 - Instrumentation smoke tests for UI rendering and activity recreation.
+- Container-backed workspace profiles with isolated GeckoView contexts and per-profile site decisions.
+- Sync Center previews with selective encrypted import/export.
+- Automatic session recovery timeline with restorable background checkpoints.
+- Local performance dashboard for startup, memory, frame pacing, and DeX-like window metrics.
+- Room migration from database version 13 to 14 for profile-scoped site data.
 
 ## [0.5.0] - 2026-08-29
 

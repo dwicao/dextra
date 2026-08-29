@@ -61,6 +61,7 @@ data class BrowserSettings(
     val tabGroups: List<SavedTabGroup> = emptyList(),
     val shortcutBindings: Map<BrowserCommandId, KeyChord> = DefaultKeyboardShortcuts.bindings,
     val sessionSnapshots: List<SessionSnapshot> = emptyList(),
+    val sessionTimeline: List<SessionSnapshot> = emptyList(),
     val downloadDirectoryUri: String? = null,
     val recentlyClosedTabs: List<SavedTab> = emptyList(),
     val accessibilityTextScale: Float = 1f,
@@ -97,6 +98,7 @@ data class TabWorkspace(
     val id: String,
     val title: String,
     val color: Long = 0xFF4E4BB5L,
+    val contextId: String? = null,
     val createdAt: Long,
     val lastUsedAt: Long,
     val tabs: List<SavedTab> = emptyList(),
@@ -160,6 +162,7 @@ class SettingsRepository(private val context: Context) {
         val tabGroups = stringPreferencesKey("tab_groups")
         val shortcutBindings = stringPreferencesKey("shortcut_bindings")
         val sessionSnapshots = stringPreferencesKey("session_snapshots")
+        val sessionTimeline = stringPreferencesKey("session_timeline")
         val downloadDirectoryUri = stringPreferencesKey("download_directory_uri")
         val recentlyClosedTabs = stringPreferencesKey("recently_closed_tabs")
         val accessibilityTextScale = stringPreferencesKey("accessibility_text_scale")
@@ -380,6 +383,7 @@ class SettingsRepository(private val context: Context) {
                 id = workspaceId,
                 title = existing.firstOrNull { it.id == workspaceId }?.title ?: "Personal",
                 color = existing.firstOrNull { it.id == workspaceId }?.color ?: 0xFF4E4BB5L,
+                contextId = existing.firstOrNull { it.id == workspaceId }?.contextId,
                 createdAt = existing.firstOrNull { it.id == workspaceId }?.createdAt ?: now,
                 lastUsedAt = now,
                 tabs = tabs.filterNot { it.isPrivate },
@@ -416,20 +420,32 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun saveSessionSnapshot(snapshot: SessionSnapshot) {
+        saveSnapshot(Keys.sessionSnapshots, snapshot, MAX_SESSION_SNAPSHOTS)
+    }
+
+    suspend fun saveSessionTimeline(snapshot: SessionSnapshot) {
+        saveSnapshot(Keys.sessionTimeline, snapshot, MAX_TIMELINE_ENTRIES)
+    }
+
+    private suspend fun saveSnapshot(
+        key: Preferences.Key<String>,
+        snapshot: SessionSnapshot,
+        limit: Int,
+    ) {
         context.settingsDataStore.edit { preferences ->
-            val snapshots = preferences.sessionSnapshots().toMutableList()
+            val snapshots = parseSessionSnapshots(preferences[key].orEmpty()).toMutableList()
             snapshots.removeAll { it.id == snapshot.id }
             snapshots.add(0, snapshot)
-            val bounded = snapshots.take(MAX_SESSION_SNAPSHOTS).toMutableList()
+            val bounded = snapshots.take(limit).toMutableList()
             while (bounded.isNotEmpty()) {
                 val payload = JSONArray(bounded.map { it.toJson() }).toString()
                 if (payload.toByteArray(Charsets.UTF_8).size <= MAX_SESSION_SNAPSHOT_BYTES) {
-                    preferences[Keys.sessionSnapshots] = payload
+                    preferences[key] = payload
                     return@edit
                 }
                 bounded.removeAt(bounded.lastIndex)
             }
-            preferences.remove(Keys.sessionSnapshots)
+            preferences.remove(key)
         }
     }
 
@@ -437,6 +453,16 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { preferences ->
             preferences[Keys.sessionSnapshots] = JSONArray(
                 preferences.sessionSnapshots().filterNot { it.id == id }.map { it.toJson() },
+            ).toString()
+        }
+    }
+
+    suspend fun deleteSessionTimeline(id: String) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.sessionTimeline] = JSONArray(
+                parseSessionSnapshots(preferences[Keys.sessionTimeline].orEmpty())
+                    .filterNot { it.id == id }
+                    .map { it.toJson() },
             ).toString()
         }
     }
@@ -545,6 +571,7 @@ class SettingsRepository(private val context: Context) {
         tabGroups = savedTabGroups(),
         shortcutBindings = DefaultKeyboardShortcuts.bindings + shortcutBindings(),
         sessionSnapshots = sessionSnapshots(),
+        sessionTimeline = sessionTimeline(),
         downloadDirectoryUri = get(Keys.downloadDirectoryUri),
         recentlyClosedTabs = recentlyClosedTabs(),
         accessibilityTextScale = get(Keys.accessibilityTextScale)?.toFloatOrNull()?.coerceIn(1f, 1.5f) ?: 1f,
@@ -687,6 +714,8 @@ class SettingsRepository(private val context: Context) {
                 id = id,
                 title = value.optString("title").ifBlank { "Workspace" }.take(40),
                 color = value.optLong("color", 0xFF4E4BB5L),
+                contextId = value.optString("contextId").takeIf(String::isNotBlank)
+                    ?: id.takeIf { it != DEFAULT_WORKSPACE_ID }?.let { "dextra-$it" },
                 createdAt = value.optLong("createdAt", System.currentTimeMillis()),
                 lastUsedAt = value.optLong("lastUsedAt", 0L),
                 tabs = tabs,
@@ -707,8 +736,12 @@ class SettingsRepository(private val context: Context) {
         ?.toMap()
         ?: emptyMap()
 
-    private fun Preferences.sessionSnapshots(): List<SessionSnapshot> = runCatching {
-        val snapshots = JSONArray(get(Keys.sessionSnapshots).orEmpty())
+    private fun Preferences.sessionSnapshots(): List<SessionSnapshot> = parseSessionSnapshots(get(Keys.sessionSnapshots).orEmpty())
+
+    private fun Preferences.sessionTimeline(): List<SessionSnapshot> = parseSessionSnapshots(get(Keys.sessionTimeline).orEmpty())
+
+    private fun parseSessionSnapshots(payload: String): List<SessionSnapshot> = runCatching {
+        val snapshots = JSONArray(payload)
         (0 until snapshots.length()).mapNotNull { index ->
             val snapshot = snapshots.optJSONObject(index) ?: return@mapNotNull null
             val id = snapshot.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
@@ -764,6 +797,7 @@ class SettingsRepository(private val context: Context) {
         put("id", workspace.id)
         put("title", workspace.title)
         put("color", workspace.color)
+        put("contextId", workspace.contextId)
         put("createdAt", workspace.createdAt)
         put("lastUsedAt", workspace.lastUsedAt)
         put("activeTabIndex", workspace.activeTabIndex)
@@ -805,6 +839,7 @@ class SettingsRepository(private val context: Context) {
     private companion object {
         const val MAX_SESSION_SNAPSHOTS = 20
         const val MAX_SESSION_SNAPSHOT_BYTES = 8 * 1024 * 1024
+        const val MAX_TIMELINE_ENTRIES = 12
         const val MAX_CUSTOM_SEARCH_ENGINES = 20
         const val MAX_ADBLOCK_FILTERS = 100
         const val MAX_USER_SCRIPTS = 100

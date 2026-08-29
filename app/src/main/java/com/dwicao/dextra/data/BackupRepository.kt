@@ -23,13 +23,13 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
             put("readingList", JSONArray(dao.getReadingList().map { JSONObject().apply {
                 put("url", it.url); put("title", it.title); put("savedAt", it.savedAt); put("isRead", it.isRead)
             } }))
-            put("sitePermissions", JSONArray(dao.getSitePermissions().map { JSONObject().apply {
-                put("origin", it.origin); put("permission", it.permission); put("decision", it.decision); put("updatedAt", it.updatedAt)
-            } }))
+             put("sitePermissions", JSONArray(dao.getSitePermissions().map { JSONObject().apply {
+                 put("origin", it.origin); put("permission", it.permission); put("decision", it.decision); put("updatedAt", it.updatedAt); put("profileId", it.profileId)
+             } }))
              put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
                  put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
                  putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent)
-                 putOpt("translationTarget", it.translationTarget); put("updatedAt", it.updatedAt)
+                 putOpt("translationTarget", it.translationTarget); put("updatedAt", it.updatedAt); put("profileId", it.profileId)
              } }))
              put("installedWebApps", JSONArray(dao.getInstalledWebApps().map { JSONObject().apply {
                  put("id", it.id); put("origin", it.origin); put("name", it.name)
@@ -40,7 +40,7 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
             ?: error("Could not open backup destination")
     }
 
-    suspend fun import(uri: Uri): Int {
+    suspend fun import(uri: Uri, targetProfileId: String = DEFAULT_WORKSPACE_ID): Int {
         val text = context.contentResolver.openInputStream(uri)?.use { input ->
             BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readText()
         } ?: error("Could not open backup")
@@ -67,7 +67,7 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
         }
         root.optJSONArray("sitePermissions")?.let { array ->
             for (i in 0 until array.length()) array.getJSONObject(i).let {
-                dao.upsertSitePermission(SitePermission(it.getString("origin"), it.getString("permission"), it.getString("decision"), it.optLong("updatedAt", System.currentTimeMillis())))
+                 dao.upsertSitePermission(SitePermission(it.getString("origin"), it.getString("permission"), it.getString("decision"), it.optLong("updatedAt", System.currentTimeMillis()), profileId = targetProfileId))
             }
         }
         root.optJSONArray("siteSettings")?.let { array ->
@@ -78,9 +78,10 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
                      adBlockingEnabled = it.optBooleanOrNull("adBlockingEnabled"),
                      userScriptsEnabled = it.optBooleanOrNull("userScriptsEnabled"),
                      zoomPercent = it.optIntOrNull("zoomPercent"),
-                     translationTarget = it.optString("translationTarget").takeIf(String::isNotBlank),
-                     updatedAt = it.optLong("updatedAt", System.currentTimeMillis()),
-                 ))
+                      translationTarget = it.optString("translationTarget").takeIf(String::isNotBlank),
+                      updatedAt = it.optLong("updatedAt", System.currentTimeMillis()),
+                      profileId = targetProfileId,
+                  ))
             }
         }
         root.optJSONArray("installedWebApps")?.let { array ->

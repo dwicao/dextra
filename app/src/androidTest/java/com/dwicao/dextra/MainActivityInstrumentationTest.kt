@@ -2,7 +2,7 @@ package com.dwicao.dextra
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Rule
 import org.junit.Test
@@ -15,12 +15,12 @@ class MainActivityInstrumentationTest {
 
     @Test
     fun browserControlsRenderOnActivityStart() {
-        composeRule.onNodeWithText("Search or enter web address").assertIsDisplayed()
+        composeRule.onNodeWithTag("browser_surface").assertIsDisplayed()
     }
 
     @Test
     fun browserSurfaceSurvivesActivityRecreation() {
         composeRule.activityRule.scenario.recreate()
-        composeRule.onNodeWithText("Search or enter web address").assertIsDisplayed()
+        composeRule.onNodeWithTag("browser_surface").assertIsDisplayed()
     }
 }

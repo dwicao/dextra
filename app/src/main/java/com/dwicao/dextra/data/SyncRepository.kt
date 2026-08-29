@@ -58,42 +58,62 @@ internal data class EncryptedSyncPayload(
     val data: ByteArray,
 )
 
+data class SyncSelection(
+    val settings: Boolean = true,
+    val bookmarks: Boolean = true,
+    val history: Boolean = true,
+    val readingList: Boolean = true,
+    val sitePermissions: Boolean = true,
+    val siteSettings: Boolean = true,
+)
+
+data class SyncPreview(
+    val createdAt: Long,
+    val bookmarkCount: Int,
+    val historyCount: Int,
+    val readingListCount: Int,
+    val permissionCount: Int,
+    val siteSettingCount: Int,
+    val hasSettings: Boolean,
+)
+
 data class SyncData(
     val root: JSONObject,
     val importedBookmarks: Int,
+    val importedSettings: JSONObject? = null,
 )
 
 /** Password-encrypted, portable sync bundle. Credentials, extensions, and private tabs are excluded. */
 class SyncRepository(private val context: Context, private val dao: BrowserDao) {
-    suspend fun export(uri: Uri, settings: BrowserSettings, passphrase: String) {
-        val bytes = exportBytes(settings, passphrase)
+    suspend fun export(uri: Uri, settings: BrowserSettings, passphrase: String, selection: SyncSelection = SyncSelection()) {
+        val bytes = exportBytes(settings, passphrase, selection)
         context.contentResolver.openOutputStream(uri)?.use { output -> output.write(bytes) }
             ?: error("Could not open sync destination")
     }
 
-    suspend fun exportBytes(settings: BrowserSettings, passphrase: String): ByteArray {
+    suspend fun exportBytes(settings: BrowserSettings, passphrase: String, selection: SyncSelection = SyncSelection()): ByteArray {
         require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
         val root = JSONObject().apply {
             put("format", SyncCrypto.FORMAT)
             put("version", SyncCrypto.VERSION)
             put("createdAt", System.currentTimeMillis())
-            put("settings", settingsJson(settings))
-            put("history", JSONArray(dao.getHistory().map { JSONObject().apply {
+            if (selection.settings) put("settings", settingsJson(settings))
+            if (selection.history) put("history", JSONArray(dao.getHistory().map { JSONObject().apply {
                 put("url", it.url); put("title", it.title); put("visitedAt", it.visitedAt)
             } }))
-            put("bookmarks", JSONArray(dao.getBookmarks().map { JSONObject().apply {
+            if (selection.bookmarks) put("bookmarks", JSONArray(dao.getBookmarks().map { JSONObject().apply {
                 put("url", it.url); put("title", it.title); put("createdAt", it.createdAt); put("folder", it.folder)
             } }))
-            put("readingList", JSONArray(dao.getReadingList().map { JSONObject().apply {
+            if (selection.readingList) put("readingList", JSONArray(dao.getReadingList().map { JSONObject().apply {
                 put("url", it.url); put("title", it.title); put("savedAt", it.savedAt); put("isRead", it.isRead)
             } }))
-            put("sitePermissions", JSONArray(dao.getSitePermissions().map { JSONObject().apply {
-                put("origin", it.origin); put("permission", it.permission); put("decision", it.decision); put("updatedAt", it.updatedAt)
+            if (selection.sitePermissions) put("sitePermissions", JSONArray(dao.getSitePermissions().map { JSONObject().apply {
+                put("origin", it.origin); put("permission", it.permission); put("decision", it.decision); put("updatedAt", it.updatedAt); put("profileId", it.profileId)
             } }))
-            put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
+            if (selection.siteSettings) put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
                 put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
                 putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent)
-                putOpt("translationTarget", it.translationTarget); put("updatedAt", it.updatedAt)
+                putOpt("translationTarget", it.translationTarget); put("updatedAt", it.updatedAt); put("profileId", it.profileId)
             } }))
         }
         val payload = root.toString().toByteArray(Charsets.UTF_8)
@@ -110,34 +130,50 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         return envelope.toString().toByteArray(Charsets.UTF_8)
     }
 
-    suspend fun import(uri: Uri, passphrase: String): SyncData {
+    suspend fun import(
+        uri: Uri,
+        passphrase: String,
+        targetProfileId: String = DEFAULT_WORKSPACE_ID,
+        selection: SyncSelection = SyncSelection(),
+    ): SyncData {
         require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
         val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
             readBounded(input, MAX_BYTES)
         } ?: error("Could not open sync bundle")
-        return importBytes(bytes, passphrase)
+        return importBytes(bytes, passphrase, targetProfileId, selection)
     }
 
-    suspend fun importBytes(bytes: ByteArray, passphrase: String): SyncData {
+    suspend fun preview(uri: Uri, passphrase: String): SyncPreview {
+        require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
+        val bytes = context.contentResolver.openInputStream(uri)?.use { input -> readBounded(input, MAX_BYTES) }
+            ?: error("Could not open sync bundle")
+        return previewBytes(bytes, passphrase)
+    }
+
+    suspend fun previewBytes(bytes: ByteArray, passphrase: String): SyncPreview {
+        val root = decodeRoot(bytes, passphrase)
+        return SyncPreview(
+            createdAt = root.optLong("createdAt", 0L),
+            bookmarkCount = root.optJSONArray("bookmarks")?.length() ?: 0,
+            historyCount = root.optJSONArray("history")?.length() ?: 0,
+            readingListCount = root.optJSONArray("readingList")?.length() ?: 0,
+            permissionCount = root.optJSONArray("sitePermissions")?.length() ?: 0,
+            siteSettingCount = root.optJSONArray("siteSettings")?.length() ?: 0,
+            hasSettings = root.has("settings"),
+        )
+    }
+
+    suspend fun importBytes(
+        bytes: ByteArray,
+        passphrase: String,
+        targetProfileId: String = DEFAULT_WORKSPACE_ID,
+        selection: SyncSelection = SyncSelection(),
+    ): SyncData {
         require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
         require(bytes.size <= MAX_BYTES) { "Sync bundle is too large" }
-        val text = String(bytes, Charsets.UTF_8)
-        val envelope = JSONObject(text)
-        require(envelope.optString("format") == SyncCrypto.FORMAT && envelope.optInt("version") == SyncCrypto.VERSION) {
-            "Unsupported sync bundle"
-        }
-        require(envelope.optInt("iterations") == 120_000) { "Unsupported sync encryption" }
-        val encrypted = EncryptedSyncPayload(
-            salt = Base64.getDecoder().decode(envelope.getString("salt")),
-            iv = Base64.getDecoder().decode(envelope.getString("iv")),
-            data = Base64.getDecoder().decode(envelope.getString("data")),
-        )
-        val root = JSONObject(String(SyncCrypto.decrypt(encrypted, passphrase), Charsets.UTF_8))
-        require(root.optString("format") == SyncCrypto.FORMAT && root.optInt("version") == SyncCrypto.VERSION) {
-            "Unsupported sync bundle"
-        }
+        val root = decodeRoot(bytes, passphrase)
         var imported = 0
-        root.optJSONArray("bookmarks")?.let { array ->
+        if (selection.bookmarks) root.optJSONArray("bookmarks")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_BOOKMARKS)) array.getJSONObject(i).let {
                 dao.insertBookmark(Bookmark(
                     url = it.getString("url"),
@@ -148,7 +184,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
                 imported++
             }
         }
-        root.optJSONArray("history")?.let { array ->
+        if (selection.history) root.optJSONArray("history")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_HISTORY)) array.getJSONObject(i).let {
                 val url = it.getString("url")
                 val visitedAt = it.optLong("visitedAt", System.currentTimeMillis())
@@ -158,7 +194,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             }
             dao.trimHistory()
         }
-        root.optJSONArray("readingList")?.let { array ->
+        if (selection.readingList) root.optJSONArray("readingList")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_READING_LIST)) array.getJSONObject(i).let {
                 dao.upsertReadingListEntry(ReadingListEntry(
                     url = it.getString("url"), title = it.getString("title"),
@@ -166,25 +202,44 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
                 ))
             }
         }
-        root.optJSONArray("sitePermissions")?.let { array ->
+        if (selection.sitePermissions) root.optJSONArray("sitePermissions")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_SITE_PERMISSIONS)) array.getJSONObject(i).let {
                 dao.upsertSitePermission(SitePermission(
                     it.getString("origin"), it.getString("permission"), it.getString("decision"),
-                    it.optLong("updatedAt", System.currentTimeMillis()),
+                    it.optLong("updatedAt", System.currentTimeMillis()), profileId = targetProfileId,
                 ))
             }
         }
-        root.optJSONArray("siteSettings")?.let { array ->
+        if (selection.siteSettings) root.optJSONArray("siteSettings")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_SITE_SETTINGS)) array.getJSONObject(i).let {
                 dao.upsertSiteSetting(SiteSetting(
                     it.getString("origin"), it.optBooleanOrNull("desktopSites"),
                     it.optBooleanOrNull("adBlockingEnabled"), it.optBooleanOrNull("userScriptsEnabled"),
                     it.optIntOrNull("zoomPercent"), it.optString("translationTarget").takeIf(String::isNotBlank),
-                    it.optLong("updatedAt", System.currentTimeMillis()),
+                    it.optLong("updatedAt", System.currentTimeMillis()), profileId = targetProfileId,
                 ))
             }
         }
-        return SyncData(root, imported)
+        return SyncData(root, imported, root.optJSONObject("settings")?.takeIf { selection.settings })
+    }
+
+    private fun decodeRoot(bytes: ByteArray, passphrase: String): JSONObject {
+        require(bytes.size <= MAX_BYTES) { "Sync bundle is too large" }
+        val envelope = JSONObject(String(bytes, Charsets.UTF_8))
+        require(envelope.optString("format") == SyncCrypto.FORMAT && envelope.optInt("version") == SyncCrypto.VERSION) {
+            "Unsupported sync bundle"
+        }
+        require(envelope.optInt("iterations") == 120_000) { "Unsupported sync encryption" }
+        val encrypted = EncryptedSyncPayload(
+            salt = Base64.getDecoder().decode(envelope.getString("salt")),
+            iv = Base64.getDecoder().decode(envelope.getString("iv")),
+            data = Base64.getDecoder().decode(envelope.getString("data")),
+        )
+        return JSONObject(String(SyncCrypto.decrypt(encrypted, passphrase), Charsets.UTF_8)).also { root ->
+            require(root.optString("format") == SyncCrypto.FORMAT && root.optInt("version") == SyncCrypto.VERSION) {
+                "Unsupported sync bundle"
+            }
+        }
     }
 
     private fun readBounded(input: java.io.InputStream, maximum: Int): ByteArray {

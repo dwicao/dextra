@@ -52,7 +52,7 @@ class WebDavSyncWorker(
                 }
                 when (resolution) {
                     "remote" -> {
-                        val imported = syncRepository.importBytes(remote.bytes, config.passphrase)
+                        val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                         imported.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
                         store.save(config.copy(
                             lastEtag = remote.etag,
@@ -65,7 +65,7 @@ class WebDavSyncWorker(
                     }
                     "local", "merge" -> {
                         if (resolution == "merge") {
-                            val imported = syncRepository.importBytes(remote.bytes, config.passphrase)
+                            val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                             imported.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
                         }
                         val settings = settingsRepository.settings.first()
@@ -88,7 +88,7 @@ class WebDavSyncWorker(
                 return@runCatching
             }
             if (remote != null && (config.lastEtag == null || remote.etag != config.lastEtag)) {
-                val imported = syncRepository.importBytes(remote.bytes, config.passphrase)
+                val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                 imported.root.optJSONObject("settings")?.let { importedSettings ->
                     settingsRepository.applySyncSettings(importedSettings)
                 }

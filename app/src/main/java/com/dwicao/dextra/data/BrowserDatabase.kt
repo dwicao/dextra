@@ -37,23 +37,25 @@ data class Bookmark(
     val folder: String? = null,
 )
 
-@Entity(tableName = "site_permissions", primaryKeys = ["origin", "permission"])
+@Entity(tableName = "site_permissions", primaryKeys = ["profileId", "origin", "permission"])
 data class SitePermission(
     val origin: String,
     val permission: String,
     val decision: String,
     val updatedAt: Long,
+    val profileId: String = DEFAULT_WORKSPACE_ID,
 )
 
-@Entity(tableName = "site_settings")
+@Entity(tableName = "site_settings", primaryKeys = ["profileId", "origin"])
 data class SiteSetting(
-    @PrimaryKey val origin: String,
+    val origin: String,
     val desktopSites: Boolean? = null,
     val adBlockingEnabled: Boolean? = null,
     val userScriptsEnabled: Boolean? = null,
     val zoomPercent: Int? = null,
     val translationTarget: String? = null,
     val updatedAt: Long,
+    val profileId: String = DEFAULT_WORKSPACE_ID,
 )
 
 @Entity(
@@ -170,14 +172,23 @@ interface BrowserDao {
     @Query("SELECT * FROM site_permissions WHERE origin = :origin AND permission = :permission LIMIT 1")
     suspend fun getSitePermission(origin: String, permission: String): SitePermission?
 
+    @Query("SELECT * FROM site_permissions WHERE profileId = :profileId AND origin = :origin AND permission = :permission LIMIT 1")
+    suspend fun getSitePermission(profileId: String, origin: String, permission: String): SitePermission?
+
     @Query("SELECT * FROM site_permissions WHERE origin = :origin ORDER BY updatedAt DESC")
     suspend fun getSitePermissions(origin: String): List<SitePermission>
+
+    @Query("SELECT * FROM site_permissions WHERE profileId = :profileId AND origin = :origin ORDER BY updatedAt DESC")
+    suspend fun getSitePermissions(profileId: String, origin: String): List<SitePermission>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSitePermission(permission: SitePermission)
 
     @Query("DELETE FROM site_permissions WHERE origin = :origin AND permission = :permission")
     suspend fun deleteSitePermission(origin: String, permission: String)
+
+    @Query("DELETE FROM site_permissions WHERE profileId = :profileId AND origin = :origin AND permission = :permission")
+    suspend fun deleteSitePermission(profileId: String, origin: String, permission: String)
 
     @Query("DELETE FROM site_permissions")
     suspend fun clearSitePermissions()
@@ -188,8 +199,14 @@ interface BrowserDao {
     @Query("DELETE FROM site_permissions WHERE origin = :origin")
     suspend fun deleteSitePermissions(origin: String)
 
+    @Query("DELETE FROM site_permissions WHERE profileId = :profileId AND origin = :origin")
+    suspend fun deleteSitePermissions(profileId: String, origin: String)
+
     @Query("SELECT * FROM site_settings WHERE origin = :origin LIMIT 1")
     suspend fun getSiteSetting(origin: String): SiteSetting?
+
+    @Query("SELECT * FROM site_settings WHERE profileId = :profileId AND origin = :origin LIMIT 1")
+    suspend fun getSiteSetting(profileId: String, origin: String): SiteSetting?
 
     @Query("SELECT * FROM site_settings")
     suspend fun getSiteSettings(): List<SiteSetting>
@@ -202,6 +219,9 @@ interface BrowserDao {
 
     @Query("DELETE FROM site_settings WHERE origin = :origin")
     suspend fun deleteSiteSetting(origin: String)
+
+    @Query("DELETE FROM site_settings WHERE profileId = :profileId AND origin = :origin")
+    suspend fun deleteSiteSetting(profileId: String, origin: String)
 
     @Query("DELETE FROM site_settings")
     suspend fun clearSiteSettings()
@@ -261,7 +281,7 @@ interface BrowserDao {
     suspend fun getInstalledWebApps(): List<InstalledWebApp>
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 13, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 14, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -274,7 +294,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -410,6 +430,54 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
         private val MIGRATION_12_13 = object : Migration(12, 13) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE site_settings ADD COLUMN translationTarget TEXT")
+            }
+        }
+
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE site_permissions_new (
+                        origin TEXT NOT NULL,
+                        permission TEXT NOT NULL,
+                        decision TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        profileId TEXT NOT NULL,
+                        PRIMARY KEY(profileId, origin, permission)
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    """
+                    INSERT INTO site_permissions_new(origin, permission, decision, updatedAt, profileId)
+                    SELECT origin, permission, decision, updatedAt, 'default' FROM site_permissions
+                    """.trimIndent(),
+                )
+                database.execSQL("DROP TABLE site_permissions")
+                database.execSQL("ALTER TABLE site_permissions_new RENAME TO site_permissions")
+                database.execSQL(
+                    """
+                    CREATE TABLE site_settings_new (
+                        origin TEXT NOT NULL,
+                        desktopSites INTEGER,
+                        adBlockingEnabled INTEGER,
+                        userScriptsEnabled INTEGER,
+                        zoomPercent INTEGER,
+                        translationTarget TEXT,
+                        updatedAt INTEGER NOT NULL,
+                        profileId TEXT NOT NULL,
+                        PRIMARY KEY(profileId, origin)
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    """
+                    INSERT INTO site_settings_new(origin, desktopSites, adBlockingEnabled, userScriptsEnabled, zoomPercent, translationTarget, updatedAt, profileId)
+                    SELECT origin, desktopSites, adBlockingEnabled, userScriptsEnabled, zoomPercent, translationTarget, updatedAt, 'default' FROM site_settings
+                    """.trimIndent(),
+                )
+                database.execSQL("DROP TABLE site_settings")
+                database.execSQL("ALTER TABLE site_settings_new RENAME TO site_settings")
             }
         }
     }

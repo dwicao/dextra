@@ -54,6 +54,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Picture-in-Picture for active media and validated PWA launcher shortcuts.
 - Encrypted local login storage with GeckoView autocomplete integration.
 - Password-encrypted sync bundles for bookmarks, history, settings, and reading list transfer.
+- Sync Center preview with selective import/export for settings, bookmarks, history, reading list, permissions, and site overrides.
 - Biometric/device-credential lock for saved logins with automatic background locking.
 - Web Push subscription management and Android website notifications.
 - Installed PWA management with separate Android document tasks/windows.
@@ -66,8 +67,11 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - WebDAV conflict detection with explicit keep-remote, keep-local, and merge resolution.
 - WebAuthn related-origin approval prompts for passkey flows.
 - Workspace tab sessions with separate normal tabs, groups, and active-tab state.
+- Container-backed workspaces isolate GeckoView cookies and storage with per-container site permissions and overrides.
+- Automatic session recovery timeline with restorable background checkpoints.
 - Site permission center with per-origin allow, block, ask, and reset controls.
 - Security diagnostics with HTTPS certificate details, SHA-256 fingerprint, DNS mode, and blocker statistics.
+- Local performance dashboard with startup, memory, frame pacing, jank, and DeX-like window metrics.
 - Crash reports for Java uncaught exceptions.
 
 ## Architecture
@@ -154,6 +158,7 @@ Current automated tests cover URL handling, navigation policy, Firefox Add-on UR
 - Android permission prompts and site permission persistence.
 - WorkManager download recovery after the app is stopped.
 - Room migrations from every released database version.
+- Room migration from database version 13 to 14 for per-container permissions and site overrides.
 - Biometric unlock and Android notification permission flows.
 - Web Push provider delivery and service-worker notification behavior.
 - Android print UI, separate browser document windows, and PWA launcher icon refresh.

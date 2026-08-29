@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.os.Process
+import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
@@ -29,6 +30,7 @@ import org.mozilla.geckoview.WebNotification
 import org.mozilla.geckoview.WebNotificationDelegate
 
 class DextraApplication : Application() {
+    val processStartedAtElapsed: Long = SystemClock.elapsedRealtime()
     lateinit var mediaNotificationController: MediaNotificationController
 
     override fun onCreate() {

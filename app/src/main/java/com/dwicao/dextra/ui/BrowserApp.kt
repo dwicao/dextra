@@ -80,6 +80,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.VisibilityOff
@@ -160,6 +161,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -186,6 +188,7 @@ import com.dwicao.dextra.browser.BrowserUrl
 import com.dwicao.dextra.browser.BrowserViewModel
 import com.dwicao.dextra.browser.BrowserOverlay
 import com.dwicao.dextra.browser.SecurityDiagnostics
+import com.dwicao.dextra.browser.PerformanceMetrics
 import com.dwicao.dextra.browser.sitePermissionLabel
 import com.dwicao.dextra.browser.PrivacyOrigin
 import com.dwicao.dextra.browser.AddressSuggestionSource
@@ -229,6 +232,8 @@ import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.CustomSearchEngine
 import com.dwicao.dextra.data.ThemeMode
 import com.dwicao.dextra.data.WebDavSettingsState
+import com.dwicao.dextra.data.SyncSelection
+import com.dwicao.dextra.data.SyncPreview
 import com.dwicao.dextra.ui.LocalDextraAccessibility
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -247,7 +252,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val sitePermissions by viewModel.sitePermissions.collectAsStateWithLifecycle(initialValue = emptyList())
     val siteSettings by viewModel.siteSettings.collectAsStateWithLifecycle(initialValue = emptyList())
     val installedWebApps by viewModel.installedWebApps.collectAsStateWithLifecycle(initialValue = emptyList())
-    val privacyOrigins = buildPrivacyOrigins(sitePermissions, siteSettings, state.blockerStats.byOrigin)
+    val profileSitePermissions = sitePermissions.filter { it.profileId == state.settings.activeWorkspaceId }
+    val profileSiteSettings = siteSettings.filter { it.profileId == state.settings.activeWorkspaceId }
+    val privacyOrigins = buildPrivacyOrigins(profileSitePermissions, profileSiteSettings, state.blockerStats.byOrigin)
     val snackbarHostState = remember { SnackbarHostState() }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -282,21 +289,23 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val activity = appContext as? Activity
     val mainActivity = activity as? MainActivity
     var pendingSyncExportPassphrase by remember { mutableStateOf<String?>(null) }
+    var pendingSyncExportSelection by remember { mutableStateOf(SyncSelection()) }
     var pendingSyncImportPassphrase by remember { mutableStateOf<String?>(null) }
     val syncExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { uri ->
-        pendingSyncExportPassphrase?.let { passphrase ->
-            pendingSyncExportPassphrase = null
-            uri?.let { viewModel.exportSync(it, passphrase) }
-        }
+                  pendingSyncExportPassphrase?.let { passphrase ->
+                      val selection = pendingSyncExportSelection
+                      pendingSyncExportPassphrase = null
+                      uri?.let { viewModel.exportSync(it, passphrase, selection) }
+                  }
     }
     val syncImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         pendingSyncImportPassphrase?.let { passphrase ->
             pendingSyncImportPassphrase = null
-            uri?.let { viewModel.importSync(it, passphrase) }
+            uri?.let { viewModel.previewSync(it, passphrase) }
         }
     }
     val isWebFullScreen = state.tabs.any { it.isFullScreen }
@@ -327,6 +336,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
             viewModel.clearSnackbar()
         }
     }
+    LaunchedEffect(viewModel) {
+        viewModel.markFirstFrame()
+    }
     LaunchedEffect(state.credentialUnlockRequest) {
         if (state.credentialUnlockRequest > 0) mainActivity?.authenticateCredentialVault()
     }
@@ -349,6 +361,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
         reduceMotion = state.settings.reduceMotion,
     ) {
         Scaffold(
+            modifier = Modifier.testTag("browser_surface"),
             snackbarHost = {},
             containerColor = MaterialTheme.colorScheme.surface,
         ) { padding ->
@@ -361,9 +374,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   downloads = downloads,
                  installedWebApps = installedWebApps,
                   privacyOrigins = privacyOrigins,
-                  sitePermissions = sitePermissions,
+                  sitePermissions = profileSitePermissions,
                   onSetSitePermission = viewModel::setSitePermission,
                   onOpenSecurityDiagnostics = viewModel::openSecurityDiagnostics,
+                  onOpenPerformanceDashboard = viewModel::openPerformanceDashboard,
                   workspaces = state.settings.workspaces,
                   activeWorkspaceId = state.settings.activeWorkspaceId,
                   onCreateWorkspace = viewModel::createWorkspace,
@@ -415,9 +429,10 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onSetCustomSearchEngine = viewModel::setCustomSearchEngine,
                  onAddCustomSearchEngine = viewModel::addCustomSearchEngine,
                  onRemoveCustomSearchEngine = viewModel::removeCustomSearchEngine,
-                 onExportSync = { passphrase ->
-                     pendingSyncExportPassphrase = passphrase
-                     syncExportLauncher.launch("dextra-sync.json")
+                  onExportSync = { passphrase, selection ->
+                      pendingSyncExportPassphrase = passphrase
+                      pendingSyncExportSelection = selection
+                      syncExportLauncher.launch("dextra-sync.json")
                  },
                  onImportSync = { passphrase ->
                      pendingSyncImportPassphrase = passphrase
@@ -490,10 +505,12 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    },
                     onSaveOffline = viewModel::saveCurrentPageOffline,
                     onOpenOffline = viewModel::openOfflineArticle,
-                    sessionSnapshots = state.settings.sessionSnapshots,
-                    onCreateSessionSnapshot = viewModel::createSessionSnapshot,
-                    onRestoreSessionSnapshot = viewModel::restoreSessionSnapshot,
-                    onDeleteSessionSnapshot = viewModel::deleteSessionSnapshot,
+                     sessionSnapshots = state.settings.sessionSnapshots,
+                     sessionTimeline = state.settings.sessionTimeline,
+                     onCreateSessionSnapshot = viewModel::createSessionSnapshot,
+                     onRestoreSessionSnapshot = viewModel::restoreSessionSnapshot,
+                     onDeleteSessionSnapshot = viewModel::deleteSessionSnapshot,
+                     onDeleteSessionTimeline = viewModel::deleteSessionTimeline,
                    credentials = state.credentials,
                    credentialCount = state.credentialCount,
                    credentialVaultUnlocked = state.credentialVaultUnlocked,
@@ -604,13 +621,29 @@ fun DextraApp(viewModel: BrowserViewModel) {
                      onResolve = viewModel::resolveMediaPermission,
                  )
              }
-             state.webPushPrompt?.let { prompt ->
-                 WebPushPermissionDialog(
-                     origin = prompt.origin,
-                     onResolve = viewModel::resolveWebPushPrompt,
-                 )
-             }
-            if (state.extensionInstallInProgress && state.extensionInstallPrompt == null) {
+               state.webPushPrompt?.let { prompt ->
+                  WebPushPermissionDialog(
+                      origin = prompt.origin,
+                      onResolve = viewModel::resolveWebPushPrompt,
+                  )
+              }
+              state.syncPreview?.let { preview ->
+                  SyncPreviewDialog(
+                      preview = preview.preview,
+                      onConfirm = viewModel::confirmSyncImport,
+                      onDismiss = viewModel::dismissSyncPreview,
+                  )
+              }
+              if (state.syncPreviewLoading) {
+                  AlertDialog(
+                      onDismissRequest = viewModel::dismissSyncPreview,
+                      title = { Text("Reading encrypted sync") },
+                      text = { CircularProgressIndicator() },
+                      confirmButton = {},
+                      dismissButton = { TextButton(onClick = viewModel::dismissSyncPreview) { Text("Cancel") } },
+                  )
+              }
+             if (state.extensionInstallInProgress && state.extensionInstallPrompt == null) {
                 ExtensionInstallProgressDialog()
             }
         }
@@ -631,6 +664,7 @@ private fun BrowserScreen(
     sitePermissions: List<SitePermission>,
     onSetSitePermission: (String, String, String) -> Unit,
     onOpenSecurityDiagnostics: () -> Unit,
+    onOpenPerformanceDashboard: () -> Unit,
     workspaces: List<TabWorkspace>,
     activeWorkspaceId: String,
     onCreateWorkspace: (String) -> Unit,
@@ -682,7 +716,7 @@ private fun BrowserScreen(
      onSetCustomSearchEngine: (CustomSearchEngine) -> Unit,
      onAddCustomSearchEngine: (String, String) -> Unit,
      onRemoveCustomSearchEngine: (CustomSearchEngine) -> Unit,
-     onExportSync: (String) -> Unit,
+      onExportSync: (String, SyncSelection) -> Unit,
      onImportSync: (String) -> Unit,
      accessibilityTextScale: Float,
      highContrast: Boolean,
@@ -746,10 +780,12 @@ private fun BrowserScreen(
        onEnterPictureInPicture: () -> Unit,
         onSaveOffline: () -> Unit,
         onOpenOffline: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
-        sessionSnapshots: List<com.dwicao.dextra.data.SessionSnapshot>,
-        onCreateSessionSnapshot: (String) -> Unit,
-        onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-        onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+         sessionSnapshots: List<com.dwicao.dextra.data.SessionSnapshot>,
+         sessionTimeline: List<com.dwicao.dextra.data.SessionSnapshot>,
+         onCreateSessionSnapshot: (String) -> Unit,
+         onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+         onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+         onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
         credentials: List<StoredCredential>,
         credentialCount: Int,
         credentialVaultUnlocked: Boolean,
@@ -1144,6 +1180,10 @@ private fun BrowserScreen(
                       menuExpanded = false
                       onOpenSecurityDiagnostics()
                   },
+                  onOpenPerformanceDashboard = {
+                      menuExpanded = false
+                      onOpenPerformanceDashboard()
+                  },
                   onOpenWorkspaces = {
                       menuExpanded = false
                       onSetOverlay(BrowserOverlay.WORKSPACES)
@@ -1238,10 +1278,12 @@ private fun BrowserScreen(
                              onDeleteReadingListEntry = onDeleteReadingListEntry,
                               onSetReadingListRead = onSetReadingListRead,
                               onOpenOffline = onOpenOffline,
-                              sessionSnapshots = sessionSnapshots,
-                              onCreateSessionSnapshot = onCreateSessionSnapshot,
-                              onRestoreSessionSnapshot = onRestoreSessionSnapshot,
-                              onDeleteSessionSnapshot = onDeleteSessionSnapshot,
+                               sessionSnapshots = sessionSnapshots,
+                               sessionTimeline = sessionTimeline,
+                               onCreateSessionSnapshot = onCreateSessionSnapshot,
+                               onRestoreSessionSnapshot = onRestoreSessionSnapshot,
+                               onDeleteSessionSnapshot = onDeleteSessionSnapshot,
+                               onDeleteSessionTimeline = onDeleteSessionTimeline,
                           )
                         BrowserOverlay.PRIVACY -> PrivacyDashboardSheet(
                                origins = privacyOrigins,
@@ -1264,6 +1306,10 @@ private fun BrowserScreen(
                              onSwitch = onSwitchWorkspace,
                              onRename = onRenameWorkspace,
                              onDelete = onDeleteWorkspace,
+                         )
+                         BrowserOverlay.PERFORMANCE -> PerformanceDashboardSheet(
+                             metrics = state.performance,
+                             onRefresh = { onOpenPerformanceDashboard() },
                          )
                           BrowserOverlay.SETTINGS,
                          BrowserOverlay.BOOKMARKS,
@@ -4161,10 +4207,10 @@ private fun WorkspaceSheet(
     var newTitle by rememberSaveable { mutableStateOf("") }
     var renameWorkspace by remember { mutableStateOf<TabWorkspace?>(null) }
     var renameText by rememberSaveable { mutableStateOf("") }
-    SheetHeader("Workspaces", "Keep separate tab sessions for different contexts")
+    SheetHeader("Workspaces & profiles", "Keep separate tab sessions and browsing containers")
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
         Text(
-            "Each workspace keeps its own normal tabs, groups, and active tab. Private tabs are never stored in a workspace.",
+            "Each workspace keeps its own normal tabs, groups, active tab, cookies, and storage container. Private tabs are never stored in a workspace.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -4193,7 +4239,11 @@ private fun WorkspaceSheet(
         workspaces.sortedBy { it.createdAt }.forEach { workspace ->
             ListItem(
                 headlineContent = { Text(workspace.title) },
-                supportingContent = { Text("${workspace.tabs.size} tabs") },
+                supportingContent = {
+                    Text(
+                        "${workspace.tabs.size} tabs  •  ${if (workspace.contextId == null) "Shared personal container" else "Isolated container"}",
+                    )
+                },
                 leadingContent = {
                     Icon(
                         if (workspace.id == activeWorkspaceId) Icons.Outlined.Tab else Icons.Outlined.Language,
@@ -4244,6 +4294,117 @@ private fun WorkspaceSheet(
         )
     }
     Spacer(Modifier.height(24.dp))
+}
+
+@Composable
+private fun SyncPreviewDialog(
+    preview: SyncPreview,
+    onConfirm: (SyncSelection) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var includeSettings by remember(preview) { mutableStateOf(preview.hasSettings) }
+    var includeBookmarks by remember(preview) { mutableStateOf(preview.bookmarkCount > 0) }
+    var includeHistory by remember(preview) { mutableStateOf(preview.historyCount > 0) }
+    var includeReadingList by remember(preview) { mutableStateOf(preview.readingListCount > 0) }
+    var includePermissions by remember(preview) { mutableStateOf(preview.permissionCount > 0) }
+    var includeSiteSettings by remember(preview) { mutableStateOf(preview.siteSettingCount > 0) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Security, contentDescription = null) },
+        title = { Text("Preview encrypted sync") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    "Created: ${if (preview.createdAt > 0) java.text.DateFormat.getDateTimeInstance().format(java.util.Date(preview.createdAt)) else "Unknown"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                SettingToggle("Browser settings", "${if (preview.hasSettings) "Available" else "Not included"}", includeSettings) { includeSettings = it }
+                SettingToggle("Bookmarks", "${preview.bookmarkCount} entries", includeBookmarks) { includeBookmarks = it }
+                SettingToggle("History", "${preview.historyCount} entries", includeHistory) { includeHistory = it }
+                SettingToggle("Reading list", "${preview.readingListCount} entries", includeReadingList) { includeReadingList = it }
+                SettingToggle("Site permissions", "${preview.permissionCount} decisions", includePermissions) { includePermissions = it }
+                SettingToggle("Site overrides", "${preview.siteSettingCount} origins", includeSiteSettings) { includeSiteSettings = it }
+                Text(
+                    "Saved logins and private tabs are never part of a sync bundle.",
+                    modifier = Modifier.padding(top = 10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onConfirm(SyncSelection(includeSettings, includeBookmarks, includeHistory, includeReadingList, includePermissions, includeSiteSettings))
+                },
+            ) { Text("Import selected") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun PerformanceDashboardSheet(
+    metrics: PerformanceMetrics,
+    onRefresh: () -> Unit,
+) {
+    SheetHeader("Performance dashboard", "Measure the current process and window")
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            OutlinedButton(onClick = onRefresh) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Refresh")
+            }
+        }
+        PerformanceMetricCard(
+            title = "Startup",
+            value = metrics.startupMs?.let { "$it ms" } ?: "Waiting for first frame",
+            detail = "Time from process start until the browser UI was first composed",
+        )
+        PerformanceMetricCard(
+            title = "Memory",
+            value = "${metrics.processPssMb} MB PSS",
+            detail = "${metrics.availableMemoryMb} MB available${if (metrics.memoryLow) "  •  Android reports low memory" else ""}",
+        )
+        val jankPercent = if (metrics.frameCount == 0) 0f else metrics.jankCount * 100f / metrics.frameCount
+        PerformanceMetricCard(
+            title = "Frame pacing",
+            value = if (metrics.frameCount == 0) "No samples" else "${metrics.averageFrameTimeMs.roundToInt()} ms average",
+            detail = if (metrics.frameCount == 0) "Open this dashboard after interacting with the browser" else "${metrics.jankCount} janky frames of ${metrics.frameCount} (${String.format(java.util.Locale.US, "%.1f", jankPercent)}%)",
+        )
+        PerformanceMetricCard(
+            title = "Window",
+            value = "${metrics.windowWidthDp} x ${metrics.windowHeightDp} dp",
+            detail = if (metrics.isDexLikeWindow) "Large-screen / DeX-like configuration detected" else "Compact Android window configuration",
+        )
+        Text(
+            "Metrics are local diagnostics only and are not uploaded.",
+            modifier = Modifier.padding(top = 10.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun PerformanceMetricCard(
+    title: String,
+    value: String,
+    detail: String,
+) {
+    Card(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(value, style = MaterialTheme.typography.titleLarge)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 @Composable
@@ -4316,6 +4477,7 @@ private fun BrowserMenu(
     onOpenPrivacyDashboard: () -> Unit,
     onOpenSecurityDiagnostics: () -> Unit,
     onOpenWorkspaces: () -> Unit,
+    onOpenPerformanceDashboard: () -> Unit,
     onOpenCommandPalette: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onToggleReadingList: () -> Unit,
@@ -4400,6 +4562,11 @@ private fun BrowserMenu(
                     text = { Text("Workspaces") },
                     leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
                     onClick = onOpenWorkspaces,
+                )
+                DropdownMenuItem(
+                    text = { Text("Performance dashboard") },
+                    leadingIcon = { Icon(Icons.Outlined.Speed, contentDescription = null) },
+                    onClick = onOpenPerformanceDashboard,
                 )
                 DropdownMenuItem(
                     text = { Text("Save to reading list") },
@@ -4904,10 +5071,12 @@ private fun LibrarySheet(
     onDeleteReadingListEntry: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
     onSetReadingListRead: (com.dwicao.dextra.data.ReadingListEntry, Boolean) -> Unit,
     onOpenOffline: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
-    sessionSnapshots: List<com.dwicao.dextra.data.SessionSnapshot>,
-    onCreateSessionSnapshot: (String) -> Unit,
-    onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-    onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+     sessionSnapshots: List<com.dwicao.dextra.data.SessionSnapshot>,
+     sessionTimeline: List<com.dwicao.dextra.data.SessionSnapshot>,
+     onCreateSessionSnapshot: (String) -> Unit,
+     onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+     onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+     onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var createSnapshot by remember { mutableStateOf(false) }
@@ -4925,6 +5094,7 @@ private fun LibrarySheet(
         Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("History") }, icon = { Icon(Icons.Outlined.History, null) })
         Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("Reading list") }, icon = { Icon(Icons.Outlined.BookmarkBorder, null) })
         Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }, text = { Text("Sessions") }, icon = { Icon(Icons.Outlined.Tab, null) })
+        Tab(selected = selectedTab == 4, onClick = { selectedTab = 4 }, text = { Text("Recovery") }, icon = { Icon(Icons.Outlined.History, null) })
     }
     if (selectedTab == 0) {
         var selectedFolder by rememberSaveable { mutableStateOf("") }
@@ -5177,7 +5347,7 @@ private fun LibrarySheet(
                 }
             }
         }
-    } else {
+    } else if (selectedTab == 3) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
             horizontalArrangement = Arrangement.End,
@@ -5234,6 +5404,34 @@ private fun LibrarySheet(
                 },
                 dismissButton = { TextButton(onClick = { createSnapshot = false }) { Text("Cancel") } },
             )
+        }
+    } else {
+        if (sessionTimeline.isEmpty()) {
+            EmptyLibrary("Automatic recovery points will appear after the app is backgrounded.", Icons.Outlined.History)
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
+                items(sessionTimeline, key = { it.id }) { snapshot ->
+                    ListItem(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        headlineContent = { Text(snapshot.title, maxLines = 1) },
+                        supportingContent = {
+                            Text(
+                                "${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(snapshot.createdAt))}  •  ${snapshot.tabs.size} tabs",
+                                maxLines = 1,
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Outlined.History, contentDescription = null) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { onRestoreSessionSnapshot(snapshot) }) { Text("Restore") }
+                                IconButton(onClick = { onDeleteSessionTimeline(snapshot) }) {
+                                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete recovery point")
+                                }
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
     Spacer(Modifier.height(24.dp))
@@ -5730,7 +5928,7 @@ private fun SettingsScreen(
     onSetCustomSearchEngine: (CustomSearchEngine) -> Unit,
     onAddCustomSearchEngine: (String, String) -> Unit,
     onRemoveCustomSearchEngine: (CustomSearchEngine) -> Unit,
-    onExportSync: (String) -> Unit,
+     onExportSync: (String, SyncSelection) -> Unit,
     onImportSync: (String) -> Unit,
     accessibilityTextScale: Float,
     highContrast: Boolean,
@@ -5996,14 +6194,20 @@ private fun SettingsScreen(
              Text("Open privacy dashboard")
          }
       }
-       SettingSection("Encrypted sync") {
+       SettingSection("Sync Center") {
            Text(
                "Move bookmarks, history, reading list, site settings, and browser preferences between devices. The bundle is encrypted with a passphrase; saved logins and private tabs are never included.",
                style = MaterialTheme.typography.bodySmall,
                color = MaterialTheme.colorScheme.onSurfaceVariant,
            )
-           var syncAction by rememberSaveable { mutableStateOf<String?>(null) }
-           var syncPassphrase by rememberSaveable { mutableStateOf("") }
+            var syncAction by rememberSaveable { mutableStateOf<String?>(null) }
+            var syncPassphrase by rememberSaveable { mutableStateOf("") }
+            var syncSettings by rememberSaveable { mutableStateOf(true) }
+            var syncBookmarks by rememberSaveable { mutableStateOf(true) }
+            var syncHistory by rememberSaveable { mutableStateOf(true) }
+            var syncReadingList by rememberSaveable { mutableStateOf(true) }
+            var syncPermissions by rememberSaveable { mutableStateOf(true) }
+            var syncSiteSettings by rememberSaveable { mutableStateOf(true) }
            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                Button(onClick = { syncPassphrase = ""; syncAction = "export" }) {
                    Text("Export encrypted")
@@ -6016,21 +6220,39 @@ private fun SettingsScreen(
                AlertDialog(
                    onDismissRequest = { syncAction = null },
                    title = { Text(if (action == "export") "Export encrypted sync" else "Import encrypted sync") },
-                   text = {
-                       OutlinedTextField(
-                           value = syncPassphrase,
-                           onValueChange = { syncPassphrase = it },
-                           label = { Text("Passphrase") },
-                           supportingText = { Text("Use at least 8 characters") },
-                           visualTransformation = PasswordVisualTransformation(),
-                           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                           singleLine = true,
-                       )
+                    text = {
+                        Column {
+                            OutlinedTextField(
+                                value = syncPassphrase,
+                                onValueChange = { syncPassphrase = it },
+                                label = { Text("Passphrase") },
+                                supportingText = { Text("Use at least 8 characters") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                singleLine = true,
+                            )
+                            if (action == "export") {
+                                Text("Include in export", modifier = Modifier.padding(top = 10.dp), style = MaterialTheme.typography.titleSmall)
+                                SettingToggle("Browser settings", "Theme, search, privacy, and accessibility settings", syncSettings) { syncSettings = it }
+                                SettingToggle("Bookmarks", "Saved pages and folders", syncBookmarks) { syncBookmarks = it }
+                                SettingToggle("History", "Recent normal browsing history", syncHistory) { syncHistory = it }
+                                SettingToggle("Reading list", "Saved reading-list entries", syncReadingList) { syncReadingList = it }
+                                SettingToggle("Site permissions", "Per-container permission decisions", syncPermissions) { syncPermissions = it }
+                                SettingToggle("Site overrides", "Per-site desktop, blocker, script, zoom, and translation overrides", syncSiteSettings) { syncSiteSettings = it }
+                            } else {
+                                Text("The next step will decrypt and preview the bundle before anything is imported.", modifier = Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                    },
                    confirmButton = {
                        TextButton(
-                           onClick = {
-                               if (action == "export") onExportSync(syncPassphrase) else onImportSync(syncPassphrase)
+                            onClick = {
+                                if (action == "export") {
+                                    onExportSync(
+                                        syncPassphrase,
+                                        SyncSelection(syncSettings, syncBookmarks, syncHistory, syncReadingList, syncPermissions, syncSiteSettings),
+                                    )
+                                } else onImportSync(syncPassphrase)
                                syncAction = null
                            },
                            enabled = syncPassphrase.length >= 8,
