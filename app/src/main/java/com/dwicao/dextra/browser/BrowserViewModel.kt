@@ -38,6 +38,7 @@ import com.dwicao.dextra.data.BrowserDao
 import com.dwicao.dextra.data.BrowserDatabase
 import com.dwicao.dextra.data.BrowserSettings
 import com.dwicao.dextra.data.CredentialVault
+import com.dwicao.dextra.data.CustomSearchEngine
 import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
 import com.dwicao.dextra.data.DnsProvider
@@ -53,6 +54,7 @@ import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.SettingsRepository
+import com.dwicao.dextra.data.SyncRepository
 import com.dwicao.dextra.data.ThemeMode
 import com.dwicao.dextra.data.StoredWebPushSubscription
 import com.dwicao.dextra.data.WebPushStore
@@ -116,6 +118,7 @@ data class BrowserTabState(
     val isSleeping: Boolean = false,
     val isFullScreen: Boolean = false,
     val hasActiveMedia: Boolean = false,
+    val isAudioMuted: Boolean = false,
     val sessionState: String? = null,
 )
 
@@ -138,6 +141,7 @@ enum class ContextMenuAction {
     RELOAD_TAB,
     TOGGLE_TAB_PINNED,
     TOGGLE_TAB_SLEEPING,
+    TOGGLE_TAB_AUDIO,
     CLOSE_TAB,
     CLOSE_OTHER_TABS,
     CLOSE_TABS_TO_LEFT,
@@ -179,6 +183,8 @@ data class BrowserContextMenu(
     val isTab: Boolean = false,
     val isPinned: Boolean = false,
     val isSleeping: Boolean = false,
+    val hasActiveMedia: Boolean = false,
+    val isAudioMuted: Boolean = false,
 )
 
 data class ContentPermissionPrompt(
@@ -364,6 +370,7 @@ data class BrowserUiState(
     val credentialCount: Int = 0,
     val credentialVaultUnlocked: Boolean = false,
     val credentialUnlockRequest: Long = 0,
+    val closedTabCount: Int = 0,
 )
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -372,12 +379,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val dao: BrowserDao = database.browserDao()
     private val settingsRepository = SettingsRepository(application)
     private val backupRepository = BackupRepository(application, dao)
+    private val syncRepository = SyncRepository(application, dao)
     private val credentialVault = CredentialVault(application)
     private val webPushStore = WebPushStore(application)
     private val _state = MutableStateFlow(BrowserUiState())
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val extensionActionObjects = mutableMapOf<String, WebExtension.Action>()
     private val recentlyClosedTabs = ArrayDeque<ClosedTabEntry>()
+    private val mediaSessions = mutableMapOf<String, MediaSession>()
     private val queuedContentPermissions = ArrayDeque<ContentPermissionPrompt>()
     private val queuedAndroidPermissions = ArrayDeque<AndroidPermissionPrompt>()
     private val queuedMediaPermissions = ArrayDeque<MediaPermissionPrompt>()
@@ -738,6 +747,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun activeTab(): BrowserTabState? = _state.value.tabs.firstOrNull { it.id == _state.value.activeTabId }
 
+    private fun searchUrl(settings: BrowserSettings): String =
+        if (settings.searchEngine == SearchEngine.CUSTOM) {
+            settings.customSearchEngines
+                .firstOrNull { it.id == settings.selectedCustomSearchEngineId }
+                ?.searchUrl
+                ?: SearchEngine.GOOGLE.searchUrl
+        } else {
+            settings.searchEngine.searchUrl
+        }
+
     fun createTab(
         privateMode: Boolean = false,
         initialUri: String? = null,
@@ -752,7 +771,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val previousActiveTabId = _state.value.activeTabId
         val session = createSession(id, privateMode, openSession, savedSessionState = savedSessionState)
         val resolvedInitialUri = initialUri
-            ?.let { BrowserUrl.resolve(it, _state.value.settings.searchEngine) }
+            ?.let { BrowserUrl.resolve(it, searchUrl(_state.value.settings)) }
             ?.takeIf(String::isNotBlank)
         val tab = BrowserTabState(
             id = id,
@@ -1037,13 +1056,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun reopenClosedTab() {
-        val closed = recentlyClosedTabs.removeFirstOrNull() ?: return
+        val closed = recentlyClosedTabs.firstOrNull() ?: return
         val id = createTab(
             privateMode = closed.isPrivate,
             initialUri = closed.url.takeIf(String::isNotBlank),
             savedSessionState = closed.sessionState,
         )
         if (id.isNotBlank()) {
+            recentlyClosedTabs.removeFirstOrNull()
+            _state.update { it.copy(closedTabCount = recentlyClosedTabs.size) }
             updateTab(id) { it.copy(title = closed.title.ifBlank { it.title }) }
             if (closed.pinned) toggleTabPinned(id)
             if (closed.groupId != null && _state.value.settings.tabGroups.any { it.id == closed.groupId }) {
@@ -1059,6 +1080,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         pageZoomByTab.remove(id)
         lastProgressUpdateAt.remove(id)
         trackerBlockedByTab.remove(id)
+        mediaSessions.remove(id)
         rebuildBlockerStats()
         rememberClosedTab(closing)
         if (closing.id == current.activeTabId) {
@@ -1346,9 +1368,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun navigate(tabId: String, input: String) {
-        val url = BrowserUrl.resolve(input, _state.value.settings.searchEngine)
+        val url = BrowserUrl.resolve(input, searchUrl(_state.value.settings))
         if (url.isEmpty()) return
         val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        if (tabId == _state.value.activeTabId && _state.value.findInPage != null) closeFindInPage()
         updateTab(tabId) {
             it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false, sessionState = null)
         }
@@ -1445,6 +1468,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun closeFindInPage() {
         activeTab()?.session?.finder?.clear()
         _state.update { it.copy(findInPage = null) }
+    }
+
+    fun toggleTabAudio(tabId: String) {
+        val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
+        val mediaSession = mediaSessions[tabId]
+        if (!tab.hasActiveMedia || mediaSession == null) {
+            showSnackbar("No active audio in this tab")
+            return
+        }
+        val muted = !tab.isAudioMuted
+        runCatching { mediaSession.muteAudio(muted) }
+            .onSuccess { updateTab(tabId) { it.copy(isAudioMuted = muted) } }
+            .onFailure { showSnackbar("Could not change tab audio") }
     }
 
     @androidx.annotation.OptIn(markerClass = [org.mozilla.geckoview.ExperimentalGeckoViewApi::class])
@@ -1589,6 +1625,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     resourceType = resourceType,
                     canGoBack = tab.canGoBack,
                     canGoForward = tab.canGoForward,
+                    hasActiveMedia = tab.hasActiveMedia,
+                    isAudioMuted = tab.isAudioMuted,
                 ),
             )
         }
@@ -1605,6 +1643,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     isTab = true,
                     isPinned = tab.pinned,
                     isSleeping = tab.isSleeping,
+                    hasActiveMedia = tab.hasActiveMedia,
+                    isAudioMuted = tab.isAudioMuted,
                 ),
             )
         }
@@ -1621,6 +1661,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ContextMenuAction.RELOAD_TAB -> _state.value.tabs.firstOrNull { it.id == menu.tabId }?.session?.reload()
             ContextMenuAction.TOGGLE_TAB_PINNED -> toggleTabPinned(menu.tabId)
             ContextMenuAction.TOGGLE_TAB_SLEEPING -> toggleTabSleeping(menu.tabId)
+            ContextMenuAction.TOGGLE_TAB_AUDIO -> toggleTabAudio(menu.tabId)
             ContextMenuAction.CLOSE_TAB -> closeTab(menu.tabId)
             ContextMenuAction.CLOSE_OTHER_TABS -> closeOtherTabs(menu.tabId)
             ContextMenuAction.CLOSE_TABS_TO_LEFT -> closeTabsToLeft(menu.tabId)
@@ -1673,6 +1714,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             rememberClosedTab(it)
             rejectPermissionsForTab(it.id)
             trackerBlockedByTab.remove(it.id)
+            mediaSessions.remove(it.id)
         }
         _state.update {
             it.copy(
@@ -1699,6 +1741,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             rememberClosedTab(it)
             rejectPermissionsForTab(it.id)
             trackerBlockedByTab.remove(it.id)
+            mediaSessions.remove(it.id)
         }
         val newActive = if (closing.any { it.id == current.activeTabId }) id else current.activeTabId
         _state.update {
@@ -1731,6 +1774,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             rememberClosedTab(it)
             rejectPermissionsForTab(it.id)
             trackerBlockedByTab.remove(it.id)
+            mediaSessions.remove(it.id)
         }
         val newActive = if (closing.any { it.id == current.activeTabId }) id else current.activeTabId
         _state.update {
@@ -2479,6 +2523,35 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun exportSync(uri: Uri, passphrase: String) {
+        if (passphrase.length < 8) {
+            showSnackbar("Sync passphrase must be at least 8 characters")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { syncRepository.export(uri, _state.value.settings, passphrase) }
+            withContext(Dispatchers.Main.immediate) {
+                showSnackbar(if (result.isSuccess) "Encrypted sync exported" else "Could not export encrypted sync")
+            }
+        }
+    }
+
+    fun importSync(uri: Uri, passphrase: String) {
+        if (passphrase.length < 8) {
+            showSnackbar("Sync passphrase must be at least 8 characters")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { syncRepository.import(uri, passphrase) }
+            result.onSuccess { data ->
+                data.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
+            }
+            withContext(Dispatchers.Main.immediate) {
+                showSnackbar(result.fold({ "Imported ${it.importedBookmarks} bookmarks and synced settings" }, { "Could not import encrypted sync" }))
+            }
+        }
+    }
+
     fun deleteHistoryEntry(entry: HistoryEntry) {
         viewModelScope.launch { dao.deleteHistory(entry.id) }
     }
@@ -2497,6 +2570,32 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun setSearchEngine(engine: SearchEngine) {
         viewModelScope.launch { settingsRepository.setSearchEngine(engine) }
+    }
+
+    fun setCustomSearchEngine(engine: CustomSearchEngine) {
+        viewModelScope.launch { settingsRepository.setCustomSearchEngine(engine) }
+    }
+
+    fun addCustomSearchEngine(label: String, template: String) {
+        val normalizedLabel = label.trim().take(40)
+        val normalizedTemplate = template.trim()
+        if (normalizedLabel.isBlank()) {
+            showSnackbar("Enter a name for the search engine")
+            return
+        }
+        if (!normalizedTemplate.startsWith("https://", ignoreCase = true) || !normalizedTemplate.contains("%s")) {
+            showSnackbar("Search URL must use HTTPS and contain %s")
+            return
+        }
+        if (normalizedTemplate.length > 500) {
+            showSnackbar("Search URL is too long")
+            return
+        }
+        setCustomSearchEngine(CustomSearchEngine(label = normalizedLabel, searchUrl = normalizedTemplate))
+    }
+
+    fun removeCustomSearchEngine(engine: CustomSearchEngine) {
+        viewModelScope.launch { settingsRepository.removeCustomSearchEngine(engine.id) }
     }
 
     fun setAdBlockingEnabled(enabled: Boolean) {
@@ -2694,7 +2793,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setHomepage(value: String) {
-        val homepage = BrowserUrl.resolve(value, _state.value.settings.searchEngine)
+        val homepage = BrowserUrl.resolve(value, searchUrl(_state.value.settings))
         val scheme = runCatching { Uri.parse(homepage).scheme?.lowercase() }.getOrNull()
         if (scheme !in setOf("http", "https", "about")) {
             showSnackbar("Homepage must be a valid web address")
@@ -3127,10 +3226,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         session.setPermissionDelegate(PermissionDelegate(tabId))
         session.setMediaSessionDelegate(object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
-                updateTab(tabId) { it.copy(hasActiveMedia = true) }
+                mediaSessions[tabId] = mediaSession
+                updateTab(tabId) {
+                    if (it.isAudioMuted) runCatching { mediaSession.muteAudio(true) }
+                    it.copy(hasActiveMedia = true)
+                }
             }
 
             override fun onDeactivated(session: GeckoSession, mediaSession: MediaSession) {
+                if (mediaSessions[tabId] === mediaSession) mediaSessions.remove(tabId)
                 updateTab(tabId) { it.copy(hasActiveMedia = false) }
             }
         })
@@ -3169,6 +3273,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (tab.url.isBlank() || !tab.hasPage) return
         recentlyClosedTabs.addFirst(ClosedTabEntry(tab.url, tab.title, tab.isPrivate, tab.pinned, tab.groupId, tab.sessionState))
         while (recentlyClosedTabs.size > 10) recentlyClosedTabs.removeLast()
+        _state.update { it.copy(closedTabCount = recentlyClosedTabs.size) }
     }
 
     private fun restoreSavedTabs(savedTabs: List<SavedTab>, activeIndex: Int) {
@@ -4282,6 +4387,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private inner class ProgressDelegate(private val tabId: String) : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
             attachAdBlockContentDelegate(session)
+            mediaSessions.remove(tabId)
+            if (_state.value.activeTabId == tabId && _state.value.findInPage != null) closeFindInPage()
             lastProgressUpdateAt.remove(tabId)
             if (url == "about:blank") {
                 updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0, favicon = null) }
@@ -4548,6 +4655,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         _state.value.extensionPopup?.session?.close()
         _state.value.tabs.forEach { it.session.close() }
+        mediaSessions.clear()
         super.onCleared()
     }
 }

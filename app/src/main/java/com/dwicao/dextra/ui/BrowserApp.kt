@@ -84,6 +84,8 @@ import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.ViewColumn
+import androidx.compose.material.icons.outlined.VolumeOff
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -104,6 +106,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.SnackbarHost
@@ -159,6 +163,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -215,6 +220,7 @@ import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.StoredWebPushSubscription
 import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.SearchEngine
+import com.dwicao.dextra.data.CustomSearchEngine
 import com.dwicao.dextra.data.ThemeMode
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -267,6 +273,24 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val appContext = LocalContext.current
     val activity = appContext as? Activity
     val mainActivity = activity as? MainActivity
+    var pendingSyncExportPassphrase by remember { mutableStateOf<String?>(null) }
+    var pendingSyncImportPassphrase by remember { mutableStateOf<String?>(null) }
+    val syncExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        pendingSyncExportPassphrase?.let { passphrase ->
+            pendingSyncExportPassphrase = null
+            uri?.let { viewModel.exportSync(it, passphrase) }
+        }
+    }
+    val syncImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        pendingSyncImportPassphrase?.let { passphrase ->
+            pendingSyncImportPassphrase = null
+            uri?.let { viewModel.importSync(it, passphrase) }
+        }
+    }
     val isWebFullScreen = state.tabs.any { it.isFullScreen }
     val isImmersive = isWebFullScreen || state.standalonePwa || state.standaloneWindow
 
@@ -334,7 +358,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onReload = viewModel::reloadOrStop,
                 onReloadCrashedTab = viewModel::reloadCrashedTab,
                 onNewTab = { viewModel.createTab() },
-                onNewPrivateTab = viewModel::createPrivateTab,
+                 onNewPrivateTab = viewModel::createPrivateTab,
+                 onReopenClosedTab = viewModel::reopenClosedTab,
+                 onToggleTabAudio = viewModel::toggleTabAudio,
                   onSelectTab = viewModel::selectTab,
                   onCloseTab = viewModel::closeTab,
                   onOpenTabInSplit = viewModel::openTabInSplit,
@@ -361,7 +387,20 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onSetOverlay = viewModel::setOverlay,
                 onDismissOverlay = viewModel::dismissOverlay,
                 onSetTheme = viewModel::setThemeMode,
-                onSetSearchEngine = viewModel::setSearchEngine,
+                 onSetSearchEngine = viewModel::setSearchEngine,
+                 customSearchEngines = state.settings.customSearchEngines,
+                 selectedCustomSearchEngineId = state.settings.selectedCustomSearchEngineId,
+                 onSetCustomSearchEngine = viewModel::setCustomSearchEngine,
+                 onAddCustomSearchEngine = viewModel::addCustomSearchEngine,
+                 onRemoveCustomSearchEngine = viewModel::removeCustomSearchEngine,
+                 onExportSync = { passphrase ->
+                     pendingSyncExportPassphrase = passphrase
+                     syncExportLauncher.launch("dextra-sync.json")
+                 },
+                 onImportSync = { passphrase ->
+                     pendingSyncImportPassphrase = passphrase
+                     syncImportLauncher.launch(arrayOf("application/octet-stream", "application/json", "text/*"))
+                 },
                   onSetDesktopSites = viewModel::setDesktopSites,
                    onSetHomepage = viewModel::setHomepage,
                    onClearSitePermissions = viewModel::clearSitePermissions,
@@ -552,8 +591,10 @@ private fun BrowserScreen(
     onForward: () -> Unit,
     onReload: () -> Unit,
     onReloadCrashedTab: () -> Unit,
-    onNewTab: () -> Unit,
-    onNewPrivateTab: () -> String,
+     onNewTab: () -> Unit,
+     onNewPrivateTab: () -> String,
+     onReopenClosedTab: () -> Unit,
+     onToggleTabAudio: (String) -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onOpenTabInSplit: (String) -> Unit,
@@ -579,8 +620,15 @@ private fun BrowserScreen(
     onDeleteHistoryEntry: (HistoryEntry) -> Unit,
     onSetOverlay: (BrowserOverlay) -> Unit,
     onDismissOverlay: () -> Unit,
-    onSetTheme: (ThemeMode) -> Unit,
-    onSetSearchEngine: (SearchEngine) -> Unit,
+     onSetTheme: (ThemeMode) -> Unit,
+     onSetSearchEngine: (SearchEngine) -> Unit,
+     customSearchEngines: List<CustomSearchEngine>,
+     selectedCustomSearchEngineId: String?,
+     onSetCustomSearchEngine: (CustomSearchEngine) -> Unit,
+     onAddCustomSearchEngine: (String, String) -> Unit,
+     onRemoveCustomSearchEngine: (CustomSearchEngine) -> Unit,
+     onExportSync: (String) -> Unit,
+     onImportSync: (String) -> Unit,
      onSetDesktopSites: (Boolean) -> Unit,
      onSetHomepage: (String) -> Unit,
      onClearSitePermissions: () -> Unit,
@@ -679,7 +727,7 @@ private fun BrowserScreen(
      onTabContextMenu: (String, Int, Int) -> Unit,
     extensionPopup: ExtensionPopupState?,
     onCloseExtensionPopup: () -> Unit,
-    findInPage: FindInPageState?,
+     findInPage: FindInPageState?,
     onUpdateFindInPage: (String) -> Unit,
     onFindNext: (Boolean) -> Unit,
     onCloseFindInPage: () -> Unit,
@@ -833,9 +881,16 @@ private fun BrowserScreen(
             SettingsScreen(
                 onBack = onDismissOverlay,
                 themeMode = state.settings.themeMode,
-                 searchEngine = state.settings.searchEngine,
-                 onSetTheme = onSetTheme,
-                 onSetSearchEngine = onSetSearchEngine,
+                  searchEngine = state.settings.searchEngine,
+                  onSetTheme = onSetTheme,
+                  onSetSearchEngine = onSetSearchEngine,
+                  customSearchEngines = customSearchEngines,
+                  selectedCustomSearchEngineId = selectedCustomSearchEngineId,
+                  onSetCustomSearchEngine = onSetCustomSearchEngine,
+                  onAddCustomSearchEngine = onAddCustomSearchEngine,
+                  onRemoveCustomSearchEngine = onRemoveCustomSearchEngine,
+                  onExportSync = onExportSync,
+                  onImportSync = onImportSync,
                  desktopSites = state.settings.desktopSites,
                  tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                  verticalTabs = state.settings.verticalTabs,
@@ -913,10 +968,11 @@ private fun BrowserScreen(
                      onReloadCrashedTab = onReloadCrashedTab,
                      onRegisterViewport = { id, view -> if (id == state.activeTabId) screenshotView = view },
                       onTabContextMenu = onTabContextMenu,
+                      onToggleTabAudio = onToggleTabAudio,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                  onNewTab = { onNewTab() },
-                  onSelectTab = onSelectTab,
+                       onSelectTab = onSelectTab,
                   onCloseTab = onCloseTab,
                   onOpenTabInSplit = onOpenTabInSplit,
                   onMoveTabBefore = onMoveTabBefore,
@@ -950,6 +1006,7 @@ private fun BrowserScreen(
                      onReloadCrashedTab = onReloadCrashedTab,
                      onRegisterViewport = { id, view -> if (id == state.activeTabId) screenshotView = view },
                       onTabContextMenu = onTabContextMenu,
+                      onToggleTabAudio = onToggleTabAudio,
                     extensionActions = extensionActions,
                     onClickExtensionAction = onClickExtensionAction,
                     onNewTab = { onNewTab() },
@@ -968,10 +1025,15 @@ private fun BrowserScreen(
             if (fullScreenTab == null) BrowserMenu(
                 expanded = menuExpanded,
                 onDismiss = { menuExpanded = false },
-                onNewPrivateTab = {
-                    menuExpanded = false
-                    onNewPrivateTab()
-                },
+                 onNewPrivateTab = {
+                     menuExpanded = false
+                     onNewPrivateTab()
+                 },
+                 onReopenClosedTab = {
+                     menuExpanded = false
+                     onReopenClosedTab()
+                 },
+                 closedTabCount = state.closedTabCount,
                 onShowTabs = {
                     menuExpanded = false
                     onSetOverlay(BrowserOverlay.TABS)
@@ -1249,6 +1311,7 @@ private fun DesktopBrowserLayout(
     onReloadCrashedTab: () -> Unit,
     onRegisterViewport: (String, GeckoView) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
+    onToggleTabAudio: (String) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
     onNewTab: () -> Unit,
@@ -1292,7 +1355,8 @@ private fun DesktopBrowserLayout(
                 onDeleteTabGroup = onDeleteTabGroup,
                 onToggleTabSleeping = onToggleTabSleeping,
                 onHibernateInactiveTabs = onHibernateInactiveTabs,
-                onTabContextMenu = onTabContextMenu,
+                 onTabContextMenu = onTabContextMenu,
+                 onToggleTabAudio = onToggleTabAudio,
             )
         }
         Column(
@@ -1306,7 +1370,8 @@ private fun DesktopBrowserLayout(
                     activeTabId = state.activeTabId,
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
-                    onTabContextMenu = onTabContextMenu,
+                     onTabContextMenu = onTabContextMenu,
+                     onToggleTabAudio = onToggleTabAudio,
                     onNewTab = onNewTab,
                     showTabBar = showTabBarWithAddressBar && !verticalTabs,
                  activeTab = activeTab,
@@ -1400,6 +1465,7 @@ private fun CompactBrowserLayout(
     onReloadCrashedTab: () -> Unit,
     onRegisterViewport: (String, GeckoView) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
+    onToggleTabAudio: (String) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
     onClickExtensionAction: (String) -> Unit,
     onNewTab: () -> Unit,
@@ -1450,7 +1516,8 @@ private fun CompactBrowserLayout(
                     onCloseTab = onCloseTab,
                     onMoveTabBefore = onMoveTabBefore,
                     onMoveTabAfter = onMoveTabAfter,
-                    onTabContextMenu = onTabContextMenu,
+                       onTabContextMenu = onTabContextMenu,
+                       onToggleTabAudio = onToggleTabAudio,
                 )
             }
             activeTab?.takeIf { it.isLoading }?.let {
@@ -1490,6 +1557,7 @@ private fun DesktopToolbar(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
+    onToggleTabAudio: (String) -> Unit,
     onNewTab: () -> Unit,
     showTabBar: Boolean,
     activeTab: BrowserTabState?,
@@ -1554,7 +1622,8 @@ private fun DesktopToolbar(
                     onCloseTab = onCloseTab,
                     onMoveTabBefore = onMoveTabBefore,
                     onMoveTabAfter = onMoveTabAfter,
-                    onTabContextMenu = onTabContextMenu,
+                     onTabContextMenu = onTabContextMenu,
+                     onToggleTabAudio = onToggleTabAudio,
                 )
             }
             BrowserNavButton(Icons.Outlined.Add, "New tab", enabled = true, onClick = onNewTab)
@@ -1578,7 +1647,8 @@ private fun DesktopToolbar(
                         allTabsExpanded = false
                         onSelectTab(id)
                     },
-                    onCloseTab = onCloseTab,
+                     onCloseTab = onCloseTab,
+                     onToggleTabAudio = onToggleTabAudio,
                 )
             }
             BrowserNavButton(Icons.Outlined.Download, "Downloads", enabled = true, onClick = onShowDownloads)
@@ -1598,6 +1668,7 @@ private fun AllTabsDropdown(
     onDismiss: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
+    onToggleTabAudio: (String) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(expanded) {
@@ -1697,6 +1768,13 @@ private fun AllTabsDropdown(
                             BrowserNavButton(Icons.Outlined.Close, "Close tab", enabled = true) {
                                 onCloseTab(tab.id)
                             }
+                            if (tab.hasActiveMedia) {
+                                BrowserNavButton(
+                                    if (tab.isAudioMuted) Icons.Outlined.VolumeOff else Icons.Outlined.VolumeUp,
+                                    if (tab.isAudioMuted) "Unmute tab" else "Mute tab",
+                                    enabled = true,
+                                ) { onToggleTabAudio(tab.id) }
+                            }
                         }
                     }
                 }
@@ -1725,6 +1803,7 @@ private fun GroupedVerticalTabStrip(
     onToggleTabSleeping: (String) -> Unit,
     onHibernateInactiveTabs: () -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
+    onToggleTabAudio: (String) -> Unit,
 ) {
     var collapsed by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -1908,7 +1987,8 @@ private fun GroupedVerticalTabStrip(
                                      onCreateTabGroup = onCreateTabGroup,
                                     onMoveTabToGroup = onMoveTabToGroup,
                                     onToggleTabSleeping = onToggleTabSleeping,
-                                    onTabContextMenu = onTabContextMenu,
+                                     onTabContextMenu = onTabContextMenu,
+                                     onToggleTabAudio = onToggleTabAudio,
                                 )
                             }
                         }
@@ -1949,7 +2029,8 @@ private fun GroupedVerticalTabStrip(
                         onCreateTabGroup = onCreateTabGroup,
                         onMoveTabToGroup = onMoveTabToGroup,
                         onToggleTabSleeping = onToggleTabSleeping,
-                        onTabContextMenu = onTabContextMenu,
+                         onTabContextMenu = onTabContextMenu,
+                         onToggleTabAudio = onToggleTabAudio,
                     )
                 }
             }
@@ -2018,6 +2099,7 @@ private fun VerticalTabRow(
     onMoveTabToGroup: (String, String?) -> Unit,
     onToggleTabSleeping: (String) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
+    onToggleTabAudio: (String) -> Unit,
 ) {
     var tabOrigin by remember(tab.id) { mutableStateOf(IntOffset.Zero) }
     var menuExpanded by remember(tab.id) { mutableStateOf(false) }
@@ -2148,6 +2230,13 @@ private fun VerticalTabRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (tab.hasActiveMedia) {
+                BrowserNavButton(
+                    if (tab.isAudioMuted) Icons.Outlined.VolumeOff else Icons.Outlined.VolumeUp,
+                    if (tab.isAudioMuted) "Unmute tab" else "Mute tab",
+                    enabled = true,
+                ) { onToggleTabAudio(tab.id) }
             }
             Box {
                 IconButton(onClick = { menuExpanded = true }) {
@@ -2497,6 +2586,7 @@ private fun TabStrip(
     onMoveTabBefore: (String, String) -> Unit,
     onMoveTabAfter: (String, String) -> Unit,
     onTabContextMenu: (String, Int, Int) -> Unit,
+    onToggleTabAudio: (String) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -2666,7 +2756,13 @@ private fun TabStrip(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             if (tab.pinned) {
-                                if (tab.favicon != null && !tab.isPrivate) {
+                                if (tab.hasActiveMedia) {
+                                    BrowserNavButton(
+                                        if (tab.isAudioMuted) Icons.Outlined.VolumeOff else Icons.Outlined.VolumeUp,
+                                        if (tab.isAudioMuted) "Unmute tab" else "Mute tab",
+                                        enabled = true,
+                                    ) { onToggleTabAudio(tab.id) }
+                                } else if (tab.favicon != null && !tab.isPrivate) {
                                     Image(
                                         bitmap = tab.favicon.asImageBitmap(),
                                         contentDescription = tab.title.ifBlank { "Pinned tab" },
@@ -2705,6 +2801,13 @@ private fun TabStrip(
                                     maxLines = 1,
                                     style = MaterialTheme.typography.labelLarge,
                                 )
+                                if (tab.hasActiveMedia) {
+                                    BrowserNavButton(
+                                        if (tab.isAudioMuted) Icons.Outlined.VolumeOff else Icons.Outlined.VolumeUp,
+                                        if (tab.isAudioMuted) "Unmute tab" else "Mute tab",
+                                        enabled = true,
+                                    ) { onToggleTabAudio(tab.id) }
+                                }
                                 BrowserNavButton(Icons.Outlined.Close, "Close tab", enabled = true, onClick = { onCloseTab(tab.id) })
                             }
                         }
@@ -3071,11 +3174,23 @@ private fun BrowserContextMenuPopup(
                 leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
                 onClick = { onAction(ContextMenuAction.TOGGLE_TAB_PINNED) },
             )
-            DropdownMenuItem(
-                text = { Text(if (menu.isSleeping) "Wake tab" else "Hibernate tab") },
-                leadingIcon = { Icon(Icons.Outlined.Pause, contentDescription = null) },
-                onClick = { onAction(ContextMenuAction.TOGGLE_TAB_SLEEPING) },
-            )
+             DropdownMenuItem(
+                 text = { Text(if (menu.isSleeping) "Wake tab" else "Hibernate tab") },
+                 leadingIcon = { Icon(Icons.Outlined.Pause, contentDescription = null) },
+                 onClick = { onAction(ContextMenuAction.TOGGLE_TAB_SLEEPING) },
+             )
+             if (menu.hasActiveMedia) {
+                 DropdownMenuItem(
+                     text = { Text(if (menu.isAudioMuted) "Unmute tab" else "Mute tab") },
+                     leadingIcon = {
+                         Icon(
+                             if (menu.isAudioMuted) Icons.Outlined.VolumeOff else Icons.Outlined.VolumeUp,
+                             contentDescription = null,
+                         )
+                     },
+                     onClick = { onAction(ContextMenuAction.TOGGLE_TAB_AUDIO) },
+                 )
+             }
             Divider()
             DropdownMenuItem(
                 text = { Text("Close tab") },
@@ -3738,6 +3853,8 @@ private fun BrowserMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
     onNewPrivateTab: () -> Unit,
+    onReopenClosedTab: () -> Unit,
+    closedTabCount: Int,
     onShowTabs: () -> Unit,
     onShowBookmarks: () -> Unit,
     onShowHistory: () -> Unit,
@@ -3772,6 +3889,12 @@ private fun BrowserMenu(
                     text = { Text("New private tab") },
                     leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) },
                     onClick = onNewPrivateTab,
+                )
+                DropdownMenuItem(
+                    text = { Text("Reopen closed tab") },
+                    leadingIcon = { Icon(Icons.Outlined.Tab, contentDescription = null) },
+                    enabled = closedTabCount > 0,
+                    onClick = onReopenClosedTab,
                 )
                 DropdownMenuItem(
                     text = { Text("All tabs") },
@@ -5121,6 +5244,8 @@ private fun SettingsScreen(
     onBack: () -> Unit,
     themeMode: ThemeMode,
     searchEngine: SearchEngine,
+    customSearchEngines: List<CustomSearchEngine>,
+    selectedCustomSearchEngineId: String?,
     desktopSites: Boolean,
     downloadDirectoryUri: String?,
     onPickDownloadDirectory: () -> Unit,
@@ -5132,6 +5257,11 @@ private fun SettingsScreen(
     adBlockFilters: List<AdBlockFilter>,
     onSetTheme: (ThemeMode) -> Unit,
     onSetSearchEngine: (SearchEngine) -> Unit,
+    onSetCustomSearchEngine: (CustomSearchEngine) -> Unit,
+    onAddCustomSearchEngine: (String, String) -> Unit,
+    onRemoveCustomSearchEngine: (CustomSearchEngine) -> Unit,
+    onExportSync: (String) -> Unit,
+    onImportSync: (String) -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetHomepage: (String) -> Unit,
     onClearSitePermissions: () -> Unit,
@@ -5229,13 +5359,66 @@ private fun SettingsScreen(
             }
         }
     }
-    SettingSection("Search engine") {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SearchEngine.values().forEach { engine ->
-                FilterChip(selected = searchEngine == engine, onClick = { onSetSearchEngine(engine) }, label = { Text(engine.label) })
-            }
-        }
-    }
+      SettingSection("Search engine") {
+         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+             SearchEngine.values().filter { it != SearchEngine.CUSTOM }.forEach { engine ->
+                 FilterChip(selected = searchEngine == engine, onClick = { onSetSearchEngine(engine) }, label = { Text(engine.label) })
+             }
+         }
+         if (customSearchEngines.isNotEmpty()) {
+             Spacer(Modifier.height(8.dp))
+             Text("Custom engines", style = MaterialTheme.typography.titleSmall)
+             customSearchEngines.forEach { engine ->
+                 ListItem(
+                     headlineContent = { Text(engine.label, maxLines = 1) },
+                     supportingContent = { Text(engine.searchUrl, maxLines = 1) },
+                     leadingContent = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                     trailingContent = {
+                         Row(verticalAlignment = Alignment.CenterVertically) {
+                             RadioButton(
+                                 selected = searchEngine == SearchEngine.CUSTOM && selectedCustomSearchEngineId == engine.id,
+                                 onClick = { onSetCustomSearchEngine(engine) },
+                             )
+                             IconButton(onClick = { onRemoveCustomSearchEngine(engine) }) {
+                                 Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove ${engine.label}")
+                             }
+                         }
+                     },
+                 )
+             }
+         }
+         var customEngineName by rememberSaveable { mutableStateOf("") }
+         var customEngineUrl by rememberSaveable { mutableStateOf("") }
+         Spacer(Modifier.height(8.dp))
+         Row(
+             modifier = Modifier.fillMaxWidth(),
+             verticalAlignment = Alignment.CenterVertically,
+             horizontalArrangement = Arrangement.spacedBy(8.dp),
+         ) {
+             OutlinedTextField(
+                 value = customEngineName,
+                 onValueChange = { customEngineName = it },
+                 modifier = Modifier.weight(0.38f),
+                 label = { Text("Name") },
+                 singleLine = true,
+             )
+             OutlinedTextField(
+                 value = customEngineUrl,
+                 onValueChange = { customEngineUrl = it },
+                 modifier = Modifier.weight(0.62f),
+                 label = { Text("HTTPS search URL, use %s") },
+                 singleLine = true,
+             )
+             Button(
+                 onClick = {
+                     onAddCustomSearchEngine(customEngineName, customEngineUrl)
+                     customEngineName = ""
+                     customEngineUrl = ""
+                 },
+                 enabled = customEngineName.isNotBlank() && customEngineUrl.isNotBlank(),
+             ) { Text("Add") }
+         }
+      }
       SettingSection("Browsing") {
         var homepageDraft by rememberSaveable { mutableStateOf(homepage) }
         LaunchedEffect(homepage) { homepageDraft = homepage }
@@ -5292,7 +5475,51 @@ private fun SettingsScreen(
              Text("Open privacy dashboard")
          }
       }
-      SettingSection("Downloads") {
+       SettingSection("Encrypted sync") {
+           Text(
+               "Move bookmarks, history, reading list, site settings, and browser preferences between devices. The bundle is encrypted with a passphrase; saved logins and private tabs are never included.",
+               style = MaterialTheme.typography.bodySmall,
+               color = MaterialTheme.colorScheme.onSurfaceVariant,
+           )
+           var syncAction by rememberSaveable { mutableStateOf<String?>(null) }
+           var syncPassphrase by rememberSaveable { mutableStateOf("") }
+           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+               Button(onClick = { syncPassphrase = ""; syncAction = "export" }) {
+                   Text("Export encrypted")
+               }
+               OutlinedButton(onClick = { syncPassphrase = ""; syncAction = "import" }) {
+                   Text("Import encrypted")
+               }
+           }
+           syncAction?.let { action ->
+               AlertDialog(
+                   onDismissRequest = { syncAction = null },
+                   title = { Text(if (action == "export") "Export encrypted sync" else "Import encrypted sync") },
+                   text = {
+                       OutlinedTextField(
+                           value = syncPassphrase,
+                           onValueChange = { syncPassphrase = it },
+                           label = { Text("Passphrase") },
+                           supportingText = { Text("Use at least 8 characters") },
+                           visualTransformation = PasswordVisualTransformation(),
+                           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                           singleLine = true,
+                       )
+                   },
+                   confirmButton = {
+                       TextButton(
+                           onClick = {
+                               if (action == "export") onExportSync(syncPassphrase) else onImportSync(syncPassphrase)
+                               syncAction = null
+                           },
+                           enabled = syncPassphrase.length >= 8,
+                       ) { Text(if (action == "export") "Choose file" else "Choose file") }
+                   },
+                   dismissButton = { TextButton(onClick = { syncAction = null }) { Text("Cancel") } },
+               )
+           }
+       }
+       SettingSection("Downloads") {
           Text(
               "Choose a folder that Dextra can write to. Existing files are not moved.",
               style = MaterialTheme.typography.bodySmall,

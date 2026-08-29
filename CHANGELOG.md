@@ -2,6 +2,16 @@
 
 All notable changes to Dextra are documented here. The commit log at the end records every commit in the repository history.
 
+## Unreleased
+
+### Added
+
+- Find in page with match navigation and highlighted results.
+- Reopen recently closed tabs from the browser menu and `Ctrl+Shift+T`.
+- Active-media indicators and per-tab mute controls.
+- Custom HTTPS search engines using `%s` query templates.
+- Password-encrypted sync bundles for local transfer between devices.
+
 ## [0.5.0] - 2026-08-29
 
 ### Added

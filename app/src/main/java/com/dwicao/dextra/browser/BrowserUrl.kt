@@ -7,6 +7,10 @@ import java.nio.charset.StandardCharsets
 
 object BrowserUrl {
     fun resolve(input: String, searchEngine: SearchEngine): String {
+        return resolve(input, searchEngine.searchUrl)
+    }
+
+    fun resolve(input: String, searchUrl: String): String {
         val value = input.trim()
         if (value.isEmpty()) return ""
         if (!NavigationPolicy.isSafeUserInput(value)) return ""
@@ -19,7 +23,7 @@ object BrowserUrl {
         if (looksLikeHost(value)) return "https://$value"
 
         val encoded = URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
-        return searchEngine.searchUrl.replace("%s", encoded)
+        return searchUrl.replace("%s", encoded)
     }
 
     fun displayValue(url: String): String = url

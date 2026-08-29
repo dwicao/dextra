@@ -17,8 +17,15 @@ import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.util.UUID
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+data class CustomSearchEngine(
+    val id: String = UUID.randomUUID().toString(),
+    val label: String,
+    val searchUrl: String,
+)
 
 data class AdBlockFilter(
     val name: String,
@@ -36,6 +43,8 @@ private const val DefaultAdBlockFilterUrl = "https://easylist.to/easylist/easyli
 data class BrowserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val searchEngine: SearchEngine = SearchEngine.GOOGLE,
+    val customSearchEngines: List<CustomSearchEngine> = emptyList(),
+    val selectedCustomSearchEngineId: String? = null,
     val homepage: String = "https://www.google.com/",
     val desktopSites: Boolean = false,
     val tabBarWithAddressBar: Boolean = true,
@@ -96,6 +105,7 @@ enum class DnsProvider(val label: String, val dohUri: String) {
 }
 
 enum class SearchEngine(val label: String, val searchUrl: String) {
+    CUSTOM("Custom", "https://example.invalid/search?q=%s"),
     DUCKDUCKGO("DuckDuckGo", "https://duckduckgo.com/?q=%s"),
     GOOGLE("Google", "https://www.google.com/search?q=%s"),
     BING("Bing", "https://www.bing.com/search?q=%s"),
@@ -112,6 +122,8 @@ class SettingsRepository(private val context: Context) {
     private object Keys {
         val theme = stringPreferencesKey("theme")
         val searchEngine = stringPreferencesKey("search_engine")
+        val customSearchEngines = stringPreferencesKey("custom_search_engines")
+        val selectedCustomSearchEngineId = stringPreferencesKey("selected_custom_search_engine_id")
         val homepage = stringPreferencesKey("homepage")
         val desktopSites = booleanPreferencesKey("desktop_sites")
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
@@ -143,7 +155,36 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setSearchEngine(engine: SearchEngine) {
-        context.settingsDataStore.edit { it[Keys.searchEngine] = engine.name }
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.searchEngine] = engine.name
+            if (engine != SearchEngine.CUSTOM) preferences.remove(Keys.selectedCustomSearchEngineId)
+        }
+    }
+
+    suspend fun setCustomSearchEngine(engine: CustomSearchEngine) {
+        context.settingsDataStore.edit { preferences ->
+            val engines = (preferences.customSearchEngines().filterNot { it.id == engine.id } + engine)
+                .takeLast(MAX_CUSTOM_SEARCH_ENGINES)
+            preferences[Keys.customSearchEngines] = JSONArray(engines.map(::customSearchEngineToJson)).toString()
+            preferences[Keys.searchEngine] = SearchEngine.CUSTOM.name
+            preferences[Keys.selectedCustomSearchEngineId] = engine.id
+        }
+    }
+
+    suspend fun removeCustomSearchEngine(id: String) {
+        context.settingsDataStore.edit { preferences ->
+            val engines = preferences.customSearchEngines().filterNot { it.id == id }
+            if (engines.isEmpty()) {
+                preferences.remove(Keys.customSearchEngines)
+                preferences.remove(Keys.selectedCustomSearchEngineId)
+                preferences[Keys.searchEngine] = SearchEngine.GOOGLE.name
+            } else {
+                preferences[Keys.customSearchEngines] = JSONArray(engines.map(::customSearchEngineToJson)).toString()
+                if (preferences[Keys.selectedCustomSearchEngineId] == id) {
+                    preferences[Keys.selectedCustomSearchEngineId] = engines.first().id
+                }
+            }
+        }
     }
 
     suspend fun setDesktopSites(enabled: Boolean) {
@@ -342,12 +383,61 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun applySyncSettings(settings: JSONObject) {
+        context.settingsDataStore.edit { preferences ->
+            settings.optString("theme").takeIf { it in ThemeMode.values().map(ThemeMode::name) }
+                ?.let { preferences[Keys.theme] = it }
+            settings.optString("searchEngine").takeIf { it in SearchEngine.values().map(SearchEngine::name) }
+                ?.let { preferences[Keys.searchEngine] = it }
+            settings.optString("selectedCustomSearchEngineId").takeIf(String::isNotBlank)?.let {
+                preferences[Keys.selectedCustomSearchEngineId] = it
+            }
+            settings.optString("homepage").takeIf { it.startsWith("https://") || it.startsWith("http://") || it.startsWith("about:") }
+                ?.let { preferences[Keys.homepage] = it }
+            if (settings.has("desktopSites")) preferences[Keys.desktopSites] = settings.optBoolean("desktopSites")
+            if (settings.has("tabBarWithAddressBar")) preferences[Keys.tabBarWithAddressBar] = settings.optBoolean("tabBarWithAddressBar")
+            if (settings.has("verticalTabs")) preferences[Keys.verticalTabs] = settings.optBoolean("verticalTabs")
+            if (settings.has("dnsOverHttpsEnabled")) preferences[Keys.dnsOverHttpsEnabled] = settings.optBoolean("dnsOverHttpsEnabled")
+            settings.optString("dnsProvider").takeIf { it in DnsProvider.values().map(DnsProvider::name) }
+                ?.let { preferences[Keys.dnsProvider] = it }
+            if (settings.has("adBlockingEnabled")) preferences[Keys.adBlockingEnabled] = settings.optBoolean("adBlockingEnabled")
+            settings.optJSONArray("adBlockFilters")?.let { array ->
+                preferences[Keys.adBlockFilters] = (0 until array.length().coerceAtMost(MAX_ADBLOCK_FILTERS)).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                    .filter { it.startsWith("https://", ignoreCase = true) }
+                    .distinct()
+                    .joinToString("\n")
+            }
+            settings.optJSONArray("disabledAdBlockFilters")?.let { array ->
+                preferences[Keys.disabledAdBlockFilters] = (0 until array.length().coerceAtMost(MAX_ADBLOCK_FILTERS)).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                    .joinToString("\n")
+            }
+            settings.optJSONArray("userScriptUrls")?.let { array ->
+                preferences[Keys.userScriptUrls] = (0 until array.length().coerceAtMost(MAX_USER_SCRIPTS)).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                    .filter { it.startsWith("https://", ignoreCase = true) }
+                    .distinct()
+                    .joinToString("\n")
+            }
+            settings.optJSONArray("disabledUserScripts")?.let { array ->
+                preferences[Keys.disabledUserScripts] = (0 until array.length().coerceAtMost(MAX_USER_SCRIPTS)).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                    .joinToString("\n")
+            }
+            settings.optJSONArray("customSearchEngines")?.let { array ->
+                val engines = (0 until array.length()).mapNotNull { index ->
+                    array.optJSONObject(index)?.let(::customSearchEngineFromJson)
+                }.take(MAX_CUSTOM_SEARCH_ENGINES)
+                preferences[Keys.customSearchEngines] = JSONArray(engines.map(::customSearchEngineToJson)).toString()
+            }
+        }
+    }
+
     private fun Preferences.toBrowserSettings(): BrowserSettings = BrowserSettings(
         themeMode = get(Keys.theme)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
             ?: ThemeMode.SYSTEM,
         searchEngine = get(Keys.searchEngine)?.let {
             runCatching { SearchEngine.valueOf(it) }.getOrNull()
         } ?: SearchEngine.GOOGLE,
+        customSearchEngines = customSearchEngines(),
+        selectedCustomSearchEngineId = get(Keys.selectedCustomSearchEngineId),
         homepage = get(Keys.homepage) ?: "https://www.google.com/",
         desktopSites = get(Keys.desktopSites) ?: defaultDesktopSites(),
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
@@ -395,6 +485,27 @@ class SettingsRepository(private val context: Context) {
         ?.map(String::trim)
         ?.filter(String::isNotBlank)
         ?: emptyList()
+
+    private fun Preferences.customSearchEngines(): List<CustomSearchEngine> = runCatching {
+        val engines = JSONArray(get(Keys.customSearchEngines).orEmpty())
+        (0 until engines.length()).mapNotNull { index ->
+            engines.optJSONObject(index)?.let(::customSearchEngineFromJson)
+        }.take(MAX_CUSTOM_SEARCH_ENGINES)
+    }.getOrDefault(emptyList())
+
+    private fun customSearchEngineToJson(engine: CustomSearchEngine): JSONObject = JSONObject()
+        .put("id", engine.id)
+        .put("label", engine.label)
+        .put("searchUrl", engine.searchUrl)
+
+    private fun customSearchEngineFromJson(value: JSONObject): CustomSearchEngine? {
+        val id = value.optString("id").takeIf { it.isNotBlank() && it.length <= 100 } ?: return null
+        val label = value.optString("label").trim().take(40).takeIf(String::isNotBlank) ?: return null
+        val searchUrl = value.optString("searchUrl").trim().takeIf {
+            it.length <= 500 && it.startsWith("https://", ignoreCase = true) && it.contains("%s")
+        } ?: return null
+        return CustomSearchEngine(id, label, searchUrl)
+    }
 
     private fun Preferences.extensionInstallRecords(): Map<String, ExtensionInstallRecord> = get(Keys.extensionInstallRecords)
         ?.split('\n')
@@ -539,5 +650,8 @@ class SettingsRepository(private val context: Context) {
     private companion object {
         const val MAX_SESSION_SNAPSHOTS = 20
         const val MAX_SESSION_SNAPSHOT_BYTES = 8 * 1024 * 1024
+        const val MAX_CUSTOM_SEARCH_ENGINES = 20
+        const val MAX_ADBLOCK_FILTERS = 100
+        const val MAX_USER_SCRIPTS = 100
     }
 }

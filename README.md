@@ -28,7 +28,11 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Two-pane split view with focus, swap, and close actions.
 - Mouse secondary-click context menus for pages and tabs.
 - Searchable tab switcher, command palette, configurable keyboard shortcuts, and hover previews.
+- Find in page with highlighted matches, match navigation, and `Ctrl+F` support.
+- Reopen recently closed tabs with `Ctrl+Shift+T` or the browser menu.
+- Active-media tab indicators and per-tab mute controls.
 - Smart address bar suggestions from bookmarks and normal browsing history, with keyboard navigation.
+- Custom HTTPS search engines with `%s` query templates.
 - Homepage, search engine, theme, desktop-site, and tab layout settings.
 - Per-site desktop mode, ad blocking, userscripts, and zoom overrides.
 - GeckoView tracking protection and Global Privacy Control.
@@ -48,6 +52,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Page printing and bounded HTML export.
 - Picture-in-Picture for active media and validated PWA launcher shortcuts.
 - Encrypted local login storage with GeckoView autocomplete integration.
+- Password-encrypted sync bundles for bookmarks, history, settings, and reading list transfer.
 - Biometric/device-credential lock for saved logins with automatic background locking.
 - Web Push subscription management and Android website notifications.
 - Installed PWA management with separate Android document tasks/windows.
