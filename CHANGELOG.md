@@ -26,6 +26,11 @@ All notable changes to Dextra are documented here. The commit log at the end rec
 - Automatic session recovery timeline with restorable background checkpoints.
 - Local performance dashboard for startup, memory, frame pacing, and DeX-like window metrics.
 - Room migration from database version 13 to 14 for profile-scoped site data.
+- Download queue controls for priority, Wi-Fi-only mode, delayed scheduling, and bulk pause/resume.
+- Global and per-site HTTPS-only navigation policy with automatic upgrades.
+- Customizable new-tab start page with safe HTTPS quick links.
+- Extension permission center with optional permission revocation.
+- Room migrations from version 14 to 15 and 15 to 16 for download and HTTPS policy metadata.
 
 ## [0.5.0] - 2026-08-29
 

@@ -24,4 +24,12 @@ class NavigationPolicyTest {
         assertFalse(NavigationPolicy.isAllowedTopLevel("moz-extension://addon/options.html"))
         assertTrue(NavigationPolicy.isAllowedTopLevel("moz-extension://addon/options.html", allowExtension = true))
     }
+
+    @Test
+    fun upgradesHttpUrlsWithoutChangingPathOrQuery() {
+        assertEquals(
+            "https://example.com/path?q=1",
+            NavigationPolicy.upgradeToHttps("http://example.com/path?q=1"),
+        )
+    }
 }

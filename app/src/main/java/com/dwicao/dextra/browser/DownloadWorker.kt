@@ -24,9 +24,15 @@ import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 private const val DOWNLOAD_CHANNEL_ID = "dextra_downloads"
+
+private object DownloadQueueGate {
+    val mutex = Mutex()
+}
 
 fun downloadWorkName(downloadId: Long): String = "dextra-download-$downloadId"
 
@@ -41,8 +47,6 @@ class DownloadWorker(
         if (download.status == DownloadStatus.PAUSED.label || download.status == DownloadStatus.CANCELED.label) {
             return Result.success()
         }
-        setForeground(createForegroundInfo(download))
-
         val engine = DownloadEngine(CoroutineScope(currentCoroutineContext())) { id, update ->
             dao.getDownload(id)?.let { current ->
                 dao.upsertDownload(
@@ -57,21 +61,37 @@ class DownloadWorker(
                 )
             }
         }
-        engine.execute(download)
+        return DownloadQueueGate.mutex.withLock {
+            val current = dao.getDownload(downloadId) ?: return@withLock Result.success()
+            if (current.status != DownloadStatus.QUEUED.label && current.status != DownloadStatus.DOWNLOADING.label) {
+                return@withLock Result.success()
+            }
+            val higherPriority = dao.getDownloads()
+                .filter {
+                    it.status == DownloadStatus.QUEUED.label &&
+                        (it.scheduledAt == null || it.scheduledAt <= System.currentTimeMillis())
+                }
+                .maxOfOrNull { it.priority }
+            if (higherPriority != null && higherPriority > current.priority) {
+                return@withLock Result.retry()
+            }
+            setForeground(createForegroundInfo(current))
+            engine.execute(current)
 
-        val completed = dao.getDownload(downloadId) ?: return Result.success()
-        if (completed.status == DownloadStatus.COMPLETE.label && completed.localUri == null && completed.filePath != null) {
-            val publicUri = publishDownload(completed)
-            dao.upsertDownload(completed.copy(localUri = publicUri))
+            val completed = dao.getDownload(downloadId) ?: return@withLock Result.success()
+            if (completed.status == DownloadStatus.COMPLETE.label && completed.localUri == null && completed.filePath != null) {
+                val publicUri = publishDownload(completed)
+                dao.upsertDownload(completed.copy(localUri = publicUri))
+            }
+            if (completed.status == DownloadStatus.FAILED.label && completed.attempts < MAX_RETRY_ATTEMPTS) {
+                dao.upsertDownload(completed.copy(attempts = completed.attempts + 1, reason = "Retry scheduled"))
+                return@withLock Result.retry()
+            }
+            if (completed.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.FAILED.label)) {
+                notifyDownload(completed)
+            }
+            Result.success()
         }
-        if (completed.status == DownloadStatus.FAILED.label && completed.attempts < MAX_RETRY_ATTEMPTS) {
-            dao.upsertDownload(completed.copy(attempts = completed.attempts + 1, reason = "Retry scheduled"))
-            return Result.retry()
-        }
-        if (completed.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.FAILED.label)) {
-            notifyDownload(completed)
-        }
-        return Result.success()
     }
 
     private fun publishDownload(download: DownloadEntry): String? {

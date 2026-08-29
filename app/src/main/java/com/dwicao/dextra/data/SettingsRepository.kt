@@ -33,6 +33,18 @@ data class AdBlockFilter(
     val enabled: Boolean = true,
 )
 
+data class StartPageLink(
+    val id: String = UUID.randomUUID().toString(),
+    val label: String,
+    val url: String,
+)
+
+data class StartPageSettings(
+    val showQuickLinks: Boolean = true,
+    val showPrivacyTip: Boolean = true,
+    val customLinks: List<StartPageLink> = emptyList(),
+)
+
 private val RemovedDefaultAdBlockFilterUrls = setOf(
     "https://easylist.to/easylist/easylist.txt",
     "https://easylist.to/easylist/easyprivacy.txt",
@@ -46,7 +58,9 @@ data class BrowserSettings(
     val customSearchEngines: List<CustomSearchEngine> = emptyList(),
     val selectedCustomSearchEngineId: String? = null,
     val homepage: String = "https://www.google.com/",
+    val startPage: StartPageSettings = StartPageSettings(),
     val desktopSites: Boolean = false,
+    val httpsOnly: Boolean = false,
     val tabBarWithAddressBar: Boolean = true,
     val verticalTabs: Boolean = true,
     val dnsOverHttpsEnabled: Boolean = false,
@@ -146,7 +160,9 @@ class SettingsRepository(private val context: Context) {
         val customSearchEngines = stringPreferencesKey("custom_search_engines")
         val selectedCustomSearchEngineId = stringPreferencesKey("selected_custom_search_engine_id")
         val homepage = stringPreferencesKey("homepage")
+        val startPage = stringPreferencesKey("start_page")
         val desktopSites = booleanPreferencesKey("desktop_sites")
+        val httpsOnly = booleanPreferencesKey("https_only")
         val tabBarWithAddressBar = booleanPreferencesKey("tab_bar_with_address_bar")
         val verticalTabs = booleanPreferencesKey("vertical_tabs")
         val dnsOverHttpsEnabled = booleanPreferencesKey("dns_over_https_enabled")
@@ -219,8 +235,16 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { it[Keys.desktopSites] = enabled }
     }
 
+    suspend fun setHttpsOnly(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.httpsOnly] = enabled }
+    }
+
     suspend fun setHomepage(homepage: String) {
         context.settingsDataStore.edit { it[Keys.homepage] = homepage }
+    }
+
+    suspend fun setStartPageSettings(settings: StartPageSettings) {
+        context.settingsDataStore.edit { it[Keys.startPage] = settings.toJson().toString() }
     }
 
     suspend fun setTabBarWithAddressBar(enabled: Boolean) {
@@ -505,7 +529,9 @@ class SettingsRepository(private val context: Context) {
             }
             settings.optString("homepage").takeIf { it.startsWith("https://") || it.startsWith("http://") || it.startsWith("about:") }
                 ?.let { preferences[Keys.homepage] = it }
+            settings.optJSONObject("startPage")?.let { preferences[Keys.startPage] = it.toString() }
             if (settings.has("desktopSites")) preferences[Keys.desktopSites] = settings.optBoolean("desktopSites")
+            if (settings.has("httpsOnly")) preferences[Keys.httpsOnly] = settings.optBoolean("httpsOnly")
             if (settings.has("tabBarWithAddressBar")) preferences[Keys.tabBarWithAddressBar] = settings.optBoolean("tabBarWithAddressBar")
             if (settings.has("verticalTabs")) preferences[Keys.verticalTabs] = settings.optBoolean("verticalTabs")
             settings.optDouble("accessibilityTextScale", 1.0).toFloat().takeIf { it.isFinite() }
@@ -554,7 +580,9 @@ class SettingsRepository(private val context: Context) {
         customSearchEngines = customSearchEngines(),
         selectedCustomSearchEngineId = get(Keys.selectedCustomSearchEngineId),
         homepage = get(Keys.homepage) ?: "https://www.google.com/",
+        startPage = startPage(),
         desktopSites = get(Keys.desktopSites) ?: defaultDesktopSites(),
+        httpsOnly = get(Keys.httpsOnly) ?: false,
         tabBarWithAddressBar = get(Keys.tabBarWithAddressBar) ?: true,
         verticalTabs = get(Keys.verticalTabs) ?: true,
         dnsOverHttpsEnabled = get(Keys.dnsOverHttpsEnabled) ?: false,
@@ -630,10 +658,32 @@ class SettingsRepository(private val context: Context) {
         }.take(MAX_CUSTOM_SEARCH_ENGINES)
     }.getOrDefault(emptyList())
 
+    private fun Preferences.startPage(): StartPageSettings = runCatching {
+        val value = JSONObject(get(Keys.startPage).orEmpty())
+        val links = value.optJSONArray("customLinks")?.let { array ->
+            (0 until array.length()).mapNotNull { index ->
+                val link = array.optJSONObject(index) ?: return@mapNotNull null
+                val id = link.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
+                val label = link.optString("label").trim().take(40).takeIf(String::isNotBlank) ?: return@mapNotNull null
+                val url = link.optString("url").trim().takeIf { it.startsWith("https://", ignoreCase = true) } ?: return@mapNotNull null
+                StartPageLink(id, label, url)
+            }
+        }.orEmpty().take(MAX_START_PAGE_LINKS)
+        StartPageSettings(value.optBoolean("showQuickLinks", true), value.optBoolean("showPrivacyTip", true), links)
+    }.getOrDefault(StartPageSettings())
+
     private fun customSearchEngineToJson(engine: CustomSearchEngine): JSONObject = JSONObject()
         .put("id", engine.id)
         .put("label", engine.label)
         .put("searchUrl", engine.searchUrl)
+
+    private fun StartPageSettings.toJson(): JSONObject = JSONObject().apply {
+        put("showQuickLinks", showQuickLinks)
+        put("showPrivacyTip", showPrivacyTip)
+        put("customLinks", JSONArray(customLinks.map { link ->
+            JSONObject().put("id", link.id).put("label", link.label).put("url", link.url)
+        }))
+    }
 
     private fun customSearchEngineFromJson(value: JSONObject): CustomSearchEngine? {
         val id = value.optString("id").takeIf { it.isNotBlank() && it.length <= 100 } ?: return null
@@ -846,5 +896,6 @@ class SettingsRepository(private val context: Context) {
         const val MAX_RECENTLY_CLOSED_TABS = 10
         const val MAX_WORKSPACES = 12
         const val MAX_WORKSPACE_TABS = 64
+        const val MAX_START_PAGE_LINKS = 12
     }
 }

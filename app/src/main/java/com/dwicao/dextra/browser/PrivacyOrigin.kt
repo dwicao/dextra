@@ -37,7 +37,8 @@ fun buildPrivacyOrigins(
                 setting.adBlockingEnabled != null ||
                 setting.userScriptsEnabled != null ||
                 setting.zoomPercent != null ||
-                setting.translationTarget != null,
+                setting.translationTarget != null ||
+                setting.httpsOnly != null,
             blockedCount = maxOf(current?.blockedCount ?: 0, blockedByOrigin[setting.origin].orZero()),
             updatedAt = maxOf(current?.updatedAt ?: 0L, setting.updatedAt),
         )

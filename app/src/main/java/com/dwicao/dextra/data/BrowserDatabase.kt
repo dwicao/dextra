@@ -56,6 +56,7 @@ data class SiteSetting(
     val translationTarget: String? = null,
     val updatedAt: Long,
     val profileId: String = DEFAULT_WORKSPACE_ID,
+    val httpsOnly: Boolean? = null,
 )
 
 @Entity(
@@ -88,6 +89,10 @@ data class DownloadEntry(
     val isPrivate: Boolean = false,
     val attempts: Int = 0,
     val destinationTreeUri: String? = null,
+    val priority: Int = 0,
+    val wifiOnly: Boolean = false,
+    val scheduledAt: Long? = null,
+    val workspaceId: String = DEFAULT_WORKSPACE_ID,
 )
 
 enum class DownloadStatus(val label: String) {
@@ -281,7 +286,7 @@ interface BrowserDao {
     suspend fun getInstalledWebApps(): List<InstalledWebApp>
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 14, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 16, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -294,7 +299,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -478,6 +483,21 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 )
                 database.execSQL("DROP TABLE site_settings")
                 database.execSQL("ALTER TABLE site_settings_new RENAME TO site_settings")
+            }
+        }
+
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE downloads ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE downloads ADD COLUMN wifiOnly INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE downloads ADD COLUMN scheduledAt INTEGER")
+                database.execSQL("ALTER TABLE downloads ADD COLUMN workspaceId TEXT NOT NULL DEFAULT 'default'")
+            }
+        }
+
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE site_settings ADD COLUMN httpsOnly INTEGER")
             }
         }
     }

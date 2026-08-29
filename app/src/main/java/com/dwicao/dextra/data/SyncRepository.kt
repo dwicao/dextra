@@ -113,7 +113,8 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             if (selection.siteSettings) put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
                 put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
                 putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent)
-                putOpt("translationTarget", it.translationTarget); put("updatedAt", it.updatedAt); put("profileId", it.profileId)
+                putOpt("translationTarget", it.translationTarget); putOpt("httpsOnly", it.httpsOnly)
+                put("updatedAt", it.updatedAt); put("profileId", it.profileId)
             } }))
         }
         val payload = root.toString().toByteArray(Charsets.UTF_8)
@@ -217,6 +218,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
                     it.optBooleanOrNull("adBlockingEnabled"), it.optBooleanOrNull("userScriptsEnabled"),
                     it.optIntOrNull("zoomPercent"), it.optString("translationTarget").takeIf(String::isNotBlank),
                     it.optLong("updatedAt", System.currentTimeMillis()), profileId = targetProfileId,
+                    httpsOnly = it.optBooleanOrNull("httpsOnly"),
                 ))
             }
         }
@@ -262,7 +264,15 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             JSONObject().put("id", it.id).put("label", it.label).put("searchUrl", it.searchUrl)
         }))
         put("homepage", settings.homepage)
+        put("startPage", JSONObject().apply {
+            put("showQuickLinks", settings.startPage.showQuickLinks)
+            put("showPrivacyTip", settings.startPage.showPrivacyTip)
+            put("customLinks", JSONArray(settings.startPage.customLinks.map { link ->
+                JSONObject().put("id", link.id).put("label", link.label).put("url", link.url)
+            }))
+        })
         put("desktopSites", settings.desktopSites)
+        put("httpsOnly", settings.httpsOnly)
         put("tabBarWithAddressBar", settings.tabBarWithAddressBar)
         put("verticalTabs", settings.verticalTabs)
         put("accessibilityTextScale", settings.accessibilityTextScale)

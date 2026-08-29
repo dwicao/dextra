@@ -234,6 +234,8 @@ import com.dwicao.dextra.data.ThemeMode
 import com.dwicao.dextra.data.WebDavSettingsState
 import com.dwicao.dextra.data.SyncSelection
 import com.dwicao.dextra.data.SyncPreview
+import com.dwicao.dextra.data.StartPageLink
+import com.dwicao.dextra.data.StartPageSettings
 import com.dwicao.dextra.ui.LocalDextraAccessibility
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -247,7 +249,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val history by viewModel.history.collectAsStateWithLifecycle(initialValue = emptyList())
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle(initialValue = emptyList())
-    val downloads by viewModel.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val allDownloads by viewModel.downloads.collectAsStateWithLifecycle(initialValue = emptyList())
+    val downloads = allDownloads.filter { it.workspaceId == state.settings.activeWorkspaceId }
     val readingList by viewModel.readingList.collectAsStateWithLifecycle(initialValue = emptyList())
     val sitePermissions by viewModel.sitePermissions.collectAsStateWithLifecycle(initialValue = emptyList())
     val siteSettings by viewModel.siteSettings.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -449,8 +452,15 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onDisableWebDav = viewModel::disableWebDavSync,
                   onRunWebDavSync = viewModel::runWebDavSyncNow,
                   onResolveWebDavConflict = viewModel::resolveWebDavConflict,
-                  onSetDesktopSites = viewModel::setDesktopSites,
+                   onSetDesktopSites = viewModel::setDesktopSites,
+                   httpsOnly = state.settings.httpsOnly,
+                   onSetHttpsOnly = viewModel::setHttpsOnly,
                    onSetHomepage = viewModel::setHomepage,
+                   startPage = state.settings.startPage,
+                   onSetStartPageQuickLinks = viewModel::setStartPageQuickLinks,
+                   onSetStartPagePrivacyTip = viewModel::setStartPagePrivacyTip,
+                   onAddStartPageLink = viewModel::addStartPageLink,
+                   onRemoveStartPageLink = viewModel::removeStartPageLink,
                    onClearSitePermissions = viewModel::clearSitePermissions,
                    onOpenPrivacyDashboard = { viewModel.setOverlay(BrowserOverlay.PRIVACY) },
                     onClearSiteData = viewModel::clearSiteData,
@@ -487,7 +497,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onSetSiteDesktopOverride = viewModel::setCurrentSiteDesktopOverride,
                   onSetSiteAdBlockingOverride = viewModel::setCurrentSiteAdBlockingOverride,
                   onSetSiteUserScriptsOverride = viewModel::setCurrentSiteUserScriptsOverride,
-                  onSetSiteZoomOverride = viewModel::setCurrentSiteZoomOverride,
+                   onSetSiteZoomOverride = viewModel::setCurrentSiteZoomOverride,
+                   onSetSiteHttpsOnly = viewModel::setCurrentSiteHttpsOnly,
                   onClearSiteSettings = viewModel::clearCurrentSiteSettings,
                    onOpenQrCode = viewModel::openQrCode,
                     onOpenReaderMode = viewModel::openReaderMode,
@@ -532,16 +543,22 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onInstallExtension = viewModel::installExtension,
                 onOpenFirefoxAddons = viewModel::openFirefoxAddons,
                  onSetExtensionEnabled = viewModel::setExtensionEnabled,
-                 onSetExtensionPrivateBrowsing = viewModel::setExtensionPrivateBrowsing,
-                 onUpdateExtension = viewModel::updateExtension,
+                  onSetExtensionPrivateBrowsing = viewModel::setExtensionPrivateBrowsing,
+                  onRevokeExtensionOptionalPermissions = viewModel::revokeExtensionOptionalPermissions,
+                  onUpdateExtension = viewModel::updateExtension,
                  onOpenExtensionOptions = viewModel::openExtensionOptions,
                  onUninstallExtension = viewModel::uninstallExtension,
                  extensionActions = state.extensionActions,
                  onClickExtensionAction = viewModel::clickExtensionAction,
                 onOpenDownload = viewModel::openDownload,
                 onShareDownload = viewModel::shareDownload,
-                onToggleDownload = viewModel::toggleDownload,
-                 onCancelDownload = viewModel::cancelDownload,
+                  onToggleDownload = viewModel::toggleDownload,
+                  onSetDownloadPriority = viewModel::setDownloadPriority,
+                  onSetDownloadWifiOnly = viewModel::setDownloadWifiOnly,
+                  onScheduleDownload = viewModel::scheduleDownload,
+                  onPauseAllDownloads = viewModel::pauseAllDownloads,
+                  onResumeAllDownloads = viewModel::resumeAllDownloads,
+                  onCancelDownload = viewModel::cancelDownload,
                  onRemoveDownload = viewModel::removeDownload,
                  onClearCompletedDownloads = viewModel::clearCompletedDownloads,
                  onResolvePermission = viewModel::resolveContentPermission,
@@ -729,7 +746,14 @@ private fun BrowserScreen(
      onDisableWebDav: () -> Unit,
       onRunWebDavSync: () -> Unit,
       onResolveWebDavConflict: (String) -> Unit,
-     onSetDesktopSites: (Boolean) -> Unit,
+      onSetDesktopSites: (Boolean) -> Unit,
+      httpsOnly: Boolean,
+      onSetHttpsOnly: (Boolean) -> Unit,
+      startPage: StartPageSettings,
+      onSetStartPageQuickLinks: (Boolean) -> Unit,
+      onSetStartPagePrivacyTip: (Boolean) -> Unit,
+      onAddStartPageLink: (String, String) -> Unit,
+      onRemoveStartPageLink: (StartPageLink) -> Unit,
      onSetHomepage: (String) -> Unit,
      onClearSitePermissions: () -> Unit,
      onOpenPrivacyDashboard: () -> Unit,
@@ -767,8 +791,9 @@ private fun BrowserScreen(
      onSetSiteDesktopOverride: (Boolean?) -> Unit,
      onSetSiteAdBlockingOverride: (Boolean?) -> Unit,
      onSetSiteUserScriptsOverride: (Boolean?) -> Unit,
-     onSetSiteZoomOverride: (Int?) -> Unit,
-     onClearSiteSettings: () -> Unit,
+      onSetSiteZoomOverride: (Int?) -> Unit,
+      onSetSiteHttpsOnly: (Boolean?) -> Unit,
+      onClearSiteSettings: () -> Unit,
        onOpenQrCode: () -> Unit,
        onOpenReaderMode: () -> Unit,
       onSharePage: () -> Unit,
@@ -807,8 +832,9 @@ private fun BrowserScreen(
     onInstallExtension: (String) -> Unit,
     onOpenFirefoxAddons: () -> Unit,
     onSetExtensionEnabled: (String, Boolean) -> Unit,
-    onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
-    onUpdateExtension: (String) -> Unit,
+     onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
+     onRevokeExtensionOptionalPermissions: (String) -> Unit,
+     onUpdateExtension: (String) -> Unit,
     onOpenExtensionOptions: (String) -> Unit,
     onUninstallExtension: (String) -> Unit,
     extensionActions: List<ExtensionToolbarAction>,
@@ -816,7 +842,12 @@ private fun BrowserScreen(
     onOpenDownload: (DownloadEntry) -> Unit,
     onShareDownload: (DownloadEntry) -> Unit,
     onToggleDownload: (DownloadEntry) -> Unit,
-     onCancelDownload: (DownloadEntry) -> Unit,
+    onSetDownloadPriority: (DownloadEntry, Int) -> Unit,
+    onSetDownloadWifiOnly: (DownloadEntry, Boolean) -> Unit,
+    onScheduleDownload: (DownloadEntry, Long?) -> Unit,
+    onPauseAllDownloads: () -> Unit,
+    onResumeAllDownloads: () -> Unit,
+    onCancelDownload: (DownloadEntry) -> Unit,
      onRemoveDownload: (DownloadEntry) -> Unit,
      onClearCompletedDownloads: () -> Unit,
     onResolvePermission: (Boolean, Boolean) -> Unit,
@@ -915,6 +946,11 @@ private fun BrowserScreen(
                 onOpen = onOpenDownload,
                 onShare = onShareDownload,
                 onToggle = onToggleDownload,
+                onSetPriority = onSetDownloadPriority,
+                onSetWifiOnly = onSetDownloadWifiOnly,
+                onSchedule = onScheduleDownload,
+                onPauseAll = onPauseAllDownloads,
+                onResumeAll = onResumeAllDownloads,
                 onCancel = onCancelDownload,
                 onRemove = onRemoveDownload,
                 onClearCompleted = onClearCompletedDownloads,
@@ -948,27 +984,30 @@ private fun BrowserScreen(
             onToggleBookmark = onToggleBookmark,
             onReloadCrashedTab = onReloadCrashedTab,
             onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
+            startPage = startPage,
             modifier = modifier,
         )
         return
     }
     if (state.standalonePwa) {
-        BrowserViewport(
+            BrowserViewport(
             tab = activeTab,
             onNavigate = onNavigate,
             onReloadCrashedTab = onReloadCrashedTab,
-            onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
-            modifier = modifier,
+                onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
+                startPage = startPage,
+                modifier = modifier,
         )
         return
     }
     if (state.isPictureInPictureMode) {
-        BrowserViewport(
+            BrowserViewport(
             tab = activeTab,
             onNavigate = onNavigate,
             onReloadCrashedTab = onReloadCrashedTab,
-            onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
-            modifier = modifier,
+                onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
+                startPage = startPage,
+                modifier = modifier,
         )
         return
     }
@@ -1009,6 +1048,13 @@ private fun BrowserScreen(
                  tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                  verticalTabs = state.settings.verticalTabs,
                   onSetDesktopSites = onSetDesktopSites,
+                  httpsOnly = httpsOnly,
+                  onSetHttpsOnly = onSetHttpsOnly,
+                  startPage = startPage,
+                  onSetStartPageQuickLinks = onSetStartPageQuickLinks,
+                  onSetStartPagePrivacyTip = onSetStartPagePrivacyTip,
+                  onAddStartPageLink = onAddStartPageLink,
+                  onRemoveStartPageLink = onRemoveStartPageLink,
                   downloadDirectoryUri = state.settings.downloadDirectoryUri,
                   onPickDownloadDirectory = onPickDownloadDirectory,
                   onResetDownloadDirectory = onResetDownloadDirectory,
@@ -1057,8 +1103,9 @@ private fun BrowserScreen(
                 onInstallExtension = onInstallExtension,
                 onOpenFirefoxAddons = onOpenFirefoxAddons,
                 onSetExtensionEnabled = onSetExtensionEnabled,
-                onSetExtensionPrivateBrowsing = onSetExtensionPrivateBrowsing,
-                onUpdateExtension = onUpdateExtension,
+                 onSetExtensionPrivateBrowsing = onSetExtensionPrivateBrowsing,
+                 onRevokeExtensionOptionalPermissions = onRevokeExtensionOptionalPermissions,
+                 onUpdateExtension = onUpdateExtension,
                 onOpenExtensionOptions = onOpenExtensionOptions,
                 onUninstallExtension = onUninstallExtension,
             )
@@ -1100,8 +1147,9 @@ private fun BrowserScreen(
                      onHibernateInactiveTabs = onHibernateInactiveTabs,
                      onToggleBookmark = onToggleBookmark,
                      onShowDownloads = { onSetOverlay(BrowserOverlay.DOWNLOADS) },
-                     onMenu = { menuExpanded = true },
-                    addressFocusRequester = addressFocusRequester,
+                          onMenu = { menuExpanded = true },
+                          startPage = startPage,
+                         addressFocusRequester = addressFocusRequester,
                      showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                      verticalTabs = state.settings.verticalTabs,
                  )
@@ -1129,8 +1177,9 @@ private fun BrowserScreen(
                      onMoveTabBefore = onMoveTabBefore,
                      onMoveTabAfter = onMoveTabAfter,
                      onToggleBookmark = onToggleBookmark,
-                    onMenu = { menuExpanded = true },
-                    addressFocusRequester = addressFocusRequester,
+                     onMenu = { menuExpanded = true },
+                     startPage = startPage,
+                     addressFocusRequester = addressFocusRequester,
                     onShowTabs = { onSetOverlay(BrowserOverlay.TABS) },
                     showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                 )
@@ -1369,12 +1418,14 @@ private fun BrowserScreen(
                  tab = activeTab,
                  setting = state.siteSetting,
                  globalDesktopSites = state.settings.desktopSites,
+                 globalHttpsOnly = state.settings.httpsOnly,
                  globalAdBlocking = state.settings.adBlockingEnabled,
                  globalUserScripts = state.settings.userScriptUrls.isNotEmpty(),
                  onSetDesktopOverride = onSetSiteDesktopOverride,
                  onSetAdBlockingOverride = onSetSiteAdBlockingOverride,
                  onSetUserScriptsOverride = onSetSiteUserScriptsOverride,
                  onSetZoomOverride = onSetSiteZoomOverride,
+                 onSetHttpsOnlyOverride = onSetSiteHttpsOnly,
                  onClear = onClearSiteSettings,
                  onDismiss = onCloseSiteSettings,
              )
@@ -1404,6 +1455,7 @@ private fun WindowedBrowserLayout(
     onToggleBookmark: () -> Unit,
     onReloadCrashedTab: () -> Unit,
     onViewReady: (String, GeckoView) -> Unit,
+    startPage: StartPageSettings = StartPageSettings(),
     modifier: Modifier,
 ) {
     val focusRequester = remember { FocusRequester() }
@@ -1438,6 +1490,7 @@ private fun WindowedBrowserLayout(
             onNavigate = onNavigate,
             onReloadCrashedTab = onReloadCrashedTab,
             onViewReady = onViewReady,
+            startPage = startPage,
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
     }
@@ -1483,6 +1536,7 @@ private fun DesktopBrowserLayout(
     addressFocusRequester: FocusRequester,
     showTabBarWithAddressBar: Boolean,
     verticalTabs: Boolean,
+    startPage: StartPageSettings,
 ) {
     val splitPrimaryTab = state.splitPrimaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
     val splitSecondaryTab = state.splitSecondaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
@@ -1569,6 +1623,7 @@ private fun DesktopBrowserLayout(
                         onNavigate = onNavigate,
                         onReloadCrashedTab = onReloadCrashedTab,
                         onViewReady = onRegisterViewport,
+                        startPage = startPage,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         onFocus = { onFocusSplitPane(false) },
                     )
@@ -1583,6 +1638,7 @@ private fun DesktopBrowserLayout(
                         onNavigate = onNavigate,
                         onReloadCrashedTab = onReloadCrashedTab,
                         onViewReady = onRegisterViewport,
+                        startPage = startPage,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                         onFocus = { onFocusSplitPane(true) },
                     )
@@ -1593,6 +1649,7 @@ private fun DesktopBrowserLayout(
                     onNavigate = onNavigate,
                     onReloadCrashedTab = onReloadCrashedTab,
                     onViewReady = onRegisterViewport,
+                    startPage = startPage,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
             }
@@ -1628,6 +1685,7 @@ private fun CompactBrowserLayout(
     addressFocusRequester: FocusRequester,
     onShowTabs: () -> Unit,
     showTabBarWithAddressBar: Boolean,
+    startPage: StartPageSettings,
 ) {
     Column(Modifier.fillMaxSize()) {
         if (fullScreenTab == null) {
@@ -1682,6 +1740,7 @@ private fun CompactBrowserLayout(
             onNavigate = onNavigate,
             onReloadCrashedTab = onReloadCrashedTab,
             onViewReady = onRegisterViewport,
+            startPage = startPage,
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
         if (fullScreenTab == null) {
@@ -3263,6 +3322,7 @@ private fun BrowserViewport(
     onNavigate: (String) -> Unit,
     onReloadCrashedTab: () -> Unit,
     onViewReady: (String, GeckoView) -> Unit,
+    startPage: StartPageSettings = StartPageSettings(),
     modifier: Modifier = Modifier,
     onFocus: (() -> Unit)? = null,
 ) {
@@ -3275,7 +3335,7 @@ private fun BrowserViewport(
         if (tab?.crashed == true) {
             SiteCrashedPage(onReloadCrashedTab)
         } else if (tab == null || !tab.hasPage || tab.url.isBlank() || tab.url == "about:blank") {
-            NewTabPage(onNavigate)
+            NewTabPage(onNavigate, startPage)
         } else {
             AndroidView(
                 factory = { context ->
@@ -4408,7 +4468,7 @@ private fun PerformanceMetricCard(
 }
 
 @Composable
-private fun NewTabPage(onNavigate: (String) -> Unit) {
+private fun NewTabPage(onNavigate: (String) -> Unit, settings: StartPageSettings) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -4434,20 +4494,29 @@ private fun NewTabPage(onNavigate: (String) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(28.dp))
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            QuickLink("DuckDuckGo", Icons.Outlined.Search, { onNavigate("https://duckduckgo.com") })
-            QuickLink("Wikipedia", Icons.Outlined.Public, { onNavigate("https://wikipedia.org") })
-            QuickLink("GitHub", Icons.Outlined.Language, { onNavigate("https://github.com") })
-            QuickLink("MDN", Icons.Outlined.Security, { onNavigate("https://developer.mozilla.org") })
+        if (settings.showQuickLinks || settings.customLinks.isNotEmpty()) {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (settings.showQuickLinks) {
+                    QuickLink("DuckDuckGo", Icons.Outlined.Search, { onNavigate("https://duckduckgo.com") })
+                    QuickLink("Wikipedia", Icons.Outlined.Public, { onNavigate("https://wikipedia.org") })
+                    QuickLink("GitHub", Icons.Outlined.Language, { onNavigate("https://github.com") })
+                    QuickLink("MDN", Icons.Outlined.Security, { onNavigate("https://developer.mozilla.org") })
+                }
+                settings.customLinks.forEach { link ->
+                    QuickLink(link.label, Icons.Outlined.OpenInNew, { onNavigate(link.url) })
+                }
+            }
         }
-        Spacer(Modifier.height(22.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Security, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(6.dp))
-            Text("Filter lists are managed in Settings", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        if (settings.showPrivacyTip) {
+            Spacer(Modifier.height(22.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Security, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(6.dp))
+                Text("Filter lists and site permissions are managed in Settings", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }
@@ -4925,6 +4994,11 @@ private fun DownloadsPage(
     onOpen: (DownloadEntry) -> Unit,
     onShare: (DownloadEntry) -> Unit,
     onToggle: (DownloadEntry) -> Unit,
+    onSetPriority: (DownloadEntry, Int) -> Unit,
+    onSetWifiOnly: (DownloadEntry, Boolean) -> Unit,
+    onSchedule: (DownloadEntry, Long?) -> Unit,
+    onPauseAll: () -> Unit,
+    onResumeAll: () -> Unit,
     onCancel: (DownloadEntry) -> Unit,
     onRemove: (DownloadEntry) -> Unit,
     onClearCompleted: () -> Unit,
@@ -4936,6 +5010,11 @@ private fun DownloadsPage(
             onOpen = onOpen,
             onShare = onShare,
             onToggle = onToggle,
+            onSetPriority = onSetPriority,
+            onSetWifiOnly = onSetWifiOnly,
+            onSchedule = onSchedule,
+            onPauseAll = onPauseAll,
+            onResumeAll = onResumeAll,
             onCancel = onCancel,
             onRemove = onRemove,
             onClearCompleted = onClearCompleted,
@@ -5443,6 +5522,11 @@ private fun DownloadsSheet(
     onOpen: (DownloadEntry) -> Unit,
     onShare: (DownloadEntry) -> Unit,
     onToggle: (DownloadEntry) -> Unit,
+    onSetPriority: (DownloadEntry, Int) -> Unit,
+    onSetWifiOnly: (DownloadEntry, Boolean) -> Unit,
+    onSchedule: (DownloadEntry, Long?) -> Unit,
+    onPauseAll: () -> Unit,
+    onResumeAll: () -> Unit,
     onCancel: (DownloadEntry) -> Unit,
     onRemove: (DownloadEntry) -> Unit,
     onClearCompleted: () -> Unit,
@@ -5505,6 +5589,15 @@ private fun DownloadsSheet(
             TextButton(onClick = onClearCompleted) { Text("Clear completed") }
         }
     }
+    if (activeCount > 0) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onPauseAll) { Text("Pause all") }
+            TextButton(onClick = onResumeAll) { Text("Resume paused") }
+        }
+    }
     if (downloads.any { it.isPrivate }) {
         Text(
             "Downloads from private tabs are still saved to device storage.",
@@ -5530,6 +5623,7 @@ private fun DownloadsSheet(
                     null
                 }
                 Column(modifier = Modifier.fillMaxWidth()) {
+                    var optionsExpanded by remember { mutableStateOf(false) }
                     ListItem(
                         modifier = Modifier
                             .padding(horizontal = 12.dp)
@@ -5549,6 +5643,51 @@ private fun DownloadsSheet(
                         leadingContent = { Icon(Icons.Outlined.Download, contentDescription = null) },
                         trailingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box {
+                                    IconButton(onClick = { optionsExpanded = true }) {
+                                        Icon(Icons.Outlined.MoreVert, contentDescription = "Download options")
+                                    }
+                                    DropdownMenu(
+                                        expanded = optionsExpanded,
+                                        onDismissRequest = { optionsExpanded = false },
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("Priority: ${downloadPriorityLabel(download.priority)}") },
+                                            onClick = { optionsExpanded = false },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("High priority") },
+                                            onClick = { optionsExpanded = false; onSetPriority(download, 2) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Normal priority") },
+                                            onClick = { optionsExpanded = false; onSetPriority(download, 1) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Low priority") },
+                                            onClick = { optionsExpanded = false; onSetPriority(download, 0) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(if (download.wifiOnly) "Allow metered network" else "Wi-Fi only") },
+                                            onClick = { optionsExpanded = false; onSetWifiOnly(download, !download.wifiOnly) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Start now") },
+                                            enabled = isActive,
+                                            onClick = { optionsExpanded = false; onSchedule(download, null) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Schedule in 1 hour") },
+                                            enabled = isActive,
+                                            onClick = { optionsExpanded = false; onSchedule(download, System.currentTimeMillis() + 60 * 60 * 1000L) },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Schedule tomorrow") },
+                                            enabled = isActive,
+                                            onClick = { optionsExpanded = false; onSchedule(download, System.currentTimeMillis() + 24 * 60 * 60 * 1000L) },
+                                        )
+                                    }
+                                }
                                 if (isComplete) {
                                     IconButton(onClick = { onOpen(download) }) {
                                         Icon(Icons.Outlined.OpenInNew, contentDescription = "Open ${download.fileName}")
@@ -5618,9 +5757,18 @@ private fun buildDownloadSummary(download: DownloadEntry): String {
         ""
     }
     val speed = download.speedBytesPerSecond.takeIf { it > 0 }?.let { "${formatBytes(it)}/s" }.orEmpty()
-    return listOf(status, size, speed, download.reason.orEmpty())
+    val priority = "Priority ${downloadPriorityLabel(download.priority)}"
+    val network = if (download.wifiOnly) "Wi-Fi only" else "Any network"
+    val schedule = download.scheduledAt?.let { "Starts ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it))}" }.orEmpty()
+    return listOf(status, size, speed, priority, network, schedule, download.reason.orEmpty())
         .filter(String::isNotBlank)
         .joinToString("  •  ")
+}
+
+private fun downloadPriorityLabel(priority: Int): String = when (priority.coerceIn(0, 2)) {
+    2 -> "High"
+    1 -> "Normal"
+    else -> "Low"
 }
 
 private fun downloadType(download: DownloadEntry): String = when {
@@ -5825,12 +5973,14 @@ private fun SiteSettingsDialog(
     tab: BrowserTabState?,
     setting: SiteSetting?,
     globalDesktopSites: Boolean,
+    globalHttpsOnly: Boolean,
     globalAdBlocking: Boolean,
     globalUserScripts: Boolean,
     onSetDesktopOverride: (Boolean?) -> Unit,
     onSetAdBlockingOverride: (Boolean?) -> Unit,
     onSetUserScriptsOverride: (Boolean?) -> Unit,
     onSetZoomOverride: (Int?) -> Unit,
+    onSetHttpsOnlyOverride: (Boolean?) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -5848,6 +5998,8 @@ private fun SiteSettingsDialog(
                 Text(tab.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
                 Spacer(Modifier.height(16.dp))
                 SiteOverrideToggle("Desktop site", setting?.desktopSites, globalDesktopSites, onSetDesktopOverride)
+                Spacer(Modifier.height(12.dp))
+                SiteOverrideToggle("HTTPS-only", setting?.httpsOnly, globalHttpsOnly, onSetHttpsOnlyOverride)
                 Spacer(Modifier.height(12.dp))
                 SiteOverrideToggle("Ad blocking", setting?.adBlockingEnabled, globalAdBlocking, onSetAdBlockingOverride)
                 Spacer(Modifier.height(12.dp))
@@ -5913,12 +6065,18 @@ private fun SettingsScreen(
     themeMode: ThemeMode,
     searchEngine: SearchEngine,
     customSearchEngines: List<CustomSearchEngine>,
-    selectedCustomSearchEngineId: String?,
-    desktopSites: Boolean,
-    downloadDirectoryUri: String?,
+     selectedCustomSearchEngineId: String?,
+     desktopSites: Boolean,
+     httpsOnly: Boolean,
+     downloadDirectoryUri: String?,
     onPickDownloadDirectory: () -> Unit,
     onResetDownloadDirectory: () -> Unit,
-    homepage: String,
+     homepage: String,
+     startPage: StartPageSettings,
+     onSetStartPageQuickLinks: (Boolean) -> Unit,
+     onSetStartPagePrivacyTip: (Boolean) -> Unit,
+     onAddStartPageLink: (String, String) -> Unit,
+     onRemoveStartPageLink: (StartPageLink) -> Unit,
     tabBarWithAddressBar: Boolean,
     verticalTabs: Boolean,
     adBlockingEnabled: Boolean,
@@ -5940,8 +6098,9 @@ private fun SettingsScreen(
     onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
      onDisableWebDav: () -> Unit,
      onRunWebDavSync: () -> Unit,
-     onResolveWebDavConflict: (String) -> Unit,
-     onSetDesktopSites: (Boolean) -> Unit,
+      onResolveWebDavConflict: (String) -> Unit,
+      onSetDesktopSites: (Boolean) -> Unit,
+     onSetHttpsOnly: (Boolean) -> Unit,
     onSetHomepage: (String) -> Unit,
     onClearSitePermissions: () -> Unit,
     onOpenPrivacyDashboard: () -> Unit,
@@ -5984,12 +6143,14 @@ private fun SettingsScreen(
     onInstallExtension: (String) -> Unit,
     onOpenFirefoxAddons: () -> Unit,
     onSetExtensionEnabled: (String, Boolean) -> Unit,
-    onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
-    onUpdateExtension: (String) -> Unit,
+     onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
+     onRevokeExtensionOptionalPermissions: (String) -> Unit,
+     onUpdateExtension: (String) -> Unit,
     onOpenExtensionOptions: (String) -> Unit,
     onUninstallExtension: (String) -> Unit,
 ) {
     var pendingExtensionRemoval by remember { mutableStateOf<InstalledExtension?>(null) }
+    var permissionExtension by remember { mutableStateOf<InstalledExtension?>(null) }
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.surface,
@@ -6162,12 +6323,19 @@ private fun SettingsScreen(
             ) { Text("Save") }
         }
         Spacer(Modifier.height(14.dp))
-        SettingToggle(
-            title = "Request desktop sites",
+         SettingToggle(
+             title = "Request desktop sites",
             summary = "Use desktop layouts for the current DeX or tablet profile",
             checked = desktopSites,
-            onCheckedChange = onSetDesktopSites,
-        )
+             onCheckedChange = onSetDesktopSites,
+         )
+         Spacer(Modifier.height(14.dp))
+         SettingToggle(
+             title = "HTTPS-only mode",
+             summary = "Upgrade HTTP navigations to HTTPS and refuse insecure top-level loads",
+             checked = httpsOnly,
+             onCheckedChange = onSetHttpsOnly,
+         )
         Spacer(Modifier.height(14.dp))
         SettingToggle(
             title = "Tab bar beside address bar",
@@ -6188,12 +6356,79 @@ private fun SettingsScreen(
              Spacer(Modifier.width(6.dp))
              Text("Clear site permissions")
           }
-         TextButton(onClick = onOpenPrivacyDashboard) {
+          TextButton(onClick = onOpenPrivacyDashboard) {
              Icon(Icons.Outlined.Security, contentDescription = null)
              Spacer(Modifier.width(6.dp))
-             Text("Open privacy dashboard")
-         }
-      }
+              Text("Open privacy dashboard")
+          }
+       }
+       SettingSection("Start page") {
+           Text(
+               "Customize the page shown in new tabs without changing your homepage.",
+               style = MaterialTheme.typography.bodySmall,
+               color = MaterialTheme.colorScheme.onSurfaceVariant,
+           )
+           Spacer(Modifier.height(8.dp))
+           SettingToggle(
+               title = "Default quick links",
+               summary = "Show DuckDuckGo, Wikipedia, GitHub, and MDN",
+               checked = startPage.showQuickLinks,
+               onCheckedChange = onSetStartPageQuickLinks,
+           )
+           Spacer(Modifier.height(8.dp))
+           SettingToggle(
+               title = "Privacy reminder",
+               summary = "Show a reminder that filter lists and permissions are configurable",
+               checked = startPage.showPrivacyTip,
+               onCheckedChange = onSetStartPagePrivacyTip,
+           )
+           if (startPage.customLinks.isNotEmpty()) {
+               Spacer(Modifier.height(10.dp))
+               startPage.customLinks.forEach { link ->
+                   ListItem(
+                       headlineContent = { Text(link.label, maxLines = 1) },
+                       supportingContent = { Text(link.url, maxLines = 1) },
+                       leadingContent = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                       trailingContent = {
+                           IconButton(onClick = { onRemoveStartPageLink(link) }) {
+                               Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove ${link.label}")
+                           }
+                       },
+                   )
+               }
+           }
+           var startLinkLabel by rememberSaveable { mutableStateOf("") }
+           var startLinkUrl by rememberSaveable { mutableStateOf("") }
+           Spacer(Modifier.height(8.dp))
+           Row(
+               modifier = Modifier.fillMaxWidth(),
+               horizontalArrangement = Arrangement.spacedBy(8.dp),
+               verticalAlignment = Alignment.CenterVertically,
+           ) {
+               OutlinedTextField(
+                   value = startLinkLabel,
+                   onValueChange = { startLinkLabel = it },
+                   modifier = Modifier.weight(0.38f),
+                   label = { Text("Name") },
+                   singleLine = true,
+               )
+               OutlinedTextField(
+                   value = startLinkUrl,
+                   onValueChange = { startLinkUrl = it },
+                   modifier = Modifier.weight(0.62f),
+                   label = { Text("HTTPS URL") },
+                   singleLine = true,
+               )
+               Button(
+                   onClick = {
+                       onAddStartPageLink(startLinkLabel, startLinkUrl)
+                       startLinkLabel = ""
+                       startLinkUrl = ""
+                   },
+                   enabled = startLinkLabel.isNotBlank() && startLinkUrl.isNotBlank(),
+               ) { Text("Add") }
+           }
+       }
        SettingSection("Sync Center") {
            Text(
                "Move bookmarks, history, reading list, site settings, and browser preferences between devices. The bundle is encrypted with a passphrase; saved logins and private tabs are never included.",
@@ -6697,12 +6932,15 @@ private fun SettingsScreen(
                                     checked = extension.enabled,
                                     onCheckedChange = { onSetExtensionEnabled(extension.id, it) },
                                 )
-                                if (!extension.optionsPageUrl.isNullOrBlank()) {
+                                 if (!extension.optionsPageUrl.isNullOrBlank()) {
                                     IconButton(onClick = { onOpenExtensionOptions(extension.id) }) {
                                         Icon(Icons.Outlined.Settings, contentDescription = "Open ${extension.name} settings")
                                     }
-                                }
-                                IconButton(onClick = { onUpdateExtension(extension.id) }) {
+                                 }
+                                 IconButton(onClick = { permissionExtension = extension }) {
+                                     Icon(Icons.Outlined.Security, contentDescription = "View ${extension.name} permissions")
+                                 }
+                                 IconButton(onClick = { onUpdateExtension(extension.id) }) {
                                     Icon(Icons.Outlined.Refresh, contentDescription = "Update ${extension.name}")
                                 }
                             }
@@ -6746,9 +6984,58 @@ private fun SettingsScreen(
             dismissButton = { TextButton(onClick = { pendingExtensionRemoval = null }) { Text("Keep") } },
         )
     }
+    permissionExtension?.let { extension ->
+        ExtensionPermissionDialog(
+            extension = extension,
+            onRevokeOptional = { onRevokeExtensionOptionalPermissions(extension.id) },
+            onDismiss = { permissionExtension = null },
+        )
+    }
     Spacer(Modifier.height(28.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun ExtensionPermissionDialog(
+    extension: InstalledExtension,
+    onRevokeOptional: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Security, contentDescription = null) },
+        title = { Text("${extension.name} permissions") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                ExtensionPermissionGroup("Required permissions", extension.requiredPermissions)
+                ExtensionPermissionGroup("Required websites", extension.requiredOrigins)
+                ExtensionPermissionGroup("Required data collection", extension.requiredDataCollectionPermissions)
+                ExtensionPermissionGroup("Granted optional permissions", extension.grantedOptionalPermissions)
+                ExtensionPermissionGroup("Granted optional websites", extension.grantedOptionalOrigins)
+                ExtensionPermissionGroup("Granted optional data collection", extension.grantedOptionalDataCollectionPermissions)
+                ExtensionPermissionGroup("Available optional permissions", extension.optionalPermissions)
+                ExtensionPermissionGroup("Available optional websites", extension.optionalOrigins)
+                if (extension.grantedOptionalPermissions.isNotEmpty() || extension.grantedOptionalOrigins.isNotEmpty() || extension.grantedOptionalDataCollectionPermissions.isNotEmpty()) {
+                    TextButton(onClick = onRevokeOptional) {
+                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Revoke optional permissions")
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun ExtensionPermissionGroup(title: String, values: List<String>) {
+    if (values.isEmpty()) return
+    Text(title, modifier = Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall)
+    values.forEach { value ->
+        Text("• $value", style = MaterialTheme.typography.bodySmall)
     }
 }
 

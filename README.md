@@ -34,12 +34,16 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Smart address bar suggestions from bookmarks and normal browsing history, with keyboard navigation.
 - Custom HTTPS search engines with `%s` query templates.
 - Homepage, search engine, theme, desktop-site, and tab layout settings.
+- Customizable new-tab start page with default quick links, privacy-tip toggles, and safe HTTPS links.
 - Per-site desktop mode, ad blocking, userscripts, and zoom overrides.
+- Global and per-site HTTPS-only navigation policy with automatic HTTP upgrade.
 - GeckoView tracking protection and Global Privacy Control.
 - Origin-scoped site permission decisions.
 - HTTPS-only remote filter lists and userscripts.
 - Mozilla-signed Firefox extension installation.
+- Extension permission center showing required/granted optional permissions and allowing optional access revocation.
 - Durable downloads through WorkManager.
+- Download queue controls with priority, Wi-Fi-only constraints, delayed scheduling, and bulk pause/resume.
 - User-selected SAF download folders and download search/status/type filters.
 - Download resume validation, pause, cancel, MediaStore publishing, and notifications.
 - Full-page bookmark and history managers with folder filtering, bounded HTML import/export, search, deletion, and history pruning.
@@ -159,6 +163,7 @@ Current automated tests cover URL handling, navigation policy, Firefox Add-on UR
 - WorkManager download recovery after the app is stopped.
 - Room migrations from every released database version.
 - Room migration from database version 13 to 14 for per-container permissions and site overrides.
+- Room migrations through version 16 cover profile-scoped site data, download queue metadata, and HTTPS site policy.
 - Biometric unlock and Android notification permission flows.
 - Web Push provider delivery and service-worker notification behavior.
 - Android print UI, separate browser document windows, and PWA launcher icon refresh.

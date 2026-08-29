@@ -53,6 +53,7 @@ import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.SavedTab
 import com.dwicao.dextra.data.SavedTabGroup
 import com.dwicao.dextra.data.SessionSnapshot
+import com.dwicao.dextra.data.StartPageLink
 import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.SitePermission
@@ -240,6 +241,15 @@ data class InstalledExtension(
     val allowedInPrivateBrowsing: Boolean,
     val amoListingUrl: String?,
     val optionsPageUrl: String?,
+    val requiredPermissions: List<String> = emptyList(),
+    val requiredOrigins: List<String> = emptyList(),
+    val requiredDataCollectionPermissions: List<String> = emptyList(),
+    val optionalPermissions: List<String> = emptyList(),
+    val grantedOptionalPermissions: List<String> = emptyList(),
+    val optionalOrigins: List<String> = emptyList(),
+    val grantedOptionalOrigins: List<String> = emptyList(),
+    val optionalDataCollectionPermissions: List<String> = emptyList(),
+    val grantedOptionalDataCollectionPermissions: List<String> = emptyList(),
 )
 
 data class ExtensionToolbarAction(
@@ -483,6 +493,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val credentialVault = CredentialVault(application)
     private val webPushStore = WebPushStore(application)
     private val performanceMonitor = PerformanceMonitor()
+    private val siteHttpsOnlyByOrigin = mutableMapOf<String, Boolean>()
     private val _state = MutableStateFlow(BrowserUiState())
     private val installedExtensionObjects = mutableMapOf<String, WebExtension>()
     private val extensionActionObjects = mutableMapOf<String, WebExtension.Action>()
@@ -822,6 +833,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             tab.copy(isBookmarked = tab.url in bookmarkedUrls)
                         },
                     )
+                }
+            }
+        }
+        viewModelScope.launch {
+            dao.observeSiteSettings().collect { settings ->
+                siteHttpsOnlyByOrigin.clear()
+                settings.filter { it.httpsOnly != null }.forEach { setting ->
+                    siteHttpsOnlyByOrigin[sitePolicyKey(setting.profileId, setting.origin)] = setting.httpsOnly == true
                 }
             }
         }
@@ -1554,6 +1573,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun navigate(tabId: String, input: String) {
         val url = BrowserUrl.resolve(input, searchUrl(_state.value.settings))
+            .let(::upgradeToHttpsIfNeeded)
         if (url.isEmpty()) return
         val tab = _state.value.tabs.firstOrNull { it.id == tabId } ?: return
         if (tabId == _state.value.activeTabId && _state.value.findInPage != null) closeFindInPage()
@@ -2240,6 +2260,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 createdAt = System.currentTimeMillis(),
                 isPrivate = privateMode,
                 destinationTreeUri = _state.value.settings.downloadDirectoryUri,
+                workspaceId = activeProfileId(),
             )
             viewModelScope.launch {
                 dao.upsertDownload(download)
@@ -2458,6 +2479,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun setCurrentSiteZoomOverride(value: Int?) {
         updateCurrentSiteSetting { it.copy(zoomPercent = value?.coerceIn(50, 200)) }
+    }
+
+    fun setCurrentSiteHttpsOnly(value: Boolean?) {
+        updateCurrentSiteSetting { it.copy(httpsOnly = value) }
     }
 
     fun clearCurrentSiteSettings() {
@@ -3230,6 +3255,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    fun revokeExtensionOptionalPermissions(id: String) {
+        val extension = installedExtensionObjects[id] ?: return
+        val metadata = extension.metaData
+        if (metadata.grantedOptionalPermissions.isEmpty() &&
+            metadata.grantedOptionalOrigins.isEmpty() &&
+            metadata.grantedOptionalDataCollectionPermissions.isEmpty()
+        ) return
+        runtime.webExtensionController.removeOptionalPermissions(
+            extension.id,
+            metadata.grantedOptionalPermissions,
+            metadata.grantedOptionalOrigins,
+            metadata.grantedOptionalDataCollectionPermissions,
+        ).accept(
+            { refreshInstalledExtensions(); showSnackbar("Optional extension permissions revoked") },
+            { showSnackbar("Could not revoke optional extension permissions") },
+        )
+    }
+
     fun uninstallExtension(id: String) {
         val extension = installedExtensionObjects[id] ?: return
         val installRecord = _state.value.settings.extensionInstallRecords[id]
@@ -3273,6 +3316,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { settingsRepository.setDesktopSites(enabled) }
     }
 
+    fun setHttpsOnly(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setHttpsOnly(enabled) }
+    }
+
     fun setHomepage(value: String) {
         val homepage = BrowserUrl.resolve(value, searchUrl(_state.value.settings))
         val scheme = runCatching { Uri.parse(homepage).scheme?.lowercase() }.getOrNull()
@@ -3281,6 +3328,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         viewModelScope.launch { settingsRepository.setHomepage(homepage) }
+    }
+
+    fun setStartPageQuickLinks(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setStartPageSettings(_state.value.settings.startPage.copy(showQuickLinks = enabled))
+        }
+    }
+
+    fun setStartPagePrivacyTip(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setStartPageSettings(_state.value.settings.startPage.copy(showPrivacyTip = enabled))
+        }
+    }
+
+    fun addStartPageLink(label: String, url: String) {
+        val normalizedLabel = label.trim().take(40)
+        val normalizedUrl = url.trim()
+        if (normalizedLabel.isBlank() || !normalizedUrl.startsWith("https://", ignoreCase = true) || normalizedUrl.length > 500) {
+            showSnackbar("Start-page links must use HTTPS and include a name")
+            return
+        }
+        viewModelScope.launch {
+            val current = _state.value.settings.startPage
+            val link = StartPageLink(label = normalizedLabel, url = normalizedUrl)
+            settingsRepository.setStartPageSettings(current.copy(customLinks = (current.customLinks + link).takeLast(12)))
+        }
+    }
+
+    fun removeStartPageLink(link: StartPageLink) {
+        viewModelScope.launch {
+            val current = _state.value.settings.startPage
+            settingsRepository.setStartPageSettings(current.copy(customLinks = current.customLinks.filterNot { it.id == link.id }))
+        }
     }
 
     fun setTabBarWithAddressBar(enabled: Boolean) {
@@ -3714,6 +3794,66 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun setDownloadPriority(download: DownloadEntry, priority: Int) {
+        viewModelScope.launch {
+            dao.getDownload(download.downloadId)?.let {
+                val updated = it.copy(priority = priority.coerceIn(0, 2))
+                dao.upsertDownload(updated)
+                if (updated.status == DownloadStatus.QUEUED.label) scheduleDownload(updated)
+            }
+        }
+    }
+
+    fun setDownloadWifiOnly(download: DownloadEntry, wifiOnly: Boolean) {
+        viewModelScope.launch {
+            dao.getDownload(download.downloadId)?.let {
+                val updated = it.copy(wifiOnly = wifiOnly)
+                dao.upsertDownload(updated)
+                if (updated.status == DownloadStatus.QUEUED.label) scheduleDownload(updated)
+            }
+        }
+    }
+
+    fun scheduleDownload(download: DownloadEntry, scheduledAt: Long?) {
+        if (download.status == DownloadStatus.COMPLETE.label || download.status == DownloadStatus.CANCELED.label) return
+        WorkManager.getInstance(getApplication()).cancelUniqueWork(downloadWorkName(download.downloadId))
+        viewModelScope.launch {
+            dao.getDownload(download.downloadId)?.let {
+                val updated = it.copy(
+                    status = DownloadStatus.QUEUED.label,
+                    scheduledAt = scheduledAt?.takeIf { time -> time > System.currentTimeMillis() },
+                    reason = null,
+                )
+                dao.upsertDownload(updated)
+                scheduleDownload(updated)
+            }
+        }
+    }
+
+    fun pauseAllDownloads() {
+        viewModelScope.launch {
+            dao.getDownloads()
+                .filter { it.workspaceId == activeProfileId() && it.status in setOf(DownloadStatus.QUEUED.label, DownloadStatus.DOWNLOADING.label) }
+                .forEach { download ->
+                    WorkManager.getInstance(getApplication()).cancelUniqueWork(downloadWorkName(download.downloadId))
+                    dao.upsertDownload(download.copy(status = DownloadStatus.PAUSED.label, reason = "Paused by user"))
+                }
+        }
+    }
+
+    fun resumeAllDownloads() {
+        viewModelScope.launch {
+            dao.getDownloads()
+                .filter { it.workspaceId == activeProfileId() && it.status == DownloadStatus.PAUSED.label }
+                .sortedWith(compareByDescending<DownloadEntry> { it.priority }.thenBy { it.createdAt })
+                .forEach { download ->
+                    val resumed = download.copy(status = DownloadStatus.QUEUED.label, reason = null)
+                    dao.upsertDownload(resumed)
+                    scheduleDownload(resumed)
+                }
+        }
+    }
+
     fun retryDownload(download: DownloadEntry) {
         if (download.status != DownloadStatus.FAILED.label) return
         viewModelScope.launch {
@@ -3728,6 +3868,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun clearCompletedDownloads() {
         viewModelScope.launch {
             dao.getDownloads()
+                .filter { it.workspaceId == activeProfileId() }
                 .filter { it.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.CANCELED.label) }
                 .forEach { download ->
                     download.localUri?.let { uri -> runCatching { getApplication<Application>().contentResolver.delete(Uri.parse(uri), null, null) } }
@@ -4273,6 +4414,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val updated = transform(current).copy(origin = origin, profileId = profileId, updatedAt = System.currentTimeMillis())
             if (updated.desktopSites == null && updated.adBlockingEnabled == null &&
                 updated.userScriptsEnabled == null && updated.zoomPercent == null && updated.translationTarget == null
+                && updated.httpsOnly == null
             ) {
                 dao.deleteSiteSetting(profileId, origin)
             } else {
@@ -4281,12 +4423,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _state.update { it.copy(siteSetting = updated.takeUnless {
                 it.desktopSites == null && it.adBlockingEnabled == null &&
                     it.userScriptsEnabled == null && it.zoomPercent == null && it.translationTarget == null
+                    && it.httpsOnly == null
             }) }
             applyDesktopSiteSetting(tab.session, updated.desktopSites ?: _state.value.settings.desktopSites)
             updated.zoomPercent?.let { pageZoomByTab[tab.id] = it } ?: pageZoomByTab.remove(tab.id)
             syncActiveTabZoom()
             syncAdBlockSettings(_state.value.settings)
-            if (tab.hasPage && updated.desktopSites != current.desktopSites) tab.session.reload()
+            if (tab.hasPage && updated.httpsOnly == true && tab.url.startsWith("http://", ignoreCase = true)) {
+                tab.session.loadUri(NavigationPolicy.upgradeToHttps(tab.url))
+            } else if (tab.hasPage && updated.desktopSites != current.desktopSites) {
+                tab.session.reload()
+            }
         }
     }
 
@@ -4296,9 +4443,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun activeProfileId(): String = _state.value.settings.activeWorkspaceId.ifBlank { DEFAULT_WORKSPACE_ID }
 
+    private fun sitePolicyKey(profileId: String, origin: String): String = "$profileId\u0000$origin"
+
     private fun activeContextId(): String? = _state.value.settings.workspaces
         .firstOrNull { it.id == activeProfileId() }
         ?.contextId
+
+    private fun upgradeToHttpsIfNeeded(url: String): String = if (
+        url.startsWith("http://", ignoreCase = true) &&
+        (_state.value.settings.httpsOnly || NavigationPolicy.origin(url)
+            ?.let { siteHttpsOnlyByOrigin[sitePolicyKey(activeProfileId(), it)] } == true)
+    ) {
+        NavigationPolicy.upgradeToHttps(url)
+    } else url
 
     private fun copyToClipboard(label: String, value: String) {
         val clipboard = getApplication<Application>().getSystemService(android.content.Context.CLIPBOARD_SERVICE)
@@ -4325,9 +4482,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun scheduleDownload(download: DownloadEntry) {
+        val networkType = if (download.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
             .setInputData(workDataOf(DownloadWorker.KEY_DOWNLOAD_ID to download.downloadId))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(networkType).build())
+            .setInitialDelay(
+                (download.scheduledAt?.minus(System.currentTimeMillis()) ?: 0L).coerceAtLeast(0L),
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, java.util.concurrent.TimeUnit.SECONDS)
             .build()
         WorkManager.getInstance(getApplication()).enqueueUniqueWork(
@@ -4424,7 +4586,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             val disabledOrigins = JSONArray()
             val enabledOrigins = JSONArray()
-            val siteSettings = dao.getSiteSettings()
+            val siteSettings = dao.getSiteSettings().filter { it.profileId == activeProfileId() }
             siteSettings
                 .filter { it.adBlockingEnabled == false }
                 .forEach { disabledOrigins.put(it.origin) }
@@ -4480,7 +4642,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             .forEach(urls::put)
         viewModelScope.launch(Dispatchers.IO) {
             val disabledOrigins = JSONArray()
-            dao.getSiteSettings()
+            dao.getSiteSettings().filter { it.profileId == activeProfileId() }
                 .filter { it.userScriptsEnabled == false }
                 .forEach { disabledOrigins.put(it.origin) }
             withContext(Dispatchers.Main.immediate) {
@@ -4612,6 +4774,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             allowedInPrivateBrowsing = extension.metaData.allowedInPrivateBrowsing,
             amoListingUrl = extension.metaData.amoListingUrl,
             optionsPageUrl = extension.metaData.optionsPageUrl,
+            requiredPermissions = extension.metaData.requiredPermissions.toList(),
+            requiredOrigins = extension.metaData.requiredOrigins.toList(),
+            requiredDataCollectionPermissions = extension.metaData.requiredDataCollectionPermissions.toList(),
+            optionalPermissions = extension.metaData.optionalPermissions.toList(),
+            grantedOptionalPermissions = extension.metaData.grantedOptionalPermissions.toList(),
+            optionalOrigins = extension.metaData.optionalOrigins.toList(),
+            grantedOptionalOrigins = extension.metaData.grantedOptionalOrigins.toList(),
+            optionalDataCollectionPermissions = extension.metaData.optionalDataCollectionPermissions.toList(),
+            grantedOptionalDataCollectionPermissions = extension.metaData.grantedOptionalDataCollectionPermissions.toList(),
         )
 
     private fun updateExtensionAction(extension: WebExtension, action: WebExtension.Action) {
@@ -4903,6 +5074,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 createdAt = System.currentTimeMillis(),
                 isPrivate = privateMode,
                 destinationTreeUri = _state.value.settings.downloadDirectoryUri,
+                workspaceId = activeProfileId(),
             )
             viewModelScope.launch {
                 dao.upsertDownload(download)
@@ -5138,11 +5310,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 launchExternal(request.uri)
                 return GeckoResult.deny()
             }
+            val upgraded = upgradeToHttpsIfNeeded(request.uri)
+            if (upgraded != request.uri) {
+                session.loadUri(upgraded)
+                return GeckoResult.deny()
+            }
             return GeckoResult.allow()
         }
 
         override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession> {
-            val popupUri = uri.ifBlank { "about:blank" }
+            val popupUri = upgradeToHttpsIfNeeded(uri.ifBlank { "about:blank" })
             if (!NavigationPolicy.isAllowedTopLevel(popupUri)) {
                 if (Uri.parse(popupUri).scheme != null) launchExternal(popupUri)
                 return GeckoResult.fromValue<GeckoSession>(null)

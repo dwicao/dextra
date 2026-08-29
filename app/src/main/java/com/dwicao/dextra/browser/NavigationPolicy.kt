@@ -8,6 +8,11 @@ object NavigationPolicy {
 
     fun isWebUrl(value: String): Boolean = scheme(value) in webSchemes
 
+    fun upgradeToHttps(value: String): String = value.replaceFirst(
+        Regex("^http://", RegexOption.IGNORE_CASE),
+        "https://",
+    )
+
     fun isAllowedTopLevel(value: String, allowExtension: Boolean = false): Boolean {
         val parsedScheme = scheme(value) ?: return false
         if (parsedScheme == "moz-extension") return allowExtension
