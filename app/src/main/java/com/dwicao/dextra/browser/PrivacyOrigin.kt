@@ -35,7 +35,8 @@ fun buildPrivacyOrigins(
             hasSiteOverrides = setting.desktopSites != null ||
                 setting.adBlockingEnabled != null ||
                 setting.userScriptsEnabled != null ||
-                setting.zoomPercent != null,
+                setting.zoomPercent != null ||
+                setting.translationTarget != null,
             blockedCount = maxOf(current?.blockedCount ?: 0, blockedByOrigin[setting.origin].orZero()),
             updatedAt = maxOf(current?.updatedAt ?: 0L, setting.updatedAt),
         )

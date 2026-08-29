@@ -85,6 +85,7 @@ dependencies {
 
     implementation("androidx.activity:activity-compose:1.12.2")
     implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.media:media:1.7.1")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3:1.4.0")
     implementation("androidx.compose.material:material-icons-extended")

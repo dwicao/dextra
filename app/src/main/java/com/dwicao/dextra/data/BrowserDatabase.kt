@@ -52,6 +52,7 @@ data class SiteSetting(
     val adBlockingEnabled: Boolean? = null,
     val userScriptsEnabled: Boolean? = null,
     val zoomPercent: Int? = null,
+    val translationTarget: String? = null,
     val updatedAt: Long,
 )
 
@@ -120,6 +121,9 @@ interface BrowserDao {
 
     @Query("SELECT * FROM history ORDER BY visitedAt DESC LIMIT 500")
     suspend fun getHistory(): List<HistoryEntry>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM history WHERE url = :url AND visitedAt = :visitedAt)")
+    suspend fun hasHistory(url: String, visitedAt: Long): Boolean
 
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
     fun observeBookmarks(): Flow<List<Bookmark>>
@@ -251,7 +255,7 @@ interface BrowserDao {
     suspend fun getInstalledWebApps(): List<InstalledWebApp>
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 12, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 13, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -264,7 +268,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -394,6 +398,12 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
         private val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE installed_web_apps ADD COLUMN iconUrl TEXT")
+            }
+        }
+
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE site_settings ADD COLUMN translationTarget TEXT")
             }
         }
     }

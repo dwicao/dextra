@@ -201,6 +201,8 @@ import com.dwicao.dextra.browser.ExtensionPopupState
 import com.dwicao.dextra.browser.ExtensionToolbarAction
 import com.dwicao.dextra.browser.ExtensionUpdatePrompt
 import com.dwicao.dextra.browser.FindInPageState
+import com.dwicao.dextra.browser.PageTranslationState
+import com.dwicao.dextra.browser.WebAuthnPromptState
 import com.dwicao.dextra.browser.InstalledExtension
 import com.dwicao.dextra.browser.MediaPermissionPrompt
 import com.dwicao.dextra.browser.OfflineArticle
@@ -222,6 +224,8 @@ import com.dwicao.dextra.data.DnsProvider
 import com.dwicao.dextra.data.SearchEngine
 import com.dwicao.dextra.data.CustomSearchEngine
 import com.dwicao.dextra.data.ThemeMode
+import com.dwicao.dextra.data.WebDavSettingsState
+import com.dwicao.dextra.ui.LocalDextraAccessibility
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.mozilla.geckoview.GeckoView
@@ -326,7 +330,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
         state.androidPermission?.let { permissionLauncher.launch(it.permissions.toTypedArray()) }
     }
     LaunchedEffect(state.snackbar) {
-        if ((state.snackbar == "Download started" || state.snackbar?.startsWith("Web Push enabled") == true) &&
+        if ((state.snackbar == "Download started" || state.snackbar?.startsWith("Web Push enabled") == true || state.snackbar == "Media controls enabled") &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(appContext, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
@@ -334,7 +338,12 @@ fun DextraApp(viewModel: BrowserViewModel) {
         }
     }
 
-    DextraTheme(state.settings.themeMode) {
+    DextraTheme(
+        themeMode = state.settings.themeMode,
+        accessibilityTextScale = state.settings.accessibilityTextScale,
+        highContrast = state.settings.highContrast,
+        reduceMotion = state.settings.reduceMotion,
+    ) {
         Scaffold(
             snackbarHost = {},
             containerColor = MaterialTheme.colorScheme.surface,
@@ -401,6 +410,16 @@ fun DextraApp(viewModel: BrowserViewModel) {
                      pendingSyncImportPassphrase = passphrase
                      syncImportLauncher.launch(arrayOf("application/octet-stream", "application/json", "text/*"))
                  },
+                 accessibilityTextScale = state.settings.accessibilityTextScale,
+                 highContrast = state.settings.highContrast,
+                 reduceMotion = state.settings.reduceMotion,
+                 onSetAccessibilityTextScale = viewModel::setAccessibilityTextScale,
+                 onSetHighContrast = viewModel::setHighContrast,
+                 onSetReduceMotion = viewModel::setReduceMotion,
+                 webDav = state.webDav,
+                 onSaveWebDavSettings = viewModel::saveWebDavSettings,
+                 onDisableWebDav = viewModel::disableWebDavSync,
+                 onRunWebDavSync = viewModel::runWebDavSyncNow,
                   onSetDesktopSites = viewModel::setDesktopSites,
                    onSetHomepage = viewModel::setHomepage,
                    onClearSitePermissions = viewModel::clearSitePermissions,
@@ -442,8 +461,9 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onSetSiteZoomOverride = viewModel::setCurrentSiteZoomOverride,
                   onClearSiteSettings = viewModel::clearCurrentSiteSettings,
                    onOpenQrCode = viewModel::openQrCode,
-                   onOpenReaderMode = viewModel::openReaderMode,
-                   onSharePage = viewModel::shareActiveUrl,
+                    onOpenReaderMode = viewModel::openReaderMode,
+                    onOpenTranslation = viewModel::openTranslation,
+                    onSharePage = viewModel::shareActiveUrl,
                   onExportPdf = { pdfExportLauncher.launch("dextra-page.pdf") },
                   onPrintPage = viewModel::printActivePage,
                   onExportHtml = { htmlExportLauncher.launch("dextra-page.html") },
@@ -506,8 +526,8 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   findInPage = state.findInPage,
                   onUpdateFindInPage = viewModel::updateFindInPage,
                   onFindNext = viewModel::findNext,
-                  onCloseFindInPage = viewModel::closeFindInPage,
-              )
+                   onCloseFindInPage = viewModel::closeFindInPage,
+               )
              state.commandPalette?.let { palette ->
                  CommandPaletteDialog(
                      state = palette,
@@ -537,14 +557,26 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 state.offlineArticle?.let { article ->
                     OfflineArticleDialog(article, viewModel::closeOfflineArticle)
                 }
-                state.readerMode?.let { reader ->
+                 state.readerMode?.let { reader ->
                     ReaderModeDialog(
                         reader = reader,
                         onShare = viewModel::shareActiveUrl,
                         onSaveOffline = viewModel::saveCurrentPageOffline,
                         onDismiss = viewModel::closeReaderMode,
                     )
-                }
+                 }
+                 state.translation?.let { translation ->
+                     TranslationDialog(
+                         translation = translation,
+                         onTranslate = viewModel::translateActivePage,
+                         onRestoreOriginal = viewModel::restoreOriginalPage,
+                         onNeverTranslate = viewModel::neverTranslateCurrentSite,
+                         onDismiss = viewModel::closeTranslation,
+                     )
+                 }
+                 state.webAuthnPrompt?.let { prompt ->
+                     WebAuthnDialog(prompt, viewModel::resolveWebAuthn)
+                 }
              state.lastCrashReport?.let { report ->
                 CrashReportDialog(
                     report = report,
@@ -629,6 +661,16 @@ private fun BrowserScreen(
      onRemoveCustomSearchEngine: (CustomSearchEngine) -> Unit,
      onExportSync: (String) -> Unit,
      onImportSync: (String) -> Unit,
+     accessibilityTextScale: Float,
+     highContrast: Boolean,
+     reduceMotion: Boolean,
+     onSetAccessibilityTextScale: (Float) -> Unit,
+     onSetHighContrast: (Boolean) -> Unit,
+     onSetReduceMotion: (Boolean) -> Unit,
+     webDav: WebDavSettingsState,
+     onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
+     onDisableWebDav: () -> Unit,
+     onRunWebDavSync: () -> Unit,
      onSetDesktopSites: (Boolean) -> Unit,
      onSetHomepage: (String) -> Unit,
      onClearSitePermissions: () -> Unit,
@@ -730,8 +772,9 @@ private fun BrowserScreen(
      findInPage: FindInPageState?,
     onUpdateFindInPage: (String) -> Unit,
     onFindNext: (Boolean) -> Unit,
-    onCloseFindInPage: () -> Unit,
-) {
+     onCloseFindInPage: () -> Unit,
+     onOpenTranslation: () -> Unit,
+ ) {
     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
     val fullScreenTab = state.tabs.firstOrNull { it.isFullScreen }
     var menuExpanded by remember { mutableStateOf(false) }
@@ -891,7 +934,17 @@ private fun BrowserScreen(
                   onRemoveCustomSearchEngine = onRemoveCustomSearchEngine,
                   onExportSync = onExportSync,
                   onImportSync = onImportSync,
-                 desktopSites = state.settings.desktopSites,
+                  accessibilityTextScale = accessibilityTextScale,
+                  highContrast = highContrast,
+                  reduceMotion = reduceMotion,
+                  onSetAccessibilityTextScale = onSetAccessibilityTextScale,
+                  onSetHighContrast = onSetHighContrast,
+                  onSetReduceMotion = onSetReduceMotion,
+                  webDav = webDav,
+                  onSaveWebDavSettings = onSaveWebDavSettings,
+                  onDisableWebDav = onDisableWebDav,
+                  onRunWebDavSync = onRunWebDavSync,
+                  desktopSites = state.settings.desktopSites,
                  tabBarWithAddressBar = state.settings.tabBarWithAddressBar,
                  verticalTabs = state.settings.verticalTabs,
                   onSetDesktopSites = onSetDesktopSites,
@@ -1034,6 +1087,10 @@ private fun BrowserScreen(
                      onReopenClosedTab()
                  },
                  closedTabCount = state.closedTabCount,
+                 onOpenTranslation = {
+                     menuExpanded = false
+                     onOpenTranslation()
+                 },
                 onShowTabs = {
                     menuExpanded = false
                     onSetOverlay(BrowserOverlay.TABS)
@@ -1811,6 +1868,7 @@ private fun GroupedVerticalTabStrip(
     var deleteGroup by remember { mutableStateOf<SavedTabGroup?>(null) }
     var renameText by rememberSaveable { mutableStateOf("") }
     var dragDistance by remember { mutableStateOf(0f) }
+    val reduceMotion = LocalDextraAccessibility.current.reduceMotion
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val orderedTabs = tabs.sortedWith(compareByDescending<BrowserTabState> { it.pinned })
@@ -2105,10 +2163,11 @@ private fun VerticalTabRow(
     var menuExpanded by remember(tab.id) { mutableStateOf(false) }
     var hovered by remember(tab.id) { mutableStateOf(false) }
     var hoverVisible by remember(tab.id) { mutableStateOf(false) }
+    val reduceMotion = LocalDextraAccessibility.current.reduceMotion
     LaunchedEffect(hovered) {
         hoverVisible = false
         if (hovered) {
-            delay(450)
+            delay(if (reduceMotion) 0 else 450)
             hoverVisible = hovered
         }
     }
@@ -2366,9 +2425,10 @@ private fun BrowserNavButton(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
+    val accessibility = LocalDextraAccessibility.current
     Box(
         modifier = Modifier
-            .size(36.dp)
+            .size(if (accessibility.textScale >= 1.25f) 44.dp else 36.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics { contentDescription = label },
@@ -2596,10 +2656,11 @@ private fun TabStrip(
     var hoveredTabId by remember { mutableStateOf<String?>(null) }
     var previewTabId by remember { mutableStateOf<String?>(null) }
     var hoverPosition by remember { mutableStateOf(IntOffset.Zero) }
+    val reduceMotion = LocalDextraAccessibility.current.reduceMotion
     LaunchedEffect(hoveredTabId) {
         previewTabId = null
         val id = hoveredTabId ?: return@LaunchedEffect
-        delay(450)
+        delay(if (reduceMotion) 0 else 450)
         if (hoveredTabId == id) previewTabId = id
     }
     Surface(
@@ -2629,7 +2690,8 @@ private fun TabStrip(
                 enabled = listState.canScrollBackward,
                 onClick = {
                     scope.launch {
-                        listState.animateScrollToItem((listState.firstVisibleItemIndex - 1).coerceAtLeast(0))
+                        val index = (listState.firstVisibleItemIndex - 1).coerceAtLeast(0)
+                        if (reduceMotion) listState.scrollToItem(index) else listState.animateScrollToItem(index)
                     }
                 },
             )
@@ -2820,7 +2882,8 @@ private fun TabStrip(
                 enabled = listState.canScrollForward,
                 onClick = {
                     scope.launch {
-                        listState.animateScrollToItem(listState.firstVisibleItemIndex + 1)
+                        val index = listState.firstVisibleItemIndex + 1
+                        if (reduceMotion) listState.scrollToItem(index) else listState.animateScrollToItem(index)
                     }
                 },
             )
@@ -3003,6 +3066,102 @@ private fun FindInPageBar(
             }
         }
     }
+}
+
+@Composable
+private fun TranslationDialog(
+    translation: PageTranslationState,
+    onTranslate: (String, String) -> Unit,
+    onRestoreOriginal: () -> Unit,
+    onNeverTranslate: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var targetLanguage by rememberSaveable(translation.tabId) { mutableStateOf(translation.targetLanguage) }
+    var sourceLanguage by rememberSaveable(translation.tabId) { mutableStateOf(translation.sourceLanguage.orEmpty()) }
+    LaunchedEffect(translation.targetLanguage) { targetLanguage = translation.targetLanguage }
+    LaunchedEffect(translation.sourceLanguage) { sourceLanguage = translation.sourceLanguage.orEmpty() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Language, contentDescription = null) },
+        title = { Text("Translate page") },
+        text = {
+            Column {
+                Text(
+                    translation.detectedLanguage?.let { "Detected language: $it" } ?: "Enter a target language code.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = sourceLanguage,
+                    onValueChange = { sourceLanguage = it },
+                    label = { Text("Source language") },
+                    placeholder = { Text("Auto-detected, e.g. en") },
+                    singleLine = true,
+                    enabled = !translation.isTranslating,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = targetLanguage,
+                    onValueChange = { targetLanguage = it },
+                    label = { Text("Target language") },
+                    placeholder = { Text("en, id, ja...") },
+                    singleLine = true,
+                    enabled = !translation.isTranslating,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf("en", "id", "de", "es", "fr", "ja", "ko", "zh").forEach { language ->
+                        FilterChip(
+                            selected = targetLanguage.equals(language, ignoreCase = true),
+                            onClick = { targetLanguage = language },
+                            label = { Text(language) },
+                            enabled = !translation.isTranslating,
+                        )
+                    }
+                }
+                translation.error?.let { error ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                if (translation.isTranslating) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onTranslate(sourceLanguage, targetLanguage) },
+                enabled = sourceLanguage.isNotBlank() && targetLanguage.isNotBlank() && !translation.isTranslating,
+            ) { Text(if (translation.isTranslated) "Translate again" else "Translate") }
+        },
+        dismissButton = {
+            Row {
+                if (translation.isTranslated) TextButton(onClick = onRestoreOriginal) { Text("Original") }
+                TextButton(onClick = onNeverTranslate) { Text("Never here") }
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun WebAuthnDialog(prompt: WebAuthnPromptState, onResolve: (Boolean) -> Unit) {
+    AlertDialog(
+        onDismissRequest = { onResolve(false) },
+        icon = { Icon(Icons.Outlined.Security, contentDescription = null) },
+        title = { Text(if (prompt.isCreate) "Create a passkey?" else "Use a passkey?") },
+        text = {
+            Text(
+                "${prompt.origin} requests a passkey for ${prompt.rpId}. Continue only if you trust this site.",
+            )
+        },
+        confirmButton = { TextButton(onClick = { onResolve(true) }) { Text("Continue") } },
+        dismissButton = { TextButton(onClick = { onResolve(false) }) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -3855,6 +4014,7 @@ private fun BrowserMenu(
     onNewPrivateTab: () -> Unit,
     onReopenClosedTab: () -> Unit,
     closedTabCount: Int,
+    onOpenTranslation: () -> Unit,
     onShowTabs: () -> Unit,
     onShowBookmarks: () -> Unit,
     onShowHistory: () -> Unit,
@@ -3950,6 +4110,11 @@ private fun BrowserMenu(
                     text = { Text("Reader mode") },
                     leadingIcon = { Icon(Icons.Outlined.BookmarkBorder, contentDescription = null) },
                     onClick = onOpenReaderMode,
+                )
+                DropdownMenuItem(
+                    text = { Text("Translate page") },
+                    leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
+                    onClick = onOpenTranslation,
                 )
                 DropdownMenuItem(
                     text = { Text("Share page") },
@@ -5262,6 +5427,16 @@ private fun SettingsScreen(
     onRemoveCustomSearchEngine: (CustomSearchEngine) -> Unit,
     onExportSync: (String) -> Unit,
     onImportSync: (String) -> Unit,
+    accessibilityTextScale: Float,
+    highContrast: Boolean,
+    reduceMotion: Boolean,
+    onSetAccessibilityTextScale: (Float) -> Unit,
+    onSetHighContrast: (Boolean) -> Unit,
+    onSetReduceMotion: (Boolean) -> Unit,
+    webDav: WebDavSettingsState,
+    onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
+    onDisableWebDav: () -> Unit,
+    onRunWebDavSync: () -> Unit,
     onSetDesktopSites: (Boolean) -> Unit,
     onSetHomepage: (String) -> Unit,
     onClearSitePermissions: () -> Unit,
@@ -5337,7 +5512,7 @@ private fun SettingsScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
             ) {
-    SettingSection("Appearance") {
+     SettingSection("Appearance") {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeMode.values().forEach { mode ->
                 FilterChip(
@@ -5358,7 +5533,47 @@ private fun SettingsScreen(
                 )
             }
         }
-    }
+     }
+     SettingSection("Accessibility") {
+         Text(
+             "Increase browser text size, improve contrast, and reduce motion without changing website content.",
+             style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+         )
+         Spacer(Modifier.height(8.dp))
+         Row(
+             modifier = Modifier.horizontalScroll(rememberScrollState()),
+             horizontalArrangement = Arrangement.spacedBy(6.dp),
+         ) {
+             listOf(1f, 1.1f, 1.25f, 1.5f).forEach { scale ->
+                 FilterChip(
+                     selected = accessibilityTextScale == scale,
+                     onClick = { onSetAccessibilityTextScale(scale) },
+                     label = { Text("${(scale * 100).roundToInt()}%") },
+                 )
+             }
+         }
+         Spacer(Modifier.height(8.dp))
+         SettingToggle(
+             title = "High contrast",
+             summary = "Use stronger contrast for browser controls",
+             checked = highContrast,
+             onCheckedChange = onSetHighContrast,
+         )
+         Spacer(Modifier.height(8.dp))
+         SettingToggle(
+             title = "Reduce motion",
+             summary = "Minimize hover and scrolling animations",
+             checked = reduceMotion,
+             onCheckedChange = onSetReduceMotion,
+         )
+         Spacer(Modifier.height(8.dp))
+         Text(
+             "Per-site page text size is available under Site settings > Page zoom.",
+             style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+         )
+     }
       SettingSection("Search engine") {
          Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
              SearchEngine.values().filter { it != SearchEngine.CUSTOM }.forEach { engine ->
@@ -5518,8 +5733,67 @@ private fun SettingsScreen(
                    dismissButton = { TextButton(onClick = { syncAction = null }) { Text("Cancel") } },
                )
            }
-       }
-       SettingSection("Downloads") {
+        }
+        SettingSection("Automatic WebDAV sync") {
+            Text(
+                "Sync the encrypted browser bundle to a WebDAV server on a periodic network connection. The server URL must use HTTPS; passwords and the bundle passphrase are stored in Android Keystore.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            var webDavEndpoint by rememberSaveable { mutableStateOf(webDav.endpoint) }
+            var webDavRemoteFile by rememberSaveable { mutableStateOf(webDav.remoteFile) }
+            var webDavUsername by rememberSaveable { mutableStateOf(webDav.username) }
+            var webDavPassword by rememberSaveable { mutableStateOf("") }
+            var webDavPassphrase by rememberSaveable { mutableStateOf("") }
+            var webDavInterval by rememberSaveable { mutableStateOf(webDav.intervalHours.toString()) }
+            LaunchedEffect(webDav.endpoint, webDav.remoteFile, webDav.username, webDav.intervalHours) {
+                webDavEndpoint = webDav.endpoint
+                webDavRemoteFile = webDav.remoteFile
+                webDavUsername = webDav.username
+                webDavInterval = webDav.intervalHours.toString()
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(webDavEndpoint, { webDavEndpoint = it }, modifier = Modifier.fillMaxWidth(), label = { Text("WebDAV server URL") }, placeholder = { Text("https://cloud.example/dav") }, singleLine = true)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(webDavRemoteFile, { webDavRemoteFile = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Remote filename") }, singleLine = true)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(webDavUsername, { webDavUsername = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Username (optional)") }, singleLine = true)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(webDavPassword, { webDavPassword = it }, modifier = Modifier.fillMaxWidth(), label = { Text(if (webDav.configured) "Password (enter to replace)" else "Password") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(webDavPassphrase, { webDavPassphrase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Sync passphrase") }, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(webDavInterval, { webDavInterval = it.filter(Char::isDigit) }, modifier = Modifier.fillMaxWidth(), label = { Text("Interval in hours (1-168)") }, singleLine = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        onSaveWebDavSettings(
+                            webDavEndpoint,
+                            webDavUsername,
+                            webDavPassword,
+                            webDavRemoteFile,
+                            webDavPassphrase,
+                            webDavInterval.toIntOrNull() ?: 24,
+                        )
+                        webDavPassword = ""
+                        webDavPassphrase = ""
+                    },
+                    enabled = webDavEndpoint.startsWith("https://", ignoreCase = true) && webDavRemoteFile.isNotBlank() && webDavPassphrase.length >= 8,
+                ) { Text(if (webDav.configured) "Update" else "Enable") }
+                if (webDav.configured) {
+                    TextButton(onClick = onRunWebDavSync) { Text("Sync now") }
+                    TextButton(onClick = onDisableWebDav) { Text("Disable") }
+                }
+            }
+            if (webDav.configured) {
+                Text(
+                    if (webDav.lastSyncAt == null) "Waiting for the first scheduled sync" else "Last sync: ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(webDav.lastSyncAt))}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        SettingSection("Downloads") {
           Text(
               "Choose a folder that Dextra can write to. Existing files are not moved.",
               style = MaterialTheme.typography.bodySmall,

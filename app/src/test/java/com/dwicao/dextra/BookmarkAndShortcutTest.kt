@@ -68,6 +68,7 @@ class BookmarkAndShortcutTest {
         assertTrue(DefaultKeyboardShortcuts.bindings.containsKey(com.dwicao.dextra.browser.BrowserCommandId.SHOW_DOWNLOADS))
         assertTrue(DefaultKeyboardShortcuts.bindings.containsKey(com.dwicao.dextra.browser.BrowserCommandId.SHOW_SETTINGS))
         assertTrue(DefaultKeyboardShortcuts.bindings.containsKey(com.dwicao.dextra.browser.BrowserCommandId.TOGGLE_SPLIT))
+        assertTrue(DefaultKeyboardShortcuts.bindings.containsKey(com.dwicao.dextra.browser.BrowserCommandId.TRANSLATE_PAGE))
     }
 
     @Test

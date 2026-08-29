@@ -19,7 +19,7 @@ class PwaActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val state = browserViewModel.state.value
-                if (state.webPushPrompt != null || state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null) {
+                if (state.webPushPrompt != null || state.webAuthnPrompt != null || state.translation != null || state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null) {
                     browserViewModel.dismissTransientUi()
                     return
                 }

@@ -46,6 +46,7 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Dedicated Keyboard Shortcuts settings page.
 - Reading list with bounded offline article snapshots.
 - Native reader mode with article extraction, font sizing, and light/dark/sepia palettes.
+- Page translation through GeckoView's on-device translation engine with per-site language preferences.
 - Privacy dashboard for reviewing and clearing per-site or all GeckoView site data.
 - Per-site "forget this site" cleanup and live ad/tracker blocking statistics.
 - QR URL sharing, PDF export, visible and bounded long screenshots.
@@ -58,6 +59,11 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Installed PWA management with separate Android document tasks/windows.
 - PWA manifest refresh, same-origin icons, and standalone fullscreen display mode.
 - Private tabs excluded from saved sessions, history, and favicon fetching.
+- Persisted recently closed normal tabs with restore support after process restart.
+- Android lock-screen media controls for active non-private tabs.
+- Accessibility text scaling, high-contrast controls, reduced-motion behavior, and per-site page zoom.
+- Optional periodic encrypted WebDAV synchronization with HTTPS-only transport and Keystore-protected credentials.
+- WebAuthn related-origin approval prompts for passkey flows.
 - Crash reports for Java uncaught exceptions.
 
 ## Architecture

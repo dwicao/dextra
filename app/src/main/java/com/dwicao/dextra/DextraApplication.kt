@@ -29,8 +29,11 @@ import org.mozilla.geckoview.WebNotification
 import org.mozilla.geckoview.WebNotificationDelegate
 
 class DextraApplication : Application() {
+    lateinit var mediaNotificationController: MediaNotificationController
+
     override fun onCreate() {
         super.onCreate()
+        mediaNotificationController = MediaNotificationController(this)
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             runCatching { writeCrashReports(this, thread, error) }
@@ -115,6 +118,7 @@ object GeckoRuntimeHolder {
                 .remoteDebuggingEnabled(false)
                 .aboutConfigEnabled(false)
                 .globalPrivacyControlEnabled(true)
+                .translationsOfferPopup(false)
                 .extensionsProcessEnabled(true)
                 .extensionsWebAPIEnabled(true)
                 .webManifest(true)

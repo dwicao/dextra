@@ -28,6 +28,7 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         handleWebNotificationIntent(intent)
         browserViewModel.handleIncomingIntent(intent)
+        focusMediaTab(intent)
         window.decorView.setOnDragListener { _, event ->
             if (event.action == android.view.DragEvent.ACTION_DROP) {
                 browserViewModel.handleDroppedData(event.clipData)
@@ -46,7 +47,7 @@ class MainActivity : FragmentActivity() {
                     return
                 }
                 if (state.contextMenu != null || state.extensionPopup != null || state.findInPage != null || state.readerMode != null ||
-                    state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null || state.webPushPrompt != null
+                    state.translation != null || state.webAuthnPrompt != null || state.contentPermission != null || state.androidPermission != null || state.mediaPermission != null || state.webPushPrompt != null
                 ) {
                     browserViewModel.dismissTransientUi()
                     return
@@ -72,6 +73,7 @@ class MainActivity : FragmentActivity() {
         setIntent(intent)
         handleWebNotificationIntent(intent)
         browserViewModel.handleIncomingIntent(intent)
+        focusMediaTab(intent)
     }
 
     @Suppress("DEPRECATION")
@@ -80,6 +82,10 @@ class MainActivity : FragmentActivity() {
             notification.click()
             intent.removeExtra(GeckoRuntimeHolder.EXTRA_WEB_NOTIFICATION)
         }
+    }
+
+    private fun focusMediaTab(intent: Intent?) {
+        browserViewModel.handleMediaTabIntent(intent?.getStringExtra(MediaNotificationController.EXTRA_MEDIA_TAB_ID))
     }
 
     fun enterBrowserPictureInPicture() {

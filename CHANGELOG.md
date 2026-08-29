@@ -11,6 +11,12 @@ All notable changes to Dextra are documented here. The commit log at the end rec
 - Active-media indicators and per-tab mute controls.
 - Custom HTTPS search engines using `%s` query templates.
 - Password-encrypted sync bundles for local transfer between devices.
+- GeckoView page translation with remembered per-site target languages.
+- Recently closed normal tabs persisted across process restarts.
+- Android lock-screen media controls for active non-private media.
+- Accessibility text scaling, high contrast, reduced motion, and larger navigation targets.
+- Periodic encrypted WebDAV synchronization with ETag-aware atomic uploads.
+- WebAuthn related-origin approval prompts for passkey flows.
 
 ## [0.5.0] - 2026-08-29
 

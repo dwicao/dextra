@@ -4,8 +4,7 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.ByteArrayOutputStream
 import java.security.SecureRandom
 import java.util.Base64
 import javax.crypto.Cipher
@@ -67,6 +66,12 @@ data class SyncData(
 /** Password-encrypted, portable sync bundle. Credentials, extensions, and private tabs are excluded. */
 class SyncRepository(private val context: Context, private val dao: BrowserDao) {
     suspend fun export(uri: Uri, settings: BrowserSettings, passphrase: String) {
+        val bytes = exportBytes(settings, passphrase)
+        context.contentResolver.openOutputStream(uri)?.use { output -> output.write(bytes) }
+            ?: error("Could not open sync destination")
+    }
+
+    suspend fun exportBytes(settings: BrowserSettings, passphrase: String): ByteArray {
         require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
         val root = JSONObject().apply {
             put("format", SyncCrypto.FORMAT)
@@ -87,7 +92,8 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             } }))
             put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
                 put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
-                putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent); put("updatedAt", it.updatedAt)
+                putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent)
+                putOpt("translationTarget", it.translationTarget); put("updatedAt", it.updatedAt)
             } }))
         }
         val payload = root.toString().toByteArray(Charsets.UTF_8)
@@ -101,17 +107,21 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             .put("salt", Base64.getEncoder().encodeToString(encrypted.salt))
             .put("iv", Base64.getEncoder().encodeToString(encrypted.iv))
             .put("data", Base64.getEncoder().encodeToString(encrypted.data))
-        context.contentResolver.openOutputStream(uri)?.use { output ->
-            output.write(envelope.toString().toByteArray(Charsets.UTF_8))
-        } ?: error("Could not open sync destination")
+        return envelope.toString().toByteArray(Charsets.UTF_8)
     }
 
     suspend fun import(uri: Uri, passphrase: String): SyncData {
         require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
-        val text = context.contentResolver.openInputStream(uri)?.use { input ->
-            BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readText()
+        val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+            readBounded(input, MAX_BYTES)
         } ?: error("Could not open sync bundle")
-        require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "Sync bundle is too large" }
+        return importBytes(bytes, passphrase)
+    }
+
+    suspend fun importBytes(bytes: ByteArray, passphrase: String): SyncData {
+        require(passphrase.length >= MIN_PASSPHRASE_LENGTH) { "Sync passphrase is too short" }
+        require(bytes.size <= MAX_BYTES) { "Sync bundle is too large" }
+        val text = String(bytes, Charsets.UTF_8)
         val envelope = JSONObject(text)
         require(envelope.optString("format") == SyncCrypto.FORMAT && envelope.optInt("version") == SyncCrypto.VERSION) {
             "Unsupported sync bundle"
@@ -140,11 +150,11 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         }
         root.optJSONArray("history")?.let { array ->
             for (i in 0 until array.length().coerceAtMost(MAX_HISTORY)) array.getJSONObject(i).let {
-                dao.insertHistory(HistoryEntry(
-                    url = it.getString("url"),
-                    title = it.getString("title"),
-                    visitedAt = it.optLong("visitedAt", System.currentTimeMillis()),
-                ))
+                val url = it.getString("url")
+                val visitedAt = it.optLong("visitedAt", System.currentTimeMillis())
+                if (!dao.hasHistory(url, visitedAt)) {
+                    dao.insertHistory(HistoryEntry(url = url, title = it.getString("title"), visitedAt = visitedAt))
+                }
             }
             dao.trimHistory()
         }
@@ -169,11 +179,24 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
                 dao.upsertSiteSetting(SiteSetting(
                     it.getString("origin"), it.optBooleanOrNull("desktopSites"),
                     it.optBooleanOrNull("adBlockingEnabled"), it.optBooleanOrNull("userScriptsEnabled"),
-                    it.optIntOrNull("zoomPercent"), it.optLong("updatedAt", System.currentTimeMillis()),
+                    it.optIntOrNull("zoomPercent"), it.optString("translationTarget").takeIf(String::isNotBlank),
+                    it.optLong("updatedAt", System.currentTimeMillis()),
                 ))
             }
         }
         return SyncData(root, imported)
+    }
+
+    private fun readBounded(input: java.io.InputStream, maximum: Int): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8 * 1024)
+        while (true) {
+            val count = input.read(buffer)
+            if (count == -1) break
+            if (output.size() + count > maximum) error("Sync bundle is too large")
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
     }
 
     private fun settingsJson(settings: BrowserSettings): JSONObject = JSONObject().apply {
@@ -187,6 +210,9 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         put("desktopSites", settings.desktopSites)
         put("tabBarWithAddressBar", settings.tabBarWithAddressBar)
         put("verticalTabs", settings.verticalTabs)
+        put("accessibilityTextScale", settings.accessibilityTextScale)
+        put("highContrast", settings.highContrast)
+        put("reduceMotion", settings.reduceMotion)
         put("dnsOverHttpsEnabled", settings.dnsOverHttpsEnabled)
         put("dnsProvider", settings.dnsProvider.name)
         put("adBlockingEnabled", settings.adBlockingEnabled)

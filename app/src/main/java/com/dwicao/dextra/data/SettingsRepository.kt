@@ -62,6 +62,10 @@ data class BrowserSettings(
     val shortcutBindings: Map<BrowserCommandId, KeyChord> = DefaultKeyboardShortcuts.bindings,
     val sessionSnapshots: List<SessionSnapshot> = emptyList(),
     val downloadDirectoryUri: String? = null,
+    val recentlyClosedTabs: List<SavedTab> = emptyList(),
+    val accessibilityTextScale: Float = 1f,
+    val highContrast: Boolean = false,
+    val reduceMotion: Boolean = false,
 )
 
 data class ExtensionInstallRecord(
@@ -142,6 +146,10 @@ class SettingsRepository(private val context: Context) {
         val shortcutBindings = stringPreferencesKey("shortcut_bindings")
         val sessionSnapshots = stringPreferencesKey("session_snapshots")
         val downloadDirectoryUri = stringPreferencesKey("download_directory_uri")
+        val recentlyClosedTabs = stringPreferencesKey("recently_closed_tabs")
+        val accessibilityTextScale = stringPreferencesKey("accessibility_text_scale")
+        val highContrast = booleanPreferencesKey("high_contrast")
+        val reduceMotion = booleanPreferencesKey("reduce_motion")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -383,6 +391,26 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun saveRecentlyClosedTabs(tabs: List<SavedTab>) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.recentlyClosedTabs] = JSONArray(
+                tabs.filterNot { it.isPrivate }.take(MAX_RECENTLY_CLOSED_TABS).map { it.toJson() },
+            ).toString()
+        }
+    }
+
+    suspend fun setAccessibilityTextScale(scale: Float) {
+        context.settingsDataStore.edit { it[Keys.accessibilityTextScale] = scale.coerceIn(1f, 1.5f).toString() }
+    }
+
+    suspend fun setHighContrast(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.highContrast] = enabled }
+    }
+
+    suspend fun setReduceMotion(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.reduceMotion] = enabled }
+    }
+
     suspend fun applySyncSettings(settings: JSONObject) {
         context.settingsDataStore.edit { preferences ->
             settings.optString("theme").takeIf { it in ThemeMode.values().map(ThemeMode::name) }
@@ -397,6 +425,10 @@ class SettingsRepository(private val context: Context) {
             if (settings.has("desktopSites")) preferences[Keys.desktopSites] = settings.optBoolean("desktopSites")
             if (settings.has("tabBarWithAddressBar")) preferences[Keys.tabBarWithAddressBar] = settings.optBoolean("tabBarWithAddressBar")
             if (settings.has("verticalTabs")) preferences[Keys.verticalTabs] = settings.optBoolean("verticalTabs")
+            settings.optDouble("accessibilityTextScale", 1.0).toFloat().takeIf { it.isFinite() }
+                ?.let { preferences[Keys.accessibilityTextScale] = it.coerceIn(1f, 1.5f).toString() }
+            if (settings.has("highContrast")) preferences[Keys.highContrast] = settings.optBoolean("highContrast")
+            if (settings.has("reduceMotion")) preferences[Keys.reduceMotion] = settings.optBoolean("reduceMotion")
             if (settings.has("dnsOverHttpsEnabled")) preferences[Keys.dnsOverHttpsEnabled] = settings.optBoolean("dnsOverHttpsEnabled")
             settings.optString("dnsProvider").takeIf { it in DnsProvider.values().map(DnsProvider::name) }
                 ?.let { preferences[Keys.dnsProvider] = it }
@@ -457,6 +489,10 @@ class SettingsRepository(private val context: Context) {
         shortcutBindings = DefaultKeyboardShortcuts.bindings + shortcutBindings(),
         sessionSnapshots = sessionSnapshots(),
         downloadDirectoryUri = get(Keys.downloadDirectoryUri),
+        recentlyClosedTabs = recentlyClosedTabs(),
+        accessibilityTextScale = get(Keys.accessibilityTextScale)?.toFloatOrNull()?.coerceIn(1f, 1.5f) ?: 1f,
+        highContrast = get(Keys.highContrast) ?: false,
+        reduceMotion = get(Keys.reduceMotion) ?: false,
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -522,8 +558,18 @@ class SettingsRepository(private val context: Context) {
         ?: emptyMap()
 
     private fun Preferences.savedTabs(): List<SavedTab> = runCatching {
-        val tabs = JSONArray(get(Keys.openTabs).orEmpty())
-        (0 until tabs.length()).mapNotNull { index ->
+        parseSavedTabs(get(Keys.openTabs).orEmpty())
+    }.getOrDefault(emptyList())
+
+    private fun Preferences.recentlyClosedTabs(): List<SavedTab> = runCatching {
+        parseSavedTabs(get(Keys.recentlyClosedTabs).orEmpty())
+            .filterNot { it.isPrivate }
+            .take(MAX_RECENTLY_CLOSED_TABS)
+    }.getOrDefault(emptyList())
+
+    private fun parseSavedTabs(payload: String): List<SavedTab> {
+        val tabs = JSONArray(payload)
+        return (0 until tabs.length()).mapNotNull { index ->
             val tab = tabs.optJSONObject(index) ?: return@mapNotNull null
             val url = tab.optString("url").takeIf(String::isNotBlank) ?: return@mapNotNull null
             SavedTab(
@@ -536,7 +582,7 @@ class SettingsRepository(private val context: Context) {
                 sessionState = tab.optString("sessionState").takeIf(String::isNotBlank),
             )
         }
-    }.getOrDefault(emptyList())
+    }
 
     private fun Preferences.savedTabGroups(): List<SavedTabGroup> = runCatching {
         val groups = JSONArray(get(Keys.tabGroups).orEmpty())
@@ -653,5 +699,6 @@ class SettingsRepository(private val context: Context) {
         const val MAX_CUSTOM_SEARCH_ENGINES = 20
         const val MAX_ADBLOCK_FILTERS = 100
         const val MAX_USER_SCRIPTS = 100
+        const val MAX_RECENTLY_CLOSED_TABS = 10
     }
 }

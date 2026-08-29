@@ -28,7 +28,8 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
             } }))
              put("siteSettings", JSONArray(dao.getSiteSettings().map { JSONObject().apply {
                  put("origin", it.origin); putOpt("desktopSites", it.desktopSites); putOpt("adBlockingEnabled", it.adBlockingEnabled)
-                 putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent); put("updatedAt", it.updatedAt)
+                 putOpt("userScriptsEnabled", it.userScriptsEnabled); putOpt("zoomPercent", it.zoomPercent)
+                 putOpt("translationTarget", it.translationTarget); put("updatedAt", it.updatedAt)
              } }))
              put("installedWebApps", JSONArray(dao.getInstalledWebApps().map { JSONObject().apply {
                  put("id", it.id); put("origin", it.origin); put("name", it.name)
@@ -71,7 +72,15 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
         }
         root.optJSONArray("siteSettings")?.let { array ->
             for (i in 0 until array.length()) array.getJSONObject(i).let {
-                dao.upsertSiteSetting(SiteSetting(it.getString("origin"), it.optBooleanOrNull("desktopSites"), it.optBooleanOrNull("adBlockingEnabled"), it.optBooleanOrNull("userScriptsEnabled"), it.optIntOrNull("zoomPercent"), it.optLong("updatedAt", System.currentTimeMillis())))
+                 dao.upsertSiteSetting(SiteSetting(
+                     origin = it.getString("origin"),
+                     desktopSites = it.optBooleanOrNull("desktopSites"),
+                     adBlockingEnabled = it.optBooleanOrNull("adBlockingEnabled"),
+                     userScriptsEnabled = it.optBooleanOrNull("userScriptsEnabled"),
+                     zoomPercent = it.optIntOrNull("zoomPercent"),
+                     translationTarget = it.optString("translationTarget").takeIf(String::isNotBlank),
+                     updatedAt = it.optLong("updatedAt", System.currentTimeMillis()),
+                 ))
             }
         }
         root.optJSONArray("installedWebApps")?.let { array ->
