@@ -3,6 +3,7 @@ package com.dwicao.dextra.data
 import android.content.Context
 import android.util.Base64
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -27,6 +28,7 @@ data class WebDavConfig(
     val lastLocalRevision: Long? = null,
     val lastRemoteFingerprint: String? = null,
     val lastLocalFingerprint: String? = null,
+    val conflictTabIds: List<String> = emptyList(),
 )
 
 data class WebDavSettingsState(
@@ -40,6 +42,7 @@ data class WebDavSettingsState(
     val conflictPending: Boolean = false,
     val conflictDetectedAt: Long? = null,
     val lastError: String? = null,
+    val conflictTabIds: List<String> = emptyList(),
 )
 
 /** Keeps the WebDAV password and sync passphrase encrypted at rest with Android Keystore. */
@@ -74,6 +77,10 @@ class WebDavSettingsStore(private val context: Context) {
                 .takeIf { it != Long.MIN_VALUE },
             lastRemoteFingerprint = value.optString("lastRemoteFingerprint").takeIf(String::isNotBlank),
             lastLocalFingerprint = value.optString("lastLocalFingerprint").takeIf(String::isNotBlank),
+            conflictTabIds = runCatching {
+                val array = value.optJSONArray("conflictTabIds") ?: JSONArray()
+                (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }.take(64)
+            }.getOrDefault(emptyList()),
         )
     }.getOrNull()
 
@@ -96,6 +103,7 @@ class WebDavSettingsStore(private val context: Context) {
             .put("lastLocalRevision", config.lastLocalRevision)
             .put("lastRemoteFingerprint", config.lastRemoteFingerprint)
             .put("lastLocalFingerprint", config.lastLocalFingerprint)
+            .put("conflictTabIds", JSONArray(config.conflictTabIds))
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.ENCRYPT_MODE, key())
         }

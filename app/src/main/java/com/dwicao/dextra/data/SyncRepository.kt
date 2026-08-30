@@ -175,6 +175,39 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             .joinToString("") { "%02x".format(it) }
     }
 
+    suspend fun conflictingTabIds(bytes: ByteArray, passphrase: String, local: BrowserSettings): List<String> {
+        val remoteSettings = decodeRoot(bytes, passphrase).optJSONObject("settings") ?: return emptyList()
+        val localTabs = buildMap {
+            local.openTabs.forEach { tab -> tab.id?.let { put(it, tab) } }
+            local.workspaces.forEach { workspace ->
+                workspace.tabs.forEach { tab -> tab.id?.let { put(it, tab) } }
+            }
+        }
+        val remoteTabs = buildList {
+            fun collect(array: JSONArray?) {
+                if (array == null) return
+                for (index in 0 until array.length()) {
+                    val tab = array.optJSONObject(index) ?: continue
+                    val id = tab.optString("id").takeIf(String::isNotBlank) ?: continue
+                    add(id to tab)
+                }
+            }
+            collect(remoteSettings.optJSONArray("openTabs"))
+            remoteSettings.optJSONArray("workspaces")?.let { workspaces ->
+                for (index in 0 until workspaces.length()) {
+                    collect(workspaces.optJSONObject(index)?.optJSONArray("tabs"))
+                }
+            }
+        }
+        return remoteTabs.mapNotNull { (id, remoteTab) ->
+            val localTab = localTabs[id] ?: return@mapNotNull null
+            if (localTab.url != remoteTab.optString("url") ||
+                localTab.title.orEmpty() != remoteTab.optString("title") ||
+                localTab.sessionState.orEmpty() != remoteTab.optString("sessionState")
+            ) id else null
+        }.distinct().take(64)
+    }
+
     suspend fun importBytes(
         bytes: ByteArray,
         passphrase: String,
@@ -269,9 +302,18 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
     fun mergeSettings(remoteRoot: JSONObject, local: BrowserSettings): JSONObject {
         val merged = settingsJson(local)
         val remote = remoteRoot.optJSONObject("settings") ?: return merged
-        merged.put("openTabs", mergeTabArrays(merged.optJSONArray("openTabs"), remote.optJSONArray("openTabs"), MAX_SYNC_TABS))
+        val tombstones = mergeTombstones(merged.optJSONObject("tabTombstones"), remote.optJSONObject("tabTombstones"))
+        val tombstoneIds = tombstones.keys().asSequence().toSet()
+        merged.put("tabTombstones", tombstones)
+        merged.put("openTabs", filterTombstonedTabs(
+            mergeTabArrays(merged.optJSONArray("openTabs"), remote.optJSONArray("openTabs"), MAX_SYNC_TABS),
+            tombstoneIds,
+        ))
         merged.put("tabGroups", mergeObjectArrays(merged.optJSONArray("tabGroups"), remote.optJSONArray("tabGroups"), "id", MAX_SYNC_GROUPS))
-        merged.put("workspaces", mergeWorkspaces(merged.optJSONArray("workspaces"), remote.optJSONArray("workspaces")))
+        merged.put("workspaces", filterTombstonedWorkspaces(
+            mergeWorkspaces(merged.optJSONArray("workspaces"), remote.optJSONArray("workspaces")),
+            tombstoneIds,
+        ))
         return merged
     }
 
@@ -346,6 +388,11 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         put("recoveryRetentionDays", settings.recoveryRetentionDays)
         put("clearSiteDataOnExit", settings.clearSiteDataOnExit)
         put("privacyCleanupAllowlist", JSONArray(settings.privacyCleanupAllowlist.toList()))
+        put("autoSuspendMinutes", settings.autoSuspendMinutes)
+        put("permissionExpiryDays", settings.permissionExpiryDays)
+        put("fingerprintingProtectionEnabled", settings.fingerprintingProtectionEnabled)
+        put("dexLayoutPreset", settings.dexLayoutPreset.name)
+        put("tabTombstones", JSONObject(settings.tabTombstones))
         put("tabBarWithAddressBar", settings.tabBarWithAddressBar)
         put("verticalTabs", settings.verticalTabs)
         put("accessibilityTextScale", settings.accessibilityTextScale)
@@ -395,6 +442,34 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         return JSONArray(values.values.take(limit))
     }
 
+    private fun mergeTombstones(local: JSONObject?, remote: JSONObject?): JSONObject {
+        val values = linkedMapOf<String, Long>()
+        fun add(value: JSONObject?) {
+            value?.keys()?.forEach { id ->
+                val timestamp = value.optLong(id, Long.MIN_VALUE)
+                if (timestamp != Long.MIN_VALUE) values[id] = maxOf(values[id] ?: Long.MIN_VALUE, timestamp)
+            }
+        }
+        add(local)
+        add(remote)
+        return JSONObject(values.entries.sortedByDescending { it.value }.take(MAX_SYNC_TOMBSTONES).associate { it.key to it.value })
+    }
+
+    private fun filterTombstonedTabs(tabs: JSONArray, tombstoneIds: Set<String>): JSONArray = JSONArray().also { output ->
+        for (index in 0 until tabs.length()) {
+            val tab = tabs.optJSONObject(index) ?: continue
+            if (tab.optString("id") !in tombstoneIds) output.put(tab)
+        }
+    }
+
+    private fun filterTombstonedWorkspaces(workspaces: JSONArray, tombstoneIds: Set<String>): JSONArray = JSONArray().also { output ->
+        for (index in 0 until workspaces.length()) {
+            val workspace = workspaces.optJSONObject(index) ?: continue
+            workspace.put("tabs", filterTombstonedTabs(workspace.optJSONArray("tabs") ?: JSONArray(), tombstoneIds))
+            output.put(workspace)
+        }
+    }
+
     private fun mergeObjectArrays(local: JSONArray?, remote: JSONArray?, keyName: String, limit: Int): JSONArray {
         val values = linkedMapOf<String, JSONObject>()
         fun add(value: JSONObject) {
@@ -433,6 +508,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         const val MAX_SYNC_TABS = 64
         const val MAX_SYNC_GROUPS = 100
         const val MAX_SYNC_WORKSPACES = 12
+        const val MAX_SYNC_TOMBSTONES = 512
         const val MIN_PASSPHRASE_LENGTH = 8
     }
 }

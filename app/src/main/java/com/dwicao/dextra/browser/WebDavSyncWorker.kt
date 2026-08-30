@@ -82,6 +82,7 @@ class WebDavSyncWorker(
                             conflictDetectedAt = null,
                             pendingResolution = null,
                             lastError = null,
+                            conflictTabIds = emptyList(),
                         ))) return@runCatching
                     }
                     "local", "merge" -> {
@@ -117,13 +118,19 @@ class WebDavSyncWorker(
                             conflictDetectedAt = null,
                             pendingResolution = null,
                             lastError = null,
+                            conflictTabIds = emptyList(),
                         ))) return@runCatching
                     }
                     else -> throw IOException("Unknown WebDAV conflict resolution")
                 }
                 return@runCatching
             }
-            if (SyncSessionPolicy.hasConflict(remoteChanged, localChanged)) throw WebDavConflictException()
+            if (SyncSessionPolicy.hasConflict(remoteChanged, localChanged)) {
+                throw WebDavConflictException(
+                    remote?.let { syncRepository.conflictingTabIds(it.bytes, config.passphrase, settingsBeforeApply) }
+                        .orEmpty(),
+                )
+            }
             if (remote != null && remoteChanged) {
                 val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                 imported.root.optJSONObject("settings")?.let { importedSettings ->
@@ -145,6 +152,7 @@ class WebDavSyncWorker(
                     conflictDetectedAt = null,
                     pendingResolution = null,
                     lastError = null,
+                    conflictTabIds = emptyList(),
                 ))) return@runCatching
                 return@runCatching
             }
@@ -154,6 +162,7 @@ class WebDavSyncWorker(
                     lastRemoteFingerprint = remoteFingerprint,
                     lastSyncAt = System.currentTimeMillis(),
                     lastError = null,
+                    conflictTabIds = emptyList(),
                 ))) return@runCatching
                 return@runCatching
             }
@@ -170,6 +179,7 @@ class WebDavSyncWorker(
                 conflictDetectedAt = null,
                 pendingResolution = null,
                 lastError = null,
+                conflictTabIds = emptyList(),
             ))) return@runCatching
         }.fold(
             onSuccess = { Result.success() },
@@ -180,6 +190,7 @@ class WebDavSyncWorker(
                         conflictDetectedAt = System.currentTimeMillis(),
                         pendingResolution = null,
                         lastError = "Remote bundle changed while uploading",
+                        conflictTabIds = error.tabIds,
                     ))
                     Result.failure()
                 } else if (error is BadPaddingException || error is IllegalArgumentException || error is org.json.JSONException) {
@@ -352,4 +363,4 @@ private object WebDavClient {
     }
 }
 
-private class WebDavConflictException : IOException()
+private class WebDavConflictException(val tabIds: List<String> = emptyList()) : IOException()

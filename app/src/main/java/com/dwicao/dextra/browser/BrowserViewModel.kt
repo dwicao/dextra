@@ -64,6 +64,7 @@ import com.dwicao.dextra.data.StoredAddress
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.TabWorkspace
 import com.dwicao.dextra.data.DEFAULT_WORKSPACE_ID
+import com.dwicao.dextra.data.DexLayoutPreset
 import com.dwicao.dextra.data.SettingsRepository
 import com.dwicao.dextra.data.SyncRepository
 import com.dwicao.dextra.data.SyncPreview
@@ -83,6 +84,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -126,6 +128,7 @@ data class BrowserTabState(
     val url: String = "",
     val progress: Int = 0,
     val isLoading: Boolean = false,
+    val loadError: String? = null,
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
     val isSecure: Boolean = false,
@@ -442,6 +445,7 @@ private const val MAX_READER_ARTICLE_BYTES = 2 * 1024 * 1024
 private const val MAX_HTML_EXPORT_BYTES = 5 * 1024 * 1024
 private const val MAX_PWA_ICON_BYTES = 512 * 1024
 private const val MAX_PWA_MANIFEST_BYTES = 512 * 1024
+private const val MAX_BACKUP_BYTES = 32 * 1024 * 1024
 private const val WEB_PUSH_ENDPOINT_BASE = "https://updates.push.services.mozilla.com/wpush/v2/"
 
 private fun WebDavConfig.toUiState(): WebDavSettingsState = WebDavSettingsState(
@@ -455,6 +459,7 @@ private fun WebDavConfig.toUiState(): WebDavSettingsState = WebDavSettingsState(
     conflictPending = conflictPending,
     conflictDetectedAt = conflictDetectedAt,
     lastError = lastError,
+    conflictTabIds = conflictTabIds,
 )
 
 data class ExtensionUpdatePrompt(
@@ -520,6 +525,7 @@ data class BrowserUiState(
     val performance: PerformanceMetrics = PerformanceMetrics(),
     val networkActivity: List<NetworkActivity> = emptyList(),
     val compatibilityEvents: List<CompatibilityEvent> = emptyList(),
+    val backupFiles: List<ScheduledBackupInfo> = emptyList(),
 )
 
 class BrowserViewModel private constructor(
@@ -573,6 +579,7 @@ class BrowserViewModel private constructor(
     private val queuedMediaPermissions = ArrayDeque<MediaPermissionPrompt>()
     private val queuedWebPushPrompts = ArrayDeque<WebPushPrompt>()
     private val pageZoomByTab = mutableMapOf<String, Int>()
+    private val lastTabActivityAt = mutableMapOf<String, Long>()
     private val lastProgressUpdateAt = mutableMapOf<String, Long>()
     private val trackerBlockedByTab = mutableMapOf<String, Int>()
     private val restoringExtensionIds = ConcurrentHashMap.newKeySet<String>()
@@ -593,6 +600,8 @@ class BrowserViewModel private constructor(
     private var syncPreviewRequestId = 0L
     private var workspaceSwitchGeneration = 0L
     private var localTabsGeneration = 0L
+    private var autoSuspendJob: Job? = null
+    private var scheduledBackupConfig: Pair<Boolean, Int>? = null
     @Volatile
     private var pendingExtensionPackagePath: String? = null
     @Volatile
@@ -913,6 +922,7 @@ class BrowserViewModel private constructor(
                     _state.value.settings.adBlockFilters != settings.adBlockFilters
                 val userScriptsChanged = _state.value.settings.userScriptUrls != settings.userScriptUrls ||
                     _state.value.settings.disabledUserScriptUrls != settings.disabledUserScriptUrls
+                val fingerprintingChanged = _state.value.settings.fingerprintingProtectionEnabled != settings.fingerprintingProtectionEnabled
                 val remoteSessionApplied = SyncSessionPolicy.shouldRestore(
                     restoredSavedTabs = restoredSavedTabs,
                     syncApplyToken = settings.syncApplyToken,
@@ -923,6 +933,15 @@ class BrowserViewModel private constructor(
                 applyDnsOverHttps(settings.dnsOverHttpsEnabled, settings.dnsProvider)
                 applyContentColorScheme(settings.themeMode)
                 applyCookieBannerMode(settings.cookieBannerMode)
+                applyFingerprintingProtection(settings.fingerprintingProtectionEnabled)
+                val backupConfig = settings.backupEnabled to settings.backupIntervalHours
+                val backupDirectoryChanged = _state.value.settings.backupDirectoryUri != settings.backupDirectoryUri
+                if (scheduledBackupConfig != backupConfig) {
+                    scheduledBackupConfig = backupConfig
+                    if (settings.backupEnabled) BackupScheduler.schedule(getApplication(), settings.backupIntervalHours)
+                    else BackupScheduler.cancel(getApplication())
+                }
+                if (backupDirectoryChanged) refreshScheduledBackups()
                 if (!restoredSavedTabs) {
                     restoredSavedTabs = true
                     lastAppliedSyncToken = settings.syncApplyToken
@@ -961,6 +980,7 @@ class BrowserViewModel private constructor(
                     if (desktopSitesChanged && tab.hasPage) tab.session.reload()
                     if (adBlockingChanged && tab.hasPage) tab.session.reload()
                     if (userScriptsChanged && tab.hasPage) tab.session.reload()
+                    if (fingerprintingChanged && tab.hasPage) tab.session.reload()
                 }
                 syncAdBlockSettings(settings)
                 syncUserScripts(settings)
@@ -997,6 +1017,13 @@ class BrowserViewModel private constructor(
             }
         }
         restoreDownloads()
+        refreshScheduledBackups()
+        autoSuspendJob = viewModelScope.launch {
+            while (isActive) {
+                delay(60_000)
+                autoSuspendInactiveTabs()
+            }
+        }
     }
 
     fun handleIncomingIntent(intent: Intent?) {
@@ -1117,12 +1144,14 @@ class BrowserViewModel private constructor(
         initialUri: String? = null,
         openSession: Boolean = true,
         savedSessionState: String? = null,
+        tabId: String? = null,
     ): String {
         if (_state.value.tabs.size >= MAX_OPEN_TABS) {
             showSnackbar("Tab limit reached ($MAX_OPEN_TABS)")
             return ""
         }
-        val id = UUID.randomUUID().toString()
+        val id = tabId?.takeIf { it.isNotBlank() && _state.value.tabs.none { tab -> tab.id == it } }
+            ?: UUID.randomUUID().toString()
         val previousActiveTabId = _state.value.activeTabId
         val session = createSession(id, privateMode, openSession, savedSessionState = savedSessionState)
         val resolvedInitialUri = initialUri
@@ -1201,8 +1230,29 @@ class BrowserViewModel private constructor(
             )
         }
         restoreSavedTabs(tabs, snapshot.activeTabIndex)
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.removeTabTombstones(tabs.mapNotNull(SavedTab::id))
+        }
         persistOpenTabs(immediate = true)
         showSnackbar("Restored ${snapshot.title}")
+    }
+
+    fun restoreSessionTab(tab: SavedTab) {
+        val validTab = tab.takeIf { !it.isPrivate && NavigationPolicy.isWebUrl(it.url) } ?: return
+        val id = createTab(initialUri = validTab.url, savedSessionState = validTab.sessionState, tabId = validTab.id)
+        if (id.isBlank()) return
+        updateTab(id) { current ->
+            current.copy(
+                title = validTab.title?.ifBlank { null } ?: current.title,
+                pinned = validTab.pinned,
+                groupId = validTab.groupId?.takeIf { groupId -> _state.value.settings.tabGroups.any { it.id == groupId } },
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            validTab.id?.let { settingsRepository.removeTabTombstones(listOf(it)) }
+        }
+        persistOpenTabs(immediate = true)
+        showSnackbar("Opened ${validTab.title?.ifBlank { validTab.url } ?: validTab.url}")
     }
 
     fun deleteSessionSnapshot(snapshot: SessionSnapshot) {
@@ -1399,6 +1449,19 @@ class BrowserViewModel private constructor(
         val chord = event.toKeyChord()
         val command = _state.value.settings.shortcutBindings.entries.firstOrNull { it.value == chord }?.key
             ?: return false
+        if ((_state.value.standalonePwa || _state.value.standaloneWindow) && command in setOf(
+                BrowserCommandId.SHOW_TABS,
+                BrowserCommandId.SHOW_LIBRARY,
+                BrowserCommandId.SHOW_DOWNLOADS,
+                BrowserCommandId.SHOW_SETTINGS,
+                BrowserCommandId.SHOW_PRIVACY,
+                BrowserCommandId.COMMAND_PALETTE,
+                BrowserCommandId.TAB_SEARCH,
+            )
+        ) {
+            showSnackbar("This action is available in the main browser window")
+            return true
+        }
         executeCommand(command)
         return true
     }
@@ -1688,6 +1751,23 @@ class BrowserViewModel private constructor(
         showSnackbar("Hibernated ${inactive.size} tabs")
     }
 
+    private fun autoSuspendInactiveTabs() {
+        val minutes = _state.value.settings.autoSuspendMinutes
+        if (minutes <= 0) return
+        val cutoff = System.currentTimeMillis() - minutes * 60_000L
+        val visibleSplitTabs = setOfNotNull(_state.value.splitPrimaryTabId, _state.value.splitSecondaryTabId)
+        val stale = _state.value.tabs.filter { tab ->
+            !tab.isPrivate && tab.id != _state.value.activeTabId && tab.id !in visibleSplitTabs && !tab.isSleeping &&
+                !tab.hasActiveMedia && (lastTabActivityAt[tab.id] ?: Long.MAX_VALUE) <= cutoff
+        }
+        if (stale.isEmpty()) return
+        _state.update { state ->
+            state.copy(tabs = state.tabs.map { tab -> if (stale.any { it.id == tab.id }) tab.copy(isSleeping = true) else tab })
+        }
+        stale.forEach { tab -> runCatching { tab.session.setActive(false) } }
+        persistOpenTabs()
+    }
+
     fun openTabInSplit(tabId: String) {
         val current = _state.value
         val primaryId = current.activeTabId ?: return
@@ -1790,7 +1870,7 @@ class BrowserViewModel private constructor(
         recordNetworkActivity(tabId, url, "navigation", "requested")
         if (tabId == _state.value.activeTabId && _state.value.findInPage != null) closeFindInPage()
         updateTab(tabId) {
-            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false, sessionState = null)
+            it.copy(url = url, title = "Loading...", hasPage = true, isLoading = true, loadError = null, progress = 0, favicon = null, crashed = false, sessionState = null)
         }
         _state.update {
             if (it.activeTabId == tabId) it.copy(
@@ -1824,6 +1904,7 @@ class BrowserViewModel private constructor(
         val next = (current + step).coerceIn(50, 200)
         if (next == current) return
         pageZoomByTab[tab.id] = next
+        lastTabActivityAt[tab.id] = System.currentTimeMillis()
         syncActiveTabZoom()
         showSnackbar("Zoom ${next}%")
     }
@@ -1831,6 +1912,7 @@ class BrowserViewModel private constructor(
     fun resetPageZoom() {
         val tab = activeTab() ?: return
         pageZoomByTab.remove(tab.id)
+        lastTabActivityAt[tab.id] = System.currentTimeMillis()
         syncActiveTabZoom()
         showSnackbar("Zoom 100%")
     }
@@ -3095,7 +3177,15 @@ class BrowserViewModel private constructor(
 
     fun exportBackup(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val result = runCatching { backupRepository.export(uri) }
+            val current = _state.value
+            val currentTabs = savedTabsFromState()
+            val currentSettings = current.settings.copy(
+                openTabs = currentTabs,
+                activeTabIndex = currentTabs.indexOfFirst { it.id == current.activeTabId }.coerceAtLeast(0),
+                tabGroups = current.settings.tabGroups,
+                workspaces = workspaceSnapshots(current),
+            )
+            val result = runCatching { backupRepository.export(uri, currentSettings) }
             withContext(Dispatchers.Main.immediate) {
                 showSnackbar(if (result.isSuccess) "Backup exported" else "Could not export backup")
             }
@@ -3105,7 +3195,11 @@ class BrowserViewModel private constructor(
     fun importBackup(uri: Uri) {
         val profileId = activeProfileId()
         viewModelScope.launch(Dispatchers.IO) {
-            val result = runCatching { backupRepository.import(uri, profileId) }
+            val result = runCatching {
+                val bytes = backupRepository.readBytes(uri)
+                val imported = backupRepository.importBytes(bytes, profileId)
+                imported
+            }
             withContext(Dispatchers.Main.immediate) {
                 showSnackbar(result.fold({ "Restored ${it} bookmarks" }, { "Could not restore backup" }))
             }
@@ -3427,6 +3521,41 @@ class BrowserViewModel private constructor(
         copyToClipboard("Performance report", report)
     }
 
+    fun exportDiagnostics(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val current = _state.value
+            val root = JSONObject().apply {
+                put("format", "dextra-diagnostics")
+                put("createdAt", System.currentTimeMillis())
+                put("performance", JSONObject().apply {
+                    put("startupMs", current.performance.startupMs)
+                    put("processPssMb", current.performance.processPssMb)
+                    put("availableMemoryMb", current.performance.availableMemoryMb)
+                    put("frameCount", current.performance.frameCount)
+                    put("jankCount", current.performance.jankCount)
+                    put("averageFrameTimeMs", current.performance.averageFrameTimeMs)
+                    put("windowWidthDp", current.performance.windowWidthDp)
+                    put("windowHeightDp", current.performance.windowHeightDp)
+                })
+                put("networkActivity", JSONArray(current.networkActivity.map { event ->
+                    JSONObject().put("url", event.url).put("kind", event.kind).put("status", event.status)
+                        .put("secure", event.secure).put("timestamp", event.timestamp)
+                }))
+                put("compatibilityEvents", JSONArray(current.compatibilityEvents.map { event ->
+                    JSONObject().put("severity", event.severity).put("message", event.message).put("timestamp", event.timestamp)
+                }))
+            }
+            val result = runCatching {
+                getApplication<Application>().contentResolver.openOutputStream(uri)?.use {
+                    it.write(root.toString().toByteArray(Charsets.UTF_8))
+                } ?: error("Could not open diagnostics destination")
+            }
+            withContext(Dispatchers.Main.immediate) {
+                showSnackbar(if (result.isSuccess) "Diagnostics exported" else "Could not export diagnostics")
+            }
+        }
+    }
+
     private fun refreshWebDavState() {
         viewModelScope.launch(Dispatchers.IO) {
             val config = webDavStore.load() ?: return@launch
@@ -3724,6 +3853,95 @@ class BrowserViewModel private constructor(
 
     fun setClearSiteDataOnExit(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setClearSiteDataOnExit(enabled) }
+    }
+
+    fun setAutoSuspendMinutes(minutes: Int) {
+        viewModelScope.launch { settingsRepository.setAutoSuspendMinutes(minutes) }
+    }
+
+    fun setPermissionExpiryDays(days: Int) {
+        viewModelScope.launch { settingsRepository.setPermissionExpiryDays(days) }
+    }
+
+    fun setFingerprintingProtectionEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setFingerprintingProtectionEnabled(enabled) }
+    }
+
+    fun setDexLayoutPreset(preset: DexLayoutPreset) {
+        viewModelScope.launch { settingsRepository.setDexLayoutPreset(preset) }
+    }
+
+    fun setBackupSettings(enabled: Boolean, intervalHours: Int, retentionCount: Int) {
+        viewModelScope.launch {
+            settingsRepository.setBackupSettings(enabled, intervalHours, retentionCount)
+            if (enabled) BackupScheduler.schedule(getApplication(), intervalHours) else BackupScheduler.cancel(getApplication())
+        }
+    }
+
+    fun setBackupDirectory(uri: Uri?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            uri?.let {
+                val permissionError = runCatching {
+                    getApplication<Application>().contentResolver.takePersistableUriPermission(
+                        it,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                    )
+                }.exceptionOrNull()
+                if (permissionError != null) {
+                    withContext(Dispatchers.Main.immediate) { showSnackbar("Could not keep access to that folder") }
+                    return@launch
+                }
+            }
+            settingsRepository.setBackupDirectoryUri(uri?.toString())
+            withContext(Dispatchers.Main.immediate) { refreshScheduledBackups() }
+        }
+    }
+
+    fun runScheduledBackupNow() {
+        BackupScheduler.runNow(getApplication())
+        showSnackbar("Backup queued")
+        viewModelScope.launch {
+            delay(2_000)
+            refreshScheduledBackups()
+        }
+    }
+
+    fun refreshScheduledBackups() {
+        val directoryUri = _state.value.settings.backupDirectoryUri
+        viewModelScope.launch(Dispatchers.IO) {
+            val backups = BackupCatalog.list(getApplication(), directoryUri)
+            withContext(Dispatchers.Main.immediate) { _state.update { it.copy(backupFiles = backups) } }
+        }
+    }
+
+    fun restoreScheduledBackup(backup: ScheduledBackupInfo) {
+        val profileId = activeProfileId()
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val bytes = if (backup.internalPath != null) {
+                    File(backup.internalPath).takeIf { it.length() <= MAX_BACKUP_BYTES }?.readBytes()
+                        ?: error("Backup is unavailable or too large")
+                } else {
+                    getApplication<Application>().contentResolver.openInputStream(Uri.parse(backup.uri))?.use { input ->
+                        val output = ByteArrayOutputStream()
+                        val buffer = ByteArray(8 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count == -1) break
+                            if (output.size() + count > MAX_BACKUP_BYTES) error("Backup is too large")
+                            output.write(buffer, 0, count)
+                        }
+                        output.toByteArray()
+                    } ?: error("Could not open backup")
+                }
+                val decrypted = ScheduledBackupCrypto.decrypt(bytes)
+                val imported = backupRepository.importBytes(decrypted, profileId)
+                imported
+            }
+            withContext(Dispatchers.Main.immediate) {
+                showSnackbar(result.fold({ "Restored $it bookmarks and browser data" }, { "Could not restore backup" }))
+            }
+        }
     }
 
     fun addPrivacyCleanupAllowlist(origin: String) {
@@ -4090,6 +4308,35 @@ class BrowserViewModel private constructor(
             },
             { showSnackbar("Could not clear site data") },
         )
+    }
+
+    fun clearCurrentWorkspaceSiteData() {
+        val profileId = activeProfileId()
+        val contextId = activeContextId()
+        viewModelScope.launch(Dispatchers.IO) {
+            val scoped = contextId != null
+            val origins = (dao.getSiteSettings().filter { !scoped || it.profileId == profileId }.map { it.origin } +
+                dao.getSitePermissions().filter { !scoped || it.profileId == profileId }.map { it.origin }).distinct()
+            if (scoped) {
+                dao.deleteSitePermissionsForProfile(profileId)
+                dao.deleteSiteSettingsForProfile(profileId)
+            } else {
+                dao.clearSitePermissions()
+                dao.clearSiteSettings()
+            }
+            withContext(Dispatchers.Main.immediate) {
+                origins.forEach(::removeSiteCookieBannerMode)
+                contextId?.let { runtime.storageController.clearDataForSessionContext(it) }
+                    ?: runtime.storageController.clearData(
+                        StorageController.ClearFlags.SITE_DATA or StorageController.ClearFlags.PERMISSIONS,
+                    )
+                pageZoomByTab.clear()
+                _state.update { it.copy(siteSetting = null, securityDiagnostics = null) }
+                _state.value.tabs.filter { !it.isPrivate && it.hasPage }.forEach { it.session.reload() }
+                syncActiveTabZoom()
+                showSnackbar("Cleared site data for this workspace")
+            }
+        }
     }
 
     private fun showNextContentPermission() {
@@ -4511,9 +4758,15 @@ class BrowserViewModel private constructor(
 
     private fun releaseTabResources(tab: BrowserTabState, remember: Boolean = true) {
         if (remember) rememberClosedTab(tab)
+        if (remember && !tab.isPrivate && tab.hasPage) {
+            viewModelScope.launch(Dispatchers.IO) {
+                settingsRepository.addTabTombstone(tab.id)
+            }
+        }
         if (tab.isPrivate) getApplication<DextraApplication>().markPrivateTabClosed()
         rejectPermissionsForTab(tab.id)
         pageZoomByTab.remove(tab.id)
+        lastTabActivityAt.remove(tab.id)
         lastProgressUpdateAt.remove(tab.id)
         trackerBlockedByTab.remove(tab.id)
         mediaSessions.remove(tab.id)
@@ -4597,6 +4850,8 @@ class BrowserViewModel private constructor(
             )
         }
         val activeTab = restored.getOrNull(activeIndex.coerceIn(0, restored.lastIndex)) ?: restored.first()
+        val restoredAt = System.currentTimeMillis()
+        restored.forEach { lastTabActivityAt[it.id] = restoredAt }
         _state.update {
             it.copy(
                 tabs = restored,
@@ -4817,6 +5072,8 @@ class BrowserViewModel private constructor(
         secondaryId: String? = null,
         keepActiveMedia: Boolean = false,
     ) {
+        val now = System.currentTimeMillis()
+        setOfNotNull(activeId, secondaryId).forEach { lastTabActivityAt[it] = now }
         val visibleIds = setOfNotNull(activeId, secondaryId) + if (keepActiveMedia) mediaSessions.keys else emptySet()
         _state.value.tabs.forEach { tab ->
             runCatching { tab.session.setActive(tab.id in visibleIds) }
@@ -5220,6 +5477,12 @@ class BrowserViewModel private constructor(
                 org.mozilla.geckoview.GeckoRuntimeSettings.TRR_MODE_OFF
             },
         )
+    }
+
+    private fun applyFingerprintingProtection(enabled: Boolean) {
+        runtime.settings.setFingerprintingProtection(enabled)
+        runtime.settings.setBaselineFingerprintingProtection(enabled)
+        runtime.settings.setFingerprintingProtectionPrivateBrowsing(true)
     }
 
     private fun applyCookieBannerMode(mode: Int) {
@@ -5915,9 +6178,9 @@ class BrowserViewModel private constructor(
             val resolvedUrl = url.orEmpty()
             recordNetworkActivity(tabId, resolvedUrl, "navigation", "loaded")
             if (resolvedUrl == "about:blank") {
-                updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0) }
+            updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, loadError = null, progress = 0) }
             } else {
-                updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://"), crashed = false) }
+                updateTab(tabId) { it.copy(url = resolvedUrl, isSecure = resolvedUrl.startsWith("https://"), loadError = null, crashed = false) }
             }
             if (_state.value.activeTabId == tabId) refreshSiteSetting(tabId)
             persistOpenTabs()
@@ -5959,7 +6222,10 @@ class BrowserViewModel private constructor(
             error: org.mozilla.geckoview.WebRequestError,
         ): GeckoResult<String> {
             if (!isCurrentTabSession(tabId, session)) return GeckoResult.fromValue(null)
-            recordCompatibilityEvent(tabId, "error", "Load error ${error.code} for $uri")
+            val message = "Load error ${error.code} for ${uri.orEmpty()}".trim()
+            updateTab(tabId) { it.copy(isLoading = false, loadError = message) }
+            recordCompatibilityEvent(tabId, "error", message)
+            showSnackbar("Page failed to load")
             return GeckoResult.fromValue(null)
         }
 
@@ -6014,16 +6280,16 @@ class BrowserViewModel private constructor(
             if (_state.value.activeTabId == tabId) _state.update { it.copy(translation = null) }
             lastProgressUpdateAt.remove(tabId)
             if (url == "about:blank") {
-                updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, progress = 0, favicon = null) }
+                updateTab(tabId) { it.copy(url = "", title = "New tab", hasPage = false, isLoading = false, loadError = null, progress = 0, favicon = null) }
             } else {
-                updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, progress = 0, favicon = null, crashed = false) }
+                updateTab(tabId) { it.copy(url = url, hasPage = true, isLoading = true, loadError = null, progress = 0, favicon = null, crashed = false) }
             }
             _state.update { if (it.activeTabId == tabId) it.copy(webAppManifest = null, readerMode = null) else it }
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {
             if (!isCurrentTabSession(tabId, session)) return
-            updateTab(tabId) { it.copy(isLoading = false, progress = if (success) 100 else 0) }
+            updateTab(tabId) { it.copy(isLoading = false, loadError = if (success) null else it.loadError ?: "Page load did not complete", progress = if (success) 100 else 0) }
             if (!success) recordCompatibilityEvent(tabId, "warning", "Page load did not complete")
             if (success) {
                 recordHistory(tabId)
@@ -6323,7 +6589,12 @@ class BrowserViewModel private constructor(
                 return result
             }
             viewModelScope.launch {
+                val expiryDays = _state.value.settings.permissionExpiryDays
                 val saved = dao.getSitePermission(profileId, origin, permission.permission.toString())
+                    ?.takeIf { expiryDays <= 0 || it.updatedAt >= System.currentTimeMillis() - expiryDays * 86_400_000L }
+                if (saved == null && expiryDays > 0) {
+                    dao.deleteSitePermission(profileId, origin, permission.permission.toString())
+                }
                 if (!isCurrentTabSession(tabId, session) || activeProfileId() != profileId) {
                     result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
                     return@launch

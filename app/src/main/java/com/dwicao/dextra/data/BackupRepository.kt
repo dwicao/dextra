@@ -9,7 +9,12 @@ import java.io.InputStreamReader
 
 /** Versioned, portable backup for local browser data. Private tabs are never persisted here. */
 class BackupRepository(private val context: Context, private val dao: BrowserDao) {
-    suspend fun export(uri: Uri) {
+    suspend fun export(uri: Uri, settings: BrowserSettings? = null) {
+        context.contentResolver.openOutputStream(uri)?.use { it.write(exportBytes(settings)) }
+            ?: error("Could not open backup destination")
+    }
+
+    suspend fun exportBytes(settings: BrowserSettings? = null): ByteArray {
         val root = JSONObject().apply {
             put("format", "dextra-backup")
             put("version", 1)
@@ -35,20 +40,75 @@ class BackupRepository(private val context: Context, private val dao: BrowserDao
              put("installedWebApps", JSONArray(dao.getInstalledWebApps().map { JSONObject().apply {
                  put("id", it.id); put("origin", it.origin); put("name", it.name)
                 put("startUrl", it.startUrl); put("scope", it.scope); put("installedAt", it.installedAt); put("iconUrl", it.iconUrl)
-             } }))
-        }
-        context.contentResolver.openOutputStream(uri)?.use { it.write(root.toString().toByteArray(Charsets.UTF_8)) }
-            ?: error("Could not open backup destination")
+              } }))
+         settings?.let { browserSettings ->
+             put("settings", JSONObject().apply {
+                 put("homepage", browserSettings.homepage)
+                 put("openTabs", JSONArray(browserSettings.openTabs.filterNot { it.isPrivate }.map { tab ->
+                     JSONObject().put("url", tab.url).put("private", false).put("pinned", tab.pinned)
+                         .put("groupId", tab.groupId).put("id", tab.id).put("title", tab.title)
+                         .put("sessionState", tab.sessionState)
+                 }))
+                 put("activeTabIndex", browserSettings.activeTabIndex)
+                 put("tabGroups", JSONArray(browserSettings.tabGroups.map { group ->
+                     JSONObject().put("id", group.id).put("title", group.title).put("color", group.color).put("collapsed", group.collapsed)
+                 }))
+                 put("workspaces", JSONArray(browserSettings.workspaces.map { workspace ->
+                     JSONObject().apply {
+                         put("id", workspace.id).put("title", workspace.title).put("color", workspace.color)
+                         put("contextId", workspace.contextId).put("createdAt", workspace.createdAt)
+                         put("lastUsedAt", workspace.lastUsedAt).put("activeTabIndex", workspace.activeTabIndex)
+                         put("tabs", JSONArray(workspace.tabs.filterNot { it.isPrivate }.map { tab ->
+                             JSONObject().put("url", tab.url).put("private", false).put("pinned", tab.pinned)
+                                 .put("groupId", tab.groupId).put("id", tab.id).put("title", tab.title)
+                                 .put("sessionState", tab.sessionState)
+                         }))
+                         put("groups", JSONArray(workspace.tabGroups.map { group ->
+                             JSONObject().put("id", group.id).put("title", group.title).put("color", group.color).put("collapsed", group.collapsed)
+                         }))
+                     }
+                 }))
+                 put("activeWorkspaceId", browserSettings.activeWorkspaceId)
+                 put("tabTombstones", JSONObject(browserSettings.tabTombstones))
+             })
+         }
+         }
+         return root.toString().toByteArray(Charsets.UTF_8).also {
+             require(it.size <= MAX_BYTES) { "Backup is too large" }
+         }
     }
 
     suspend fun import(uri: Uri, targetProfileId: String = DEFAULT_WORKSPACE_ID): Int {
+        return importBytes(readBytes(uri), targetProfileId)
+    }
+
+    suspend fun readBytes(uri: Uri): ByteArray {
         val text = context.contentResolver.openInputStream(uri)?.use { input ->
             BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readText()
         } ?: error("Could not open backup")
-        require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "Backup is too large" }
-        val root = JSONObject(text)
+        return text.toByteArray(Charsets.UTF_8).also {
+            require(it.size <= MAX_BYTES) { "Backup is too large" }
+        }
+    }
+
+    suspend fun importBytes(bytes: ByteArray, targetProfileId: String = DEFAULT_WORKSPACE_ID): Int {
+        require(bytes.size <= MAX_BYTES) { "Backup is too large" }
+        val root = JSONObject(String(bytes, Charsets.UTF_8))
         require(root.optString("format") == "dextra-backup") { "Unsupported backup format" }
         require(root.optInt("version") == 1) { "Unsupported backup version" }
+        return importRoot(root, targetProfileId)
+    }
+
+    fun settingsFromBytes(bytes: ByteArray): JSONObject? {
+        require(bytes.size <= MAX_BYTES) { "Backup is too large" }
+        val root = JSONObject(String(bytes, Charsets.UTF_8))
+        require(root.optString("format") == "dextra-backup" && root.optInt("version") == 1) {
+            "Unsupported backup format"
+        }
+        return root.optJSONObject("settings")
+    }
+
+    private suspend fun importRoot(root: JSONObject, targetProfileId: String): Int {
         var imported = 0
         root.optJSONArray("bookmarks")?.let { array ->
             for (i in 0 until array.length()) array.getJSONObject(i).let {

@@ -46,6 +46,8 @@ data class StartPageSettings(
     val customLinks: List<StartPageLink> = emptyList(),
 )
 
+enum class DexLayoutPreset { AUTO, FOCUS, SPLIT, PANELS }
+
 private val RemovedDefaultAdBlockFilterUrls = setOf(
     "https://easylist.to/easylist/easylist.txt",
     "https://easylist.to/easylist/easyprivacy.txt",
@@ -92,6 +94,17 @@ data class BrowserSettings(
     val activeWorkspaceId: String = DEFAULT_WORKSPACE_ID,
     val openTabsRevision: Long = 0L,
     val syncApplyToken: String? = null,
+    val autoSuspendMinutes: Int = 0,
+    val permissionExpiryDays: Int = 0,
+    val fingerprintingProtectionEnabled: Boolean = false,
+    val dexLayoutPreset: DexLayoutPreset = DexLayoutPreset.AUTO,
+    val backupEnabled: Boolean = false,
+    val backupIntervalHours: Int = 24,
+    val backupRetentionCount: Int = 5,
+    val backupDirectoryUri: String? = null,
+    val lastBackupAt: Long? = null,
+    val backupLastError: String? = null,
+    val tabTombstones: Map<String, Long> = emptyMap(),
 )
 
 data class ExtensionInstallRecord(
@@ -203,6 +216,17 @@ class SettingsRepository(private val context: Context) {
         val activeWorkspaceId = stringPreferencesKey("active_workspace_id")
         val openTabsRevision = longPreferencesKey("open_tabs_revision")
         val syncApplyToken = stringPreferencesKey("sync_apply_token")
+        val autoSuspendMinutes = intPreferencesKey("auto_suspend_minutes")
+        val permissionExpiryDays = intPreferencesKey("permission_expiry_days")
+        val fingerprintingProtectionEnabled = booleanPreferencesKey("fingerprinting_protection_enabled")
+        val dexLayoutPreset = stringPreferencesKey("dex_layout_preset")
+        val backupEnabled = booleanPreferencesKey("backup_enabled")
+        val backupIntervalHours = intPreferencesKey("backup_interval_hours")
+        val backupRetentionCount = intPreferencesKey("backup_retention_count")
+        val backupDirectoryUri = stringPreferencesKey("backup_directory_uri")
+        val lastBackupAt = longPreferencesKey("last_backup_at")
+        val backupLastError = stringPreferencesKey("backup_last_error")
+        val tabTombstones = stringPreferencesKey("tab_tombstones")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -297,6 +321,71 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setStartPageSettings(settings: StartPageSettings) {
         context.settingsDataStore.edit { it[Keys.startPage] = settings.toJson().toString() }
+    }
+
+    suspend fun setAutoSuspendMinutes(minutes: Int) {
+        context.settingsDataStore.edit { it[Keys.autoSuspendMinutes] = minutes.coerceIn(0, 7 * 24 * 60) }
+    }
+
+    suspend fun setPermissionExpiryDays(days: Int) {
+        context.settingsDataStore.edit { it[Keys.permissionExpiryDays] = days.coerceIn(0, 3650) }
+    }
+
+    suspend fun setFingerprintingProtectionEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { it[Keys.fingerprintingProtectionEnabled] = enabled }
+    }
+
+    suspend fun setDexLayoutPreset(preset: DexLayoutPreset) {
+        context.settingsDataStore.edit { it[Keys.dexLayoutPreset] = preset.name }
+    }
+
+    suspend fun setBackupSettings(enabled: Boolean, intervalHours: Int, retentionCount: Int) {
+        context.settingsDataStore.edit {
+            it[Keys.backupEnabled] = enabled
+            it[Keys.backupIntervalHours] = intervalHours.coerceIn(1, 168)
+            it[Keys.backupRetentionCount] = retentionCount.coerceIn(1, 30)
+        }
+    }
+
+    suspend fun setBackupDirectoryUri(uri: String?) {
+        context.settingsDataStore.edit { preferences ->
+            if (uri.isNullOrBlank()) preferences.remove(Keys.backupDirectoryUri)
+            else preferences[Keys.backupDirectoryUri] = uri
+        }
+    }
+
+    suspend fun recordBackupResult(at: Long?, error: String?) {
+        context.settingsDataStore.edit { preferences ->
+            if (at == null) preferences.remove(Keys.lastBackupAt) else preferences[Keys.lastBackupAt] = at
+            if (error.isNullOrBlank()) preferences.remove(Keys.backupLastError)
+            else preferences[Keys.backupLastError] = error.take(300)
+        }
+    }
+
+    suspend fun addTabTombstone(tabId: String, closedAt: Long = System.currentTimeMillis()) {
+        if (tabId.isBlank()) return
+        context.settingsDataStore.edit { preferences ->
+            val values = parseTabTombstones(preferences[Keys.tabTombstones]).toMutableMap()
+            values[tabId] = closedAt
+            val bounded = values.entries.sortedByDescending { it.value }.take(MAX_TAB_TOMBSTONES)
+            preferences[Keys.tabTombstones] = JSONObject(bounded.associate { it.key to it.value }).toString()
+        }
+    }
+
+    suspend fun removeTabTombstones(tabIds: Collection<String>) {
+        if (tabIds.isEmpty()) return
+        context.settingsDataStore.edit { preferences ->
+            val values = parseTabTombstones(preferences[Keys.tabTombstones]).toMutableMap()
+            tabIds.forEach(values::remove)
+            preferences[Keys.tabTombstones] = JSONObject(values).toString()
+        }
+    }
+
+    suspend fun pruneTabTombstones(before: Long) {
+        context.settingsDataStore.edit { preferences ->
+            val values = parseTabTombstones(preferences[Keys.tabTombstones]).filterValues { it >= before }
+            preferences[Keys.tabTombstones] = JSONObject(values).toString()
+        }
     }
 
     suspend fun updateStartPage(transform: (StartPageSettings) -> StartPageSettings) {
@@ -605,6 +694,7 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun applySyncSettings(settings: JSONObject) {
         context.settingsDataStore.edit { preferences ->
+            var sessionChanged = false
             settings.optString("theme").takeIf { it in ThemeMode.values().map(ThemeMode::name) }
                 ?.let { preferences[Keys.theme] = it }
             settings.optString("searchEngine").takeIf { it in SearchEngine.values().map(SearchEngine::name) }
@@ -636,6 +726,11 @@ class SettingsRepository(private val context: Context) {
                 ?.let { preferences[Keys.accessibilityTextScale] = it.coerceIn(1f, 1.5f).toString() }
             if (settings.has("highContrast")) preferences[Keys.highContrast] = settings.optBoolean("highContrast")
             if (settings.has("reduceMotion")) preferences[Keys.reduceMotion] = settings.optBoolean("reduceMotion")
+            if (settings.has("autoSuspendMinutes")) preferences[Keys.autoSuspendMinutes] = settings.optInt("autoSuspendMinutes").coerceIn(0, 7 * 24 * 60)
+            if (settings.has("permissionExpiryDays")) preferences[Keys.permissionExpiryDays] = settings.optInt("permissionExpiryDays").coerceIn(0, 3650)
+            if (settings.has("fingerprintingProtectionEnabled")) preferences[Keys.fingerprintingProtectionEnabled] = settings.optBoolean("fingerprintingProtectionEnabled")
+            settings.optString("dexLayoutPreset").takeIf { it in DexLayoutPreset.values().map(DexLayoutPreset::name) }
+                ?.let { preferences[Keys.dexLayoutPreset] = it }
             if (settings.has("dnsOverHttpsEnabled")) preferences[Keys.dnsOverHttpsEnabled] = settings.optBoolean("dnsOverHttpsEnabled")
             settings.optString("dnsProvider").takeIf { it in DnsProvider.values().map(DnsProvider::name) }
                 ?.let { preferences[Keys.dnsProvider] = it }
@@ -666,36 +761,63 @@ class SettingsRepository(private val context: Context) {
                 }.take(MAX_CUSTOM_SEARCH_ENGINES)
                 preferences[Keys.customSearchEngines] = JSONArray(engines.map(::customSearchEngineToJson)).toString()
             }
+            val tombstones = settings.optJSONObject("tabTombstones")?.let { value ->
+                value.keys().asSequence().toSet()
+            }.orEmpty()
+            if (settings.has("tabTombstones")) {
+                val tombstonePayload = JSONObject(
+                    settings.optJSONObject("tabTombstones")?.let { value ->
+                        value.keys().asSequence().mapNotNull { id ->
+                            val timestamp = value.optLong(id, Long.MIN_VALUE)
+                            if (id.isBlank() || timestamp == Long.MIN_VALUE) null else id to timestamp
+                        }.toMap()
+                    }.orEmpty(),
+                ).toString()
+                sessionChanged = preferences[Keys.tabTombstones] != tombstonePayload
+                preferences[Keys.tabTombstones] = tombstonePayload
+            }
             settings.optJSONArray("openTabs")?.let { array ->
-                preferences[Keys.openTabs] = syncedTabsJson(array).toString()
+                val tabPayload = syncedTabsJson(array, tombstones).toString()
+                sessionChanged = sessionChanged || preferences[Keys.openTabs] != tabPayload
+                preferences[Keys.openTabs] = tabPayload
             }
             if (settings.has("activeTabIndex")) {
-                preferences[Keys.activeTabIndex] = settings.optInt("activeTabIndex", 0).coerceAtLeast(0)
+                val activeIndex = settings.optInt("activeTabIndex", 0).coerceAtLeast(0)
+                sessionChanged = sessionChanged || preferences[Keys.activeTabIndex] != activeIndex
+                preferences[Keys.activeTabIndex] = activeIndex
             }
             settings.optJSONArray("tabGroups")?.let { array ->
-                preferences[Keys.tabGroups] = syncedGroupsJson(array).toString()
+                val groupPayload = syncedGroupsJson(array).toString()
+                sessionChanged = sessionChanged || preferences[Keys.tabGroups] != groupPayload
+                preferences[Keys.tabGroups] = groupPayload
             }
             settings.optJSONArray("workspaces")?.let { array ->
-                preferences[Keys.workspaces] = syncedWorkspacesJson(array).toString()
+                val workspacePayload = syncedWorkspacesJson(array, tombstones).toString()
+                sessionChanged = sessionChanged || preferences[Keys.workspaces] != workspacePayload
+                preferences[Keys.workspaces] = workspacePayload
             }
             settings.optString("activeWorkspaceId").takeIf(String::isNotBlank)?.let {
-                preferences[Keys.activeWorkspaceId] = it.take(100)
+                val workspaceId = it.take(100)
+                sessionChanged = sessionChanged || preferences[Keys.activeWorkspaceId] != workspaceId
+                preferences[Keys.activeWorkspaceId] = workspaceId
             }
-            preferences[Keys.syncApplyToken] = UUID.randomUUID().toString()
+            if (sessionChanged) preferences[Keys.syncApplyToken] = UUID.randomUUID().toString()
         }
     }
 
-    private fun syncedTabsJson(values: JSONArray): JSONArray = JSONArray().also { output ->
+    private fun syncedTabsJson(values: JSONArray, excludedIds: Set<String> = emptySet()): JSONArray = JSONArray().also { output ->
         for (index in 0 until values.length().coerceAtMost(MAX_WORKSPACE_TABS)) {
             val value = values.optJSONObject(index) ?: continue
             val url = value.optString("url").takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: continue
+            val id = value.optString("id").takeIf(String::isNotBlank)
+            if (id in excludedIds) continue
             output.put(
                 JSONObject()
                     .put("url", url.take(2_000))
                     .put("private", false)
                     .put("pinned", value.optBoolean("pinned"))
                     .put("groupId", value.optString("groupId").takeIf(String::isNotBlank))
-                    .put("id", value.optString("id").takeIf(String::isNotBlank))
+                    .put("id", id)
                     .put("title", value.optString("title").takeIf(String::isNotBlank)?.take(200))
                     .put("sessionState", value.optString("sessionState").takeIf(String::isNotBlank)?.take(MAX_SESSION_STATE_CHARS)),
             )
@@ -716,7 +838,7 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    private fun syncedWorkspacesJson(values: JSONArray): JSONArray = JSONArray().also { output ->
+    private fun syncedWorkspacesJson(values: JSONArray, excludedIds: Set<String> = emptySet()): JSONArray = JSONArray().also { output ->
         for (index in 0 until values.length().coerceAtMost(MAX_WORKSPACES)) {
             val value = values.optJSONObject(index) ?: continue
             val id = value.optString("id").takeIf(String::isNotBlank) ?: continue
@@ -731,7 +853,7 @@ class SettingsRepository(private val context: Context) {
                     .put("createdAt", value.optLong("createdAt", System.currentTimeMillis()))
                     .put("lastUsedAt", value.optLong("lastUsedAt", 0L))
                     .put("activeTabIndex", value.optInt("activeTabIndex", 0).coerceAtLeast(0))
-                    .put("tabs", syncedTabsJson(tabs))
+                    .put("tabs", syncedTabsJson(tabs, excludedIds))
                     .put("groups", syncedGroupsJson(groups)),
             )
         }
@@ -796,6 +918,18 @@ class SettingsRepository(private val context: Context) {
             ?: DEFAULT_WORKSPACE_ID,
         openTabsRevision = get(Keys.openTabsRevision) ?: 0L,
         syncApplyToken = get(Keys.syncApplyToken),
+        autoSuspendMinutes = (get(Keys.autoSuspendMinutes) ?: 0).coerceIn(0, 7 * 24 * 60),
+        permissionExpiryDays = (get(Keys.permissionExpiryDays) ?: 0).coerceIn(0, 3650),
+        fingerprintingProtectionEnabled = get(Keys.fingerprintingProtectionEnabled) ?: false,
+        dexLayoutPreset = get(Keys.dexLayoutPreset)?.let { runCatching { DexLayoutPreset.valueOf(it) }.getOrNull() }
+            ?: DexLayoutPreset.AUTO,
+        backupEnabled = get(Keys.backupEnabled) ?: false,
+        backupIntervalHours = (get(Keys.backupIntervalHours) ?: 24).coerceIn(1, 168),
+        backupRetentionCount = (get(Keys.backupRetentionCount) ?: 5).coerceIn(1, 30),
+        backupDirectoryUri = get(Keys.backupDirectoryUri),
+        lastBackupAt = get(Keys.lastBackupAt),
+        backupLastError = get(Keys.backupLastError),
+        tabTombstones = parseTabTombstones(get(Keys.tabTombstones)),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -892,6 +1026,14 @@ class SettingsRepository(private val context: Context) {
     private fun Preferences.savedTabs(): List<SavedTab> = runCatching {
         parseSavedTabs(get(Keys.openTabs).orEmpty())
     }.getOrDefault(emptyList())
+
+    private fun parseTabTombstones(value: String?): Map<String, Long> = runCatching {
+        val json = JSONObject(value.orEmpty())
+        json.keys().asSequence().mapNotNull { id ->
+            val timestamp = json.optLong(id, Long.MIN_VALUE)
+            if (id.isBlank() || timestamp == Long.MIN_VALUE) null else id to timestamp
+        }.toMap()
+    }.getOrDefault(emptyMap())
 
     private fun Preferences.recentlyClosedTabs(): List<SavedTab> = runCatching {
         parseSavedTabs(get(Keys.recentlyClosedTabs).orEmpty())
@@ -1080,5 +1222,6 @@ class SettingsRepository(private val context: Context) {
         const val MAX_SESSION_STATE_CHARS = 256 * 1024
         const val MAX_START_PAGE_LINKS = 12
         const val MAX_PRIVACY_ALLOWLIST = 100
+        const val MAX_TAB_TOMBSTONES = 512
     }
 }

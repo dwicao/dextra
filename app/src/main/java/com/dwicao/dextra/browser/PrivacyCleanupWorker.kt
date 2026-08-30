@@ -2,6 +2,7 @@ package com.dwicao.dextra.browser
 
 import android.content.Context
 import android.net.Uri
+import com.dwicao.dextra.GeckoRuntimeHolder
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -29,6 +30,21 @@ class PrivacyCleanupWorker(
         val dao = BrowserDatabase.get(context).browserDao()
         val now = System.currentTimeMillis()
         val allowlist = settings.privacyCleanupAllowlist
+        if (settings.permissionExpiryDays > 0) {
+            val cutoff = now - TimeUnit.DAYS.toMillis(settings.permissionExpiryDays.toLong())
+            val expired = dao.getSitePermissions().filter { it.updatedAt < cutoff }
+            if (expired.isNotEmpty()) {
+                expired.forEach { permission ->
+                    dao.deleteSitePermission(permission.profileId, permission.origin, permission.permission)
+                }
+                withContext(Dispatchers.Main) {
+                    runCatching {
+                        GeckoRuntimeHolder.get(context).storageController
+                            .clearData(org.mozilla.geckoview.StorageController.ClearFlags.PERMISSIONS)
+                    }
+                }
+            }
+        }
         if (settings.historyRetentionDays > 0) {
             val cutoff = now - TimeUnit.DAYS.toMillis(settings.historyRetentionDays.toLong())
             dao.getHistory()
@@ -54,6 +70,7 @@ class PrivacyCleanupWorker(
         }
         val recoveryCutoff = now - TimeUnit.DAYS.toMillis(settings.recoveryRetentionDays.toLong())
         SettingsRepository(context).pruneSessionTimeline(recoveryCutoff)
+        SettingsRepository(context).pruneTabTombstones(recoveryCutoff)
         Result.success()
     }
 }

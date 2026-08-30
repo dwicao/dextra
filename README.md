@@ -23,11 +23,13 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Named tab session snapshots with restore and deletion.
 - Tab groups with rename, collapse, move, and delete actions.
 - Tab reorder, pinning, sleeping, and inactive-tab hibernation.
+- Configurable automatic suspension of inactive non-private tabs; active media is never suspended.
 - DeX drag-and-drop URL opening and expanded browser keyboard shortcuts.
 - Browser tabs can open in separate resizable Android document windows.
 - Two-pane split view with focus, swap, and close actions.
 - Mouse secondary-click context menus for pages and tabs.
 - Searchable tab switcher, command palette, configurable keyboard shortcuts, and hover previews.
+- Global browser search across open tabs, bookmarks, and normal history.
 - Find in page with highlighted matches, match navigation, and `Ctrl+F` support.
 - Reopen recently closed tabs with `Ctrl+Shift+T` or the browser menu.
 - Active-media tab indicators and per-tab mute controls.
@@ -72,10 +74,13 @@ Runtime testing on physical Samsung DeX hardware is still required before public
 - Android lock-screen media controls for active non-private tabs.
 - Accessibility text scaling, high-contrast controls, reduced-motion behavior, and per-site page zoom.
 - Optional periodic encrypted WebDAV synchronization with HTTPS-only transport and Keystore-protected credentials.
-- WebDAV conflict detection with explicit keep-remote, keep-local, and merge resolution.
-- WebAuthn related-origin approval prompts for passkey flows.
+- WebDAV conflict detection with explicit keep-remote, keep-local, merge, tab tombstones, and per-tab conflict summaries.
+- Native GeckoView WebAuthn/passkey routing through Android Credential Manager and FIDO activity results.
+- Scheduled encrypted local backups with retention rotation, library restore/rollback, and selectable storage folders; open tabs remain unchanged during backup restore.
+- Exportable performance, network, and compatibility diagnostics.
 - Workspace tab sessions with separate normal tabs, groups, and active-tab state.
 - Container-backed workspaces isolate GeckoView cookies and storage with per-container site permissions and overrides.
+- Workspace-scoped site-data cleanup, permission expiry, and documented Gecko fingerprinting protection.
 - Automatic session recovery timeline with restorable background checkpoints.
 - Site permission center with per-origin allow, block, ask, and reset controls.
 - Security diagnostics with HTTPS certificate details, SHA-256 fingerprint, DNS mode, and blocker statistics.
@@ -155,7 +160,7 @@ adb logcat -b crash -v threadtime
 
 Dextra does not attempt to impersonate Chrome, Safari, another Android device, or an automation client. It uses the real GeckoView user agent and documented GeckoView settings. Browser and device fingerprint randomization is intentionally not part of the project because inconsistent spoofing can reduce compatibility and make a client less trustworthy.
 
-Privacy-sensitive features should be explicit, origin-scoped where possible, clearable by the user, and compatible with normal website behavior. Private browsing does not hide files downloaded to device storage; Dextra labels those downloads accordingly.
+Privacy-sensitive features should be explicit, origin-scoped where possible, clearable by the user, and compatible with normal website behavior. The optional fingerprinting-protection switch uses GeckoView's documented protection settings; it does not inject spoofed canvas, WebGL, font, sensor, or device values. Private browsing does not hide files downloaded to device storage; Dextra labels those downloads accordingly.
 
 ## Testing
 

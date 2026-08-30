@@ -41,6 +41,14 @@ All notable changes to Dextra are documented here. The commit log at the end rec
 - WebDAV synchronization for normal open tabs, tab groups, active workspace, and workspace snapshots.
 - Manual encrypted address editor backed by GeckoView address autofill.
 - Observable compatibility diagnostics and multi-tab media session controls.
+- Native GeckoView WebAuthn passkey activity routing through Android Credential Manager/FIDO.
+- Tab tombstones, per-tab sync conflict summaries, and selective session-tab restore.
+- Global browser search across tabs, bookmarks, and normal history.
+- Configurable automatic suspension for inactive tabs.
+- Workspace-scoped site cleanup, permission expiry, and documented fingerprinting protection.
+- Samsung DeX layout presets with a persistent quick-panel rail.
+- Scheduled encrypted local backups with rotation and library restore/rollback without changing open tabs.
+- Exportable diagnostics bundles and improved load-error, snackbar, accessibility, and destructive-action UX.
 
 ## [0.5.0] - 2026-08-29
 

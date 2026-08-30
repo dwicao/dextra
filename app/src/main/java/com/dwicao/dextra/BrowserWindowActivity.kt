@@ -6,6 +6,7 @@ import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import com.dwicao.dextra.browser.BrowserViewModel
@@ -15,6 +16,9 @@ class BrowserWindowActivity : ComponentActivity() {
     private val browserViewModel: BrowserViewModel by viewModels {
         BrowserViewModel.Factory(application, standaloneWindow = true)
     }
+    private val geckoActivityResultLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result -> GeckoActivityResultRouter.complete(result.resultCode, result.data) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,12 +57,19 @@ class BrowserWindowActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        GeckoActivityResultRouter.register(this) { request -> geckoActivityResultLauncher.launch(request) }
         browserViewModel.onAppForeground()
     }
 
     override fun onStop() {
+        GeckoActivityResultRouter.unregister(this)
         browserViewModel.onAppBackground()
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        GeckoActivityResultRouter.onHostDestroyed(this, isChangingConfigurations)
+        super.onDestroy()
     }
 
     @Suppress("RestrictedApi")

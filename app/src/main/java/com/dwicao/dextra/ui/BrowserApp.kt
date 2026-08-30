@@ -87,6 +87,7 @@ import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.ViewColumn
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -218,6 +219,7 @@ import com.dwicao.dextra.browser.TabSwitcherState
 import com.dwicao.dextra.browser.buildAddressSuggestions
 import com.dwicao.dextra.browser.buildPrivacyOrigins
 import com.dwicao.dextra.data.SavedTabGroup
+import com.dwicao.dextra.data.SavedTab
 import com.dwicao.dextra.data.AdBlockFilter
 import com.dwicao.dextra.data.Bookmark
 import com.dwicao.dextra.data.HistoryEntry
@@ -239,6 +241,8 @@ import com.dwicao.dextra.data.SyncSelection
 import com.dwicao.dextra.data.SyncPreview
 import com.dwicao.dextra.data.StartPageLink
 import com.dwicao.dextra.data.StartPageSettings
+import com.dwicao.dextra.data.DexLayoutPreset
+import com.dwicao.dextra.browser.ScheduledBackupInfo
 import com.dwicao.dextra.ui.LocalDextraAccessibility
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -290,12 +294,18 @@ fun DextraApp(viewModel: BrowserViewModel) {
     val htmlExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/html"),
     ) { uri -> uri?.let(viewModel::exportHtml) }
+    val diagnosticsExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri -> uri?.let(viewModel::exportDiagnostics) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
     val downloadDirectoryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree(),
     ) { uri -> uri?.let(viewModel::setDownloadDirectory) }
+    val backupDirectoryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri -> uri?.let(viewModel::setBackupDirectory) }
     val appContext = LocalContext.current
     val activity = appContext as? Activity
     val mainActivity = activity as? MainActivity
@@ -373,7 +383,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
     ) {
         Scaffold(
             modifier = Modifier.testTag("browser_surface"),
-            snackbarHost = {},
+            snackbarHost = { SnackbarHost(snackbarHostState) },
             containerColor = MaterialTheme.colorScheme.surface,
         ) { padding ->
              BrowserScreen(
@@ -388,18 +398,41 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   sitePermissions = profileSitePermissions,
                   onSetSitePermission = viewModel::setSitePermission,
                   onOpenSecurityDiagnostics = viewModel::openSecurityDiagnostics,
-                  onOpenPerformanceDashboard = viewModel::openPerformanceDashboard,
-                  onCopyPerformanceReport = viewModel::copyPerformanceReport,
-                  onOpenNetworkInspector = viewModel::openNetworkInspector,
+                   onOpenPerformanceDashboard = viewModel::openPerformanceDashboard,
+                   onCopyPerformanceReport = viewModel::copyPerformanceReport,
+                    extras = BrowserScreenExtras(
+                        onExportDiagnostics = { diagnosticsExportLauncher.launch("dextra-diagnostics.json") },
+                        autoSuspendMinutes = state.settings.autoSuspendMinutes,
+                        onSetAutoSuspendMinutes = viewModel::setAutoSuspendMinutes,
+                        permissionExpiryDays = state.settings.permissionExpiryDays,
+                        onSetPermissionExpiryDays = viewModel::setPermissionExpiryDays,
+                        fingerprintingProtectionEnabled = state.settings.fingerprintingProtectionEnabled,
+                        onSetFingerprintingProtectionEnabled = viewModel::setFingerprintingProtectionEnabled,
+                        dexLayoutPreset = state.settings.dexLayoutPreset,
+                        onSetDexLayoutPreset = viewModel::setDexLayoutPreset,
+                        backupEnabled = state.settings.backupEnabled,
+                        backupIntervalHours = state.settings.backupIntervalHours,
+                        backupRetentionCount = state.settings.backupRetentionCount,
+                        backupDirectoryUri = state.settings.backupDirectoryUri,
+                        lastBackupAt = state.settings.lastBackupAt,
+                        backupLastError = state.settings.backupLastError,
+                        backupFiles = state.backupFiles,
+                        onSetBackupSettings = viewModel::setBackupSettings,
+                        onPickBackupDirectory = { backupDirectoryLauncher.launch(state.settings.backupDirectoryUri?.let(Uri::parse)) },
+                        onResetBackupDirectory = { viewModel.setBackupDirectory(null) },
+                        onRunScheduledBackup = viewModel::runScheduledBackupNow,
+                        onRefreshScheduledBackups = viewModel::refreshScheduledBackups,
+                        onRestoreScheduledBackup = viewModel::restoreScheduledBackup,
+                        onClearWorkspaceSiteData = viewModel::clearCurrentWorkspaceSiteData,
+                    ),
+                   onOpenNetworkInspector = viewModel::openNetworkInspector,
                   onClearNetworkActivity = viewModel::clearNetworkActivity,
                   onShareCurrentWorkspaceTabs = viewModel::shareCurrentWorkspaceTabs,
                   onOpenMediaManager = viewModel::openMediaManager,
                   onControlMedia = viewModel::controlMedia,
                   onOpenCompatibilityDiagnostics = viewModel::openCompatibilityDiagnostics,
                   onClearCompatibilityEvents = viewModel::clearCompatibilityEvents,
-                  workspaces = state.settings.workspaces,
-                  activeWorkspaceId = state.settings.activeWorkspaceId,
-                  onCreateWorkspace = viewModel::createWorkspace,
+                   onCreateWorkspace = viewModel::createWorkspace,
                   onSwitchWorkspace = viewModel::switchWorkspace,
                   onRenameWorkspace = viewModel::renameWorkspace,
                   onDeleteWorkspace = viewModel::deleteWorkspace,
@@ -443,9 +476,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                 onDismissOverlay = viewModel::dismissOverlay,
                 onSetTheme = viewModel::setThemeMode,
                  onSetSearchEngine = viewModel::setSearchEngine,
-                 customSearchEngines = state.settings.customSearchEngines,
-                 selectedCustomSearchEngineId = state.settings.selectedCustomSearchEngineId,
-                 onSetCustomSearchEngine = viewModel::setCustomSearchEngine,
+                  onSetCustomSearchEngine = viewModel::setCustomSearchEngine,
                  onAddCustomSearchEngine = viewModel::addCustomSearchEngine,
                  onRemoveCustomSearchEngine = viewModel::removeCustomSearchEngine,
                   onExportSync = { passphrase, selection ->
@@ -457,27 +488,16 @@ fun DextraApp(viewModel: BrowserViewModel) {
                      pendingSyncImportPassphrase = passphrase
                      syncImportLauncher.launch(arrayOf("application/octet-stream", "application/json", "text/*"))
                  },
-                 accessibilityTextScale = state.settings.accessibilityTextScale,
-                 highContrast = state.settings.highContrast,
-                 reduceMotion = state.settings.reduceMotion,
-                 onSetAccessibilityTextScale = viewModel::setAccessibilityTextScale,
-                 onSetHighContrast = viewModel::setHighContrast,
-                 onSetReduceMotion = viewModel::setReduceMotion,
-                 webDav = state.webDav,
-                 onSaveWebDavSettings = viewModel::saveWebDavSettings,
+                  onSetAccessibilityTextScale = viewModel::setAccessibilityTextScale,
+                  onSetHighContrast = viewModel::setHighContrast,
+                    onSetReduceMotion = viewModel::setReduceMotion,
+                  onSaveWebDavSettings = viewModel::saveWebDavSettings,
                   onDisableWebDav = viewModel::disableWebDavSync,
                   onRunWebDavSync = viewModel::runWebDavSyncNow,
                   onResolveWebDavConflict = viewModel::resolveWebDavConflict,
                    onSetDesktopSites = viewModel::setDesktopSites,
-                   httpsOnly = state.settings.httpsOnly,
-                   onSetHttpsOnly = viewModel::setHttpsOnly,
-                   cookieBannerMode = state.settings.cookieBannerMode,
-                   onSetCookieBannerMode = viewModel::setCookieBannerMode,
-                   historyRetentionDays = state.settings.historyRetentionDays,
-                   downloadRetentionDays = state.settings.downloadRetentionDays,
-                   recoveryRetentionDays = state.settings.recoveryRetentionDays,
-                   clearSiteDataOnExit = state.settings.clearSiteDataOnExit,
-                   privacyCleanupAllowlist = state.settings.privacyCleanupAllowlist.toList(),
+                    onSetHttpsOnly = viewModel::setHttpsOnly,
+                    onSetCookieBannerMode = viewModel::setCookieBannerMode,
                    onSetHistoryRetentionDays = viewModel::setHistoryRetentionDays,
                    onSetDownloadRetentionDays = viewModel::setDownloadRetentionDays,
                    onSetRecoveryRetentionDays = viewModel::setRecoveryRetentionDays,
@@ -486,23 +506,20 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    onRemovePrivacyCleanupAllowlist = viewModel::removePrivacyCleanupAllowlist,
                    onRunPrivacyCleanup = viewModel::runPrivacyCleanupNow,
                    onSetHomepage = viewModel::setHomepage,
-                   startPage = state.settings.startPage,
-                   onSetStartPageQuickLinks = viewModel::setStartPageQuickLinks,
+                    onSetStartPageQuickLinks = viewModel::setStartPageQuickLinks,
                    onSetStartPagePrivacyTip = viewModel::setStartPagePrivacyTip,
                    onAddStartPageLink = viewModel::addStartPageLink,
                    onRemoveStartPageLink = viewModel::removeStartPageLink,
                    onClearSitePermissions = viewModel::clearSitePermissions,
                    onOpenPrivacyDashboard = { viewModel.setOverlay(BrowserOverlay.PRIVACY) },
                     onClearSiteData = viewModel::clearSiteData,
-                    onForgetSite = viewModel::forgetSite,
-                    onClearAllSiteData = viewModel::clearAllSiteData,
+                     onForgetSite = viewModel::forgetSite,
+                     onClearAllSiteData = viewModel::clearAllSiteData,
                    onSetTabBarWithAddressBar = viewModel::setTabBarWithAddressBar,
                    onSetVerticalTabs = viewModel::setVerticalTabs,
                    onPickDownloadDirectory = { downloadDirectoryLauncher.launch(state.settings.downloadDirectoryUri?.let(Uri::parse)) },
                    onResetDownloadDirectory = { viewModel.setDownloadDirectory(null) },
-                  shortcutBindings = state.settings.shortcutBindings,
-                  onSetKeyboardShortcut = { command, chord -> viewModel.setKeyboardShortcut(command, chord) },
-                  capturingShortcut = state.capturingShortcut,
+                   onSetKeyboardShortcut = { command, chord -> viewModel.setKeyboardShortcut(command, chord) },
                   onBeginKeyboardShortcutCapture = viewModel::beginKeyboardShortcutCapture,
                   onCancelKeyboardShortcutCapture = viewModel::cancelKeyboardShortcutCapture,
                  onSetDnsOverHttpsEnabled = viewModel::setDnsOverHttpsEnabled,
@@ -547,18 +564,12 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    },
                     onSaveOffline = viewModel::saveCurrentPageOffline,
                     onOpenOffline = viewModel::openOfflineArticle,
-                     sessionSnapshots = state.settings.sessionSnapshots,
-                     sessionTimeline = state.settings.sessionTimeline,
-                     onCreateSessionSnapshot = viewModel::createSessionSnapshot,
+                      onCreateSessionSnapshot = viewModel::createSessionSnapshot,
                      onRestoreSessionSnapshot = viewModel::restoreSessionSnapshot,
-                     onDeleteSessionSnapshot = viewModel::deleteSessionSnapshot,
-                     onDeleteSessionTimeline = viewModel::deleteSessionTimeline,
-                   credentials = state.credentials,
-                   credentialCount = state.credentialCount,
-                  credentialVaultUnlocked = state.credentialVaultUnlocked,
-                    addresses = state.addresses,
-                   webPushSubscriptions = visibleWebPushSubscriptions,
-                   onDeleteCredential = viewModel::deleteCredential,
+                      onDeleteSessionSnapshot = viewModel::deleteSessionSnapshot,
+                      onDeleteSessionTimeline = viewModel::deleteSessionTimeline,
+                      onRestoreSessionTab = viewModel::restoreSessionTab,
+                    onDeleteCredential = viewModel::deleteCredential,
                    onRequestCredentialUnlock = viewModel::requestCredentialUnlock,
                    onLockCredentialVault = viewModel::lockCredentialVault,
                     onClearCredentials = viewModel::clearCredentials,
@@ -573,9 +584,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                    onOpenInstalledWebApp = viewModel::openInstalledWebApp,
                    onRefreshInstalledWebApp = viewModel::refreshInstalledWebApp,
                    onUninstallWebApp = viewModel::uninstallWebApp,
-                installedExtensions = state.installedExtensions,
-                extensionInstallInProgress = state.extensionInstallInProgress,
-                onInstallExtension = viewModel::installExtension,
+                 onInstallExtension = viewModel::installExtension,
                 onOpenFirefoxAddons = viewModel::openFirefoxAddons,
                  onSetExtensionEnabled = viewModel::setExtensionEnabled,
                   onSetExtensionPrivateBrowsing = viewModel::setExtensionPrivateBrowsing,
@@ -583,8 +592,7 @@ fun DextraApp(viewModel: BrowserViewModel) {
                   onUpdateExtension = viewModel::updateExtension,
                  onOpenExtensionOptions = viewModel::openExtensionOptions,
                  onUninstallExtension = viewModel::uninstallExtension,
-                 extensionActions = state.extensionActions,
-                 onClickExtensionAction = viewModel::clickExtensionAction,
+                  onClickExtensionAction = viewModel::clickExtensionAction,
                 onOpenDownload = viewModel::openDownload,
                 onShareDownload = viewModel::shareDownload,
                   onToggleDownload = viewModel::toggleDownload,
@@ -597,17 +605,13 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  onRemoveDownload = viewModel::removeDownload,
                  onClearCompletedDownloads = viewModel::clearCompletedDownloads,
                  onResolvePermission = viewModel::resolveContentPermission,
-                extensionInstallPrompt = state.extensionInstallPrompt,
-                onResolveExtensionInstall = viewModel::resolveExtensionInstall,
-                extensionUpdatePrompt = state.extensionUpdatePrompt,
-                onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
+                 onResolveExtensionInstall = viewModel::resolveExtensionInstall,
+                 onResolveExtensionUpdate = viewModel::resolveExtensionUpdate,
                   onContextMenuAction = viewModel::handleContextMenuAction,
                   onDismissContextMenu = viewModel::dismissContextMenu,
                   onTabContextMenu = viewModel::showTabContextMenu,
-                  extensionPopup = state.extensionPopup,
-                  onCloseExtensionPopup = viewModel::closeExtensionPopup,
-                  findInPage = state.findInPage,
-                  onUpdateFindInPage = viewModel::updateFindInPage,
+                   onCloseExtensionPopup = viewModel::closeExtensionPopup,
+                   onUpdateFindInPage = viewModel::updateFindInPage,
                   onFindNext = viewModel::findNext,
                    onCloseFindInPage = viewModel::closeFindInPage,
                )
@@ -621,13 +625,16 @@ fun DextraApp(viewModel: BrowserViewModel) {
                  )
              }
               state.tabSwitcher?.let { switcher ->
-                 TabSwitcherDialog(
-                     state = switcher,
-                     tabs = state.tabs,
-                     onQueryChange = viewModel::updateTabSwitcher,
-                     onMoveSelection = viewModel::moveTabSelection,
-                     onSelect = viewModel::selectTabFromSwitcher,
-                     onDismiss = viewModel::closeTabSwitcher,
+                  TabSwitcherDialog(
+                      state = switcher,
+                      tabs = state.tabs,
+                      bookmarks = bookmarks,
+                      history = history,
+                      onQueryChange = viewModel::updateTabSwitcher,
+                      onMoveSelection = viewModel::moveTabSelection,
+                      onSelect = viewModel::selectTabFromSwitcher,
+                      onOpenUrl = { url -> viewModel.closeTabSwitcher(); viewModel.openSavedPage(url) },
+                      onDismiss = viewModel::closeTabSwitcher,
                   )
               }
                state.qrCodeUrl?.let { url ->
@@ -702,6 +709,32 @@ fun DextraApp(viewModel: BrowserViewModel) {
     }
 }
 
+private data class BrowserScreenExtras(
+    val onExportDiagnostics: () -> Unit,
+    val autoSuspendMinutes: Int,
+    val onSetAutoSuspendMinutes: (Int) -> Unit,
+    val permissionExpiryDays: Int,
+    val onSetPermissionExpiryDays: (Int) -> Unit,
+    val fingerprintingProtectionEnabled: Boolean,
+    val onSetFingerprintingProtectionEnabled: (Boolean) -> Unit,
+    val dexLayoutPreset: DexLayoutPreset,
+    val onSetDexLayoutPreset: (DexLayoutPreset) -> Unit,
+    val backupEnabled: Boolean,
+    val backupIntervalHours: Int,
+    val backupRetentionCount: Int,
+    val backupDirectoryUri: String?,
+    val lastBackupAt: Long?,
+    val backupLastError: String?,
+    val backupFiles: List<ScheduledBackupInfo>,
+    val onSetBackupSettings: (Boolean, Int, Int) -> Unit,
+    val onPickBackupDirectory: () -> Unit,
+    val onResetBackupDirectory: () -> Unit,
+    val onRunScheduledBackup: () -> Unit,
+    val onRefreshScheduledBackups: () -> Unit,
+    val onRestoreScheduledBackup: (ScheduledBackupInfo) -> Unit,
+    val onClearWorkspaceSiteData: () -> Unit,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BrowserScreen(
@@ -716,18 +749,17 @@ private fun BrowserScreen(
     sitePermissions: List<SitePermission>,
     onSetSitePermission: (String, String, String) -> Unit,
     onOpenSecurityDiagnostics: () -> Unit,
-    onOpenPerformanceDashboard: () -> Unit,
-    onCopyPerformanceReport: () -> Unit,
-    onOpenNetworkInspector: () -> Unit,
+     onOpenPerformanceDashboard: () -> Unit,
+     onCopyPerformanceReport: () -> Unit,
+     extras: BrowserScreenExtras,
+     onOpenNetworkInspector: () -> Unit,
     onShareCurrentWorkspaceTabs: () -> Unit,
     onOpenMediaManager: () -> Unit,
      onControlMedia: (String, String) -> Unit,
     onOpenCompatibilityDiagnostics: () -> Unit,
     onClearCompatibilityEvents: () -> Unit,
     onClearNetworkActivity: () -> Unit,
-    workspaces: List<TabWorkspace>,
-    activeWorkspaceId: String,
-    onCreateWorkspace: (String) -> Unit,
+     onCreateWorkspace: (String) -> Unit,
     onSwitchWorkspace: (String) -> Unit,
     onRenameWorkspace: (String, String) -> Unit,
     onDeleteWorkspace: (String) -> Unit,
@@ -771,34 +803,21 @@ private fun BrowserScreen(
     onDismissOverlay: () -> Unit,
      onSetTheme: (ThemeMode) -> Unit,
      onSetSearchEngine: (SearchEngine) -> Unit,
-     customSearchEngines: List<CustomSearchEngine>,
-     selectedCustomSearchEngineId: String?,
-     onSetCustomSearchEngine: (CustomSearchEngine) -> Unit,
+      onSetCustomSearchEngine: (CustomSearchEngine) -> Unit,
      onAddCustomSearchEngine: (String, String) -> Unit,
      onRemoveCustomSearchEngine: (CustomSearchEngine) -> Unit,
       onExportSync: (String, SyncSelection) -> Unit,
      onImportSync: (String) -> Unit,
-     accessibilityTextScale: Float,
-     highContrast: Boolean,
-     reduceMotion: Boolean,
-     onSetAccessibilityTextScale: (Float) -> Unit,
-     onSetHighContrast: (Boolean) -> Unit,
-     onSetReduceMotion: (Boolean) -> Unit,
-     webDav: WebDavSettingsState,
-     onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
+      onSetAccessibilityTextScale: (Float) -> Unit,
+      onSetHighContrast: (Boolean) -> Unit,
+      onSetReduceMotion: (Boolean) -> Unit,
+      onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
      onDisableWebDav: () -> Unit,
       onRunWebDavSync: () -> Unit,
       onResolveWebDavConflict: (String) -> Unit,
       onSetDesktopSites: (Boolean) -> Unit,
-      httpsOnly: Boolean,
       onSetHttpsOnly: (Boolean) -> Unit,
-      cookieBannerMode: Int,
       onSetCookieBannerMode: (Int) -> Unit,
-      historyRetentionDays: Int,
-      downloadRetentionDays: Int,
-      recoveryRetentionDays: Int,
-      clearSiteDataOnExit: Boolean,
-      privacyCleanupAllowlist: List<String>,
       onSetHistoryRetentionDays: (Int) -> Unit,
       onSetDownloadRetentionDays: (Int) -> Unit,
       onSetRecoveryRetentionDays: (Int) -> Unit,
@@ -806,7 +825,6 @@ private fun BrowserScreen(
       onAddPrivacyCleanupAllowlist: (String) -> Unit,
       onRemovePrivacyCleanupAllowlist: (String) -> Unit,
       onRunPrivacyCleanup: () -> Unit,
-      startPage: StartPageSettings,
       onSetStartPageQuickLinks: (Boolean) -> Unit,
       onSetStartPagePrivacyTip: (Boolean) -> Unit,
       onAddStartPageLink: (String, String) -> Unit,
@@ -816,15 +834,13 @@ private fun BrowserScreen(
      onOpenPrivacyDashboard: () -> Unit,
       onClearSiteData: (String) -> Unit,
       onForgetSite: (String) -> Unit,
-      onClearAllSiteData: () -> Unit,
+       onClearAllSiteData: () -> Unit,
       onSetTabBarWithAddressBar: (Boolean) -> Unit,
       onSetVerticalTabs: (Boolean) -> Unit,
       onPickDownloadDirectory: () -> Unit,
       onResetDownloadDirectory: () -> Unit,
-     shortcutBindings: Map<BrowserCommandId, KeyChord>,
-     onSetKeyboardShortcut: (BrowserCommandId, KeyChord?) -> Unit,
-     capturingShortcut: BrowserCommandId?,
-     onBeginKeyboardShortcutCapture: (BrowserCommandId) -> Unit,
+      onSetKeyboardShortcut: (BrowserCommandId, KeyChord?) -> Unit,
+      onBeginKeyboardShortcutCapture: (BrowserCommandId) -> Unit,
      onCancelKeyboardShortcutCapture: () -> Unit,
     onSetDnsOverHttpsEnabled: (Boolean) -> Unit,
     onSetDnsProvider: (DnsProvider) -> Unit,
@@ -863,18 +879,12 @@ private fun BrowserScreen(
        onEnterPictureInPicture: () -> Unit,
         onSaveOffline: () -> Unit,
         onOpenOffline: (com.dwicao.dextra.data.ReadingListEntry) -> Unit,
-         sessionSnapshots: List<com.dwicao.dextra.data.SessionSnapshot>,
-         sessionTimeline: List<com.dwicao.dextra.data.SessionSnapshot>,
-         onCreateSessionSnapshot: (String) -> Unit,
+      onCreateSessionSnapshot: (String) -> Unit,
          onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-         onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-         onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-         credentials: List<StoredCredential>,
-         addresses: List<StoredAddress>,
-         credentialCount: Int,
-        credentialVaultUnlocked: Boolean,
-        webPushSubscriptions: List<StoredWebPushSubscription>,
-        onDeleteCredential: (StoredCredential) -> Unit,
+          onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+          onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+          onRestoreSessionTab: (SavedTab) -> Unit,
+         onDeleteCredential: (StoredCredential) -> Unit,
         onRequestCredentialUnlock: () -> Unit,
         onLockCredentialVault: () -> Unit,
          onClearCredentials: () -> Unit,
@@ -889,9 +899,7 @@ private fun BrowserScreen(
         onOpenInstalledWebApp: (InstalledWebApp) -> Unit,
         onRefreshInstalledWebApp: (InstalledWebApp) -> Unit,
         onUninstallWebApp: (InstalledWebApp) -> Unit,
-    installedExtensions: List<InstalledExtension>,
-    extensionInstallInProgress: Boolean,
-    onInstallExtension: (String) -> Unit,
+     onInstallExtension: (String) -> Unit,
     onOpenFirefoxAddons: () -> Unit,
     onSetExtensionEnabled: (String, Boolean) -> Unit,
      onSetExtensionPrivateBrowsing: (String, Boolean) -> Unit,
@@ -899,8 +907,7 @@ private fun BrowserScreen(
      onUpdateExtension: (String) -> Unit,
     onOpenExtensionOptions: (String) -> Unit,
     onUninstallExtension: (String) -> Unit,
-    extensionActions: List<ExtensionToolbarAction>,
-    onClickExtensionAction: (String) -> Unit,
+     onClickExtensionAction: (String) -> Unit,
     onOpenDownload: (DownloadEntry) -> Unit,
     onShareDownload: (DownloadEntry) -> Unit,
     onToggleDownload: (DownloadEntry) -> Unit,
@@ -913,22 +920,73 @@ private fun BrowserScreen(
      onRemoveDownload: (DownloadEntry) -> Unit,
      onClearCompletedDownloads: () -> Unit,
     onResolvePermission: (Boolean, Boolean) -> Unit,
-    extensionInstallPrompt: ExtensionInstallPrompt?,
-    onResolveExtensionInstall: (Boolean, Boolean, Boolean) -> Unit,
-    extensionUpdatePrompt: ExtensionUpdatePrompt?,
-    onResolveExtensionUpdate: (Boolean) -> Unit,
+     onResolveExtensionInstall: (Boolean, Boolean, Boolean) -> Unit,
+     onResolveExtensionUpdate: (Boolean) -> Unit,
     onContextMenuAction: (ContextMenuAction) -> Unit,
     onDismissContextMenu: () -> Unit,
      onTabContextMenu: (String, Int, Int) -> Unit,
-    extensionPopup: ExtensionPopupState?,
-    onCloseExtensionPopup: () -> Unit,
-     findInPage: FindInPageState?,
-    onUpdateFindInPage: (String) -> Unit,
+     onCloseExtensionPopup: () -> Unit,
+     onUpdateFindInPage: (String) -> Unit,
     onFindNext: (Boolean) -> Unit,
-     onCloseFindInPage: () -> Unit,
-     onOpenTranslation: () -> Unit,
- ) {
-    val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
+      onCloseFindInPage: () -> Unit,
+      onOpenTranslation: () -> Unit,
+  ) {
+     val onExportDiagnostics = extras.onExportDiagnostics
+     val autoSuspendMinutes = extras.autoSuspendMinutes
+     val onSetAutoSuspendMinutes = extras.onSetAutoSuspendMinutes
+     val permissionExpiryDays = extras.permissionExpiryDays
+     val onSetPermissionExpiryDays = extras.onSetPermissionExpiryDays
+     val fingerprintingProtectionEnabled = extras.fingerprintingProtectionEnabled
+     val onSetFingerprintingProtectionEnabled = extras.onSetFingerprintingProtectionEnabled
+     val dexLayoutPreset = extras.dexLayoutPreset
+     val onSetDexLayoutPreset = extras.onSetDexLayoutPreset
+     val backupEnabled = extras.backupEnabled
+     val backupIntervalHours = extras.backupIntervalHours
+     val backupRetentionCount = extras.backupRetentionCount
+     val backupDirectoryUri = extras.backupDirectoryUri
+     val lastBackupAt = extras.lastBackupAt
+     val backupLastError = extras.backupLastError
+     val backupFiles = extras.backupFiles
+     val onSetBackupSettings = extras.onSetBackupSettings
+     val onPickBackupDirectory = extras.onPickBackupDirectory
+     val onResetBackupDirectory = extras.onResetBackupDirectory
+     val onRunScheduledBackup = extras.onRunScheduledBackup
+     val onRefreshScheduledBackups = extras.onRefreshScheduledBackups
+     val onRestoreScheduledBackup = extras.onRestoreScheduledBackup
+     val onClearWorkspaceSiteData = extras.onClearWorkspaceSiteData
+     val workspaces = state.settings.workspaces
+     val activeWorkspaceId = state.settings.activeWorkspaceId
+     val customSearchEngines = state.settings.customSearchEngines
+     val selectedCustomSearchEngineId = state.settings.selectedCustomSearchEngineId
+     val accessibilityTextScale = state.settings.accessibilityTextScale
+     val highContrast = state.settings.highContrast
+     val reduceMotion = state.settings.reduceMotion
+     val webDav = state.webDav
+     val httpsOnly = state.settings.httpsOnly
+     val cookieBannerMode = state.settings.cookieBannerMode
+     val historyRetentionDays = state.settings.historyRetentionDays
+     val downloadRetentionDays = state.settings.downloadRetentionDays
+     val recoveryRetentionDays = state.settings.recoveryRetentionDays
+     val clearSiteDataOnExit = state.settings.clearSiteDataOnExit
+     val privacyCleanupAllowlist = state.settings.privacyCleanupAllowlist.toList()
+     val startPage = state.settings.startPage
+     val shortcutBindings = state.settings.shortcutBindings
+     val capturingShortcut = state.capturingShortcut
+     val sessionSnapshots = state.settings.sessionSnapshots
+     val sessionTimeline = state.settings.sessionTimeline
+     val credentials = state.credentials
+     val addresses = state.addresses
+     val credentialCount = state.credentialCount
+     val credentialVaultUnlocked = state.credentialVaultUnlocked
+     val webPushSubscriptions = state.webPushSubscriptions.filter { it.profileId == state.settings.activeWorkspaceId }
+     val installedExtensions = state.installedExtensions
+     val extensionInstallInProgress = state.extensionInstallInProgress
+     val extensionActions = state.extensionActions
+     val extensionInstallPrompt = state.extensionInstallPrompt
+     val extensionUpdatePrompt = state.extensionUpdatePrompt
+     val extensionPopup = state.extensionPopup
+     val findInPage = state.findInPage
+     val activeTab = state.tabs.firstOrNull { it.id == state.activeTabId }
     val fullScreenTab = state.tabs.firstOrNull { it.isFullScreen }
     var menuExpanded by remember { mutableStateOf(false) }
     var screenshotView by remember { mutableStateOf<GeckoView?>(null) }
@@ -1046,9 +1104,18 @@ private fun BrowserScreen(
             onToggleBookmark = onToggleBookmark,
             onReloadCrashedTab = onReloadCrashedTab,
             onViewReady = { id, view -> if (id == state.activeTabId) screenshotView = view },
+            addressFocusRequester = addressFocusRequester,
             startPage = startPage,
             modifier = modifier,
         )
+        state.findInPage?.let { find ->
+            FindInPageBar(
+                find = find,
+                onQueryChange = onUpdateFindInPage,
+                onFindNext = onFindNext,
+                onClose = onCloseFindInPage,
+            )
+        }
         return
     }
     if (state.standalonePwa) {
@@ -1084,6 +1151,7 @@ private fun BrowserScreen(
         if (state.overlay == BrowserOverlay.SETTINGS) {
             SettingsScreen(
                 onBack = onDismissOverlay,
+                onExportDiagnostics = onExportDiagnostics,
                 themeMode = state.settings.themeMode,
                   searchEngine = state.settings.searchEngine,
                   onSetTheme = onSetTheme,
@@ -1098,10 +1166,31 @@ private fun BrowserScreen(
                   accessibilityTextScale = accessibilityTextScale,
                   highContrast = highContrast,
                   reduceMotion = reduceMotion,
-                  onSetAccessibilityTextScale = onSetAccessibilityTextScale,
-                  onSetHighContrast = onSetHighContrast,
-                  onSetReduceMotion = onSetReduceMotion,
-                  webDav = webDav,
+                   onSetAccessibilityTextScale = onSetAccessibilityTextScale,
+                   onSetHighContrast = onSetHighContrast,
+                   onSetReduceMotion = onSetReduceMotion,
+                  autoSuspendMinutes = autoSuspendMinutes,
+                  onSetAutoSuspendMinutes = onSetAutoSuspendMinutes,
+                  permissionExpiryDays = permissionExpiryDays,
+                  onSetPermissionExpiryDays = onSetPermissionExpiryDays,
+                  fingerprintingProtectionEnabled = fingerprintingProtectionEnabled,
+                  onSetFingerprintingProtectionEnabled = onSetFingerprintingProtectionEnabled,
+                  dexLayoutPreset = dexLayoutPreset,
+                  onSetDexLayoutPreset = onSetDexLayoutPreset,
+                  backupEnabled = backupEnabled,
+                  backupIntervalHours = backupIntervalHours,
+                  backupRetentionCount = backupRetentionCount,
+                  backupDirectoryUri = backupDirectoryUri,
+                  lastBackupAt = lastBackupAt,
+                  backupLastError = backupLastError,
+                  backupFiles = backupFiles,
+                  onSetBackupSettings = onSetBackupSettings,
+                  onPickBackupDirectory = onPickBackupDirectory,
+                  onResetBackupDirectory = onResetBackupDirectory,
+                  onRunScheduledBackup = onRunScheduledBackup,
+                  onRefreshScheduledBackups = onRefreshScheduledBackups,
+                  onRestoreScheduledBackup = onRestoreScheduledBackup,
+                   webDav = webDav,
                   onSaveWebDavSettings = onSaveWebDavSettings,
                    onDisableWebDav = onDisableWebDav,
                    onRunWebDavSync = onRunWebDavSync,
@@ -1190,7 +1279,11 @@ private fun BrowserScreen(
                 onUninstallExtension = onUninstallExtension,
             )
         } else {
-            val expanded = maxWidth >= 600.dp
+            val expanded = when (dexLayoutPreset) {
+                DexLayoutPreset.FOCUS -> false
+                DexLayoutPreset.SPLIT, DexLayoutPreset.PANELS -> true
+                DexLayoutPreset.AUTO -> maxWidth >= 600.dp
+            }
             if (expanded) {
                      DesktopBrowserLayout(
                          state = state,
@@ -1230,9 +1323,10 @@ private fun BrowserScreen(
                           onMenu = { menuExpanded = true },
                           startPage = startPage,
                          addressFocusRequester = addressFocusRequester,
-                     showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
-                     verticalTabs = state.settings.verticalTabs,
-                 )
+                      showTabBarWithAddressBar = state.settings.tabBarWithAddressBar,
+                      verticalTabs = state.settings.verticalTabs,
+                      dexLayoutPreset = dexLayoutPreset,
+                  )
             } else {
                  CompactBrowserLayout(
                      state = state,
@@ -1427,9 +1521,10 @@ private fun BrowserScreen(
                                sessionTimeline = sessionTimeline,
                                onCreateSessionSnapshot = onCreateSessionSnapshot,
                                onRestoreSessionSnapshot = onRestoreSessionSnapshot,
-                               onDeleteSessionSnapshot = onDeleteSessionSnapshot,
-                               onDeleteSessionTimeline = onDeleteSessionTimeline,
-                          )
+                                onDeleteSessionSnapshot = onDeleteSessionSnapshot,
+                                onDeleteSessionTimeline = onDeleteSessionTimeline,
+                                onRestoreSessionTab = onRestoreSessionTab,
+                           )
                         BrowserOverlay.PRIVACY -> PrivacyDashboardSheet(
                                origins = privacyOrigins,
                                permissions = sitePermissions,
@@ -1437,7 +1532,8 @@ private fun BrowserScreen(
                                currentOrigin = activeTab?.takeIf { !it.isPrivate }?.let { NavigationPolicy.origin(it.url) },
                                onClearOrigin = onClearSiteData,
                                onForgetSite = onForgetSite,
-                               onClearAll = onClearAllSiteData,
+                                onClearAll = onClearAllSiteData,
+                                onClearWorkspace = onClearWorkspaceSiteData,
                                onSetPermission = onSetSitePermission,
                           )
                          BrowserOverlay.SECURITY -> SecurityDiagnosticsSheet(
@@ -1544,15 +1640,6 @@ private fun BrowserScreen(
                  onDismiss = onCloseSiteSettings,
              )
          }
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier.padding(top = 8.dp, start = 16.dp, end = 16.dp),
-            )
-        }
     }
 }
 
@@ -1569,10 +1656,10 @@ private fun WindowedBrowserLayout(
     onToggleBookmark: () -> Unit,
     onReloadCrashedTab: () -> Unit,
     onViewReady: (String, GeckoView) -> Unit,
+    addressFocusRequester: FocusRequester,
     startPage: StartPageSettings = StartPageSettings(),
     modifier: Modifier,
 ) {
-    val focusRequester = remember { FocusRequester() }
     Column(modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -1589,7 +1676,7 @@ private fun WindowedBrowserLayout(
                 history = history,
                 onNavigate = onNavigate,
                 onToggleBookmark = onToggleBookmark,
-                focusRequester = focusRequester,
+                focusRequester = addressFocusRequester,
             )
             BrowserNavButton(
                 if (tab?.isBookmarked == true) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
@@ -1648,9 +1735,10 @@ private fun DesktopBrowserLayout(
     onShowDownloads: () -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
-    showTabBarWithAddressBar: Boolean,
-    verticalTabs: Boolean,
-    startPage: StartPageSettings,
+     showTabBarWithAddressBar: Boolean,
+     verticalTabs: Boolean,
+     dexLayoutPreset: DexLayoutPreset,
+     startPage: StartPageSettings,
 ) {
     val splitPrimaryTab = state.splitPrimaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
     val splitSecondaryTab = state.splitSecondaryTabId?.let { id -> state.tabs.firstOrNull { it.id == id } }
@@ -1676,6 +1764,19 @@ private fun DesktopBrowserLayout(
                  onTabContextMenu = onTabContextMenu,
                  onToggleTabAudio = onToggleTabAudio,
             )
+        }
+        if (dexLayoutPreset == DexLayoutPreset.PANELS && fullScreenTab == null) {
+            Column(
+                modifier = Modifier
+                    .width(56.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.surfaceContainer),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Spacer(Modifier.height(8.dp))
+                BrowserNavButton(Icons.Outlined.Download, "Open downloads", true, onShowDownloads)
+                BrowserNavButton(Icons.Outlined.MoreVert, "Open browser menu", true, onMenu)
+            }
         }
         Column(
             modifier = Modifier
@@ -1738,7 +1839,13 @@ private fun DesktopBrowserLayout(
                         onReloadCrashedTab = onReloadCrashedTab,
                         onViewReady = onRegisterViewport,
                         startPage = startPage,
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .border(
+                                width = if (state.activeTabId == splitPrimaryTab.id) 2.dp else 1.dp,
+                                color = if (state.activeTabId == splitPrimaryTab.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            ),
                         onFocus = { onFocusSplitPane(false) },
                     )
                     Box(
@@ -1753,7 +1860,13 @@ private fun DesktopBrowserLayout(
                         onReloadCrashedTab = onReloadCrashedTab,
                         onViewReady = onRegisterViewport,
                         startPage = startPage,
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .border(
+                                width = if (state.activeTabId == splitSecondaryTab.id) 2.dp else 1.dp,
+                                color = if (state.activeTabId == splitSecondaryTab.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            ),
                         onFocus = { onFocusSplitPane(true) },
                     )
                 }
@@ -2691,13 +2804,14 @@ private fun BrowserNavButton(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    val accessibility = LocalDextraAccessibility.current
     Box(
         modifier = Modifier
-            .size(if (accessibility.textScale >= 1.25f) 44.dp else 36.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
-            .semantics { contentDescription = label },
+            .semantics {
+                contentDescription = label
+            },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -2764,8 +2878,9 @@ private fun AddressBar(
     var value by remember(tab?.id) { mutableStateOf(tab?.url?.let(BrowserUrl::displayValue).orEmpty()) }
     var isFocused by remember { mutableStateOf(false) }
     var selectedSuggestionIndex by remember(value) { mutableIntStateOf(0) }
+    var suggestionKeyboardSelection by remember(value) { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
-    val suggestions = buildAddressSuggestions(value, bookmarks, history, tab?.isPrivate == true)
+    val suggestions = if (value.isBlank()) emptyList() else buildAddressSuggestions(value, bookmarks, history, tab?.isPrivate == true)
 
     fun selectSuggestion(index: Int) {
         suggestions.getOrNull(index)?.let { suggestion ->
@@ -2788,7 +2903,7 @@ private fun AddressBar(
             onValueChange = { value = it },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp)
+                .heightIn(min = 48.dp)
                 .clip(shape)
                 .background(
                     if (isPrivate) MaterialTheme.colorScheme.tertiaryContainer
@@ -2805,19 +2920,22 @@ private fun AddressBar(
                 )
                 .focusRequester(focusRequester)
                 .onFocusChanged { isFocused = it.isFocused }
+                .semantics { contentDescription = "Address or search" }
                 .onPreviewKeyEvent { event ->
                     if (event.type != KeyEventType.KeyDown || suggestions.isEmpty()) return@onPreviewKeyEvent false
                     when (event.key) {
                         Key.DirectionDown -> {
                             selectedSuggestionIndex = (selectedSuggestionIndex + 1) % suggestions.size
+                            suggestionKeyboardSelection = true
                             true
                         }
                         Key.DirectionUp -> {
                             selectedSuggestionIndex = (selectedSuggestionIndex - 1 + suggestions.size) % suggestions.size
+                            suggestionKeyboardSelection = true
                             true
                         }
                         Key.Enter -> {
-                            selectSuggestion(selectedSuggestionIndex)
+                            if (suggestionKeyboardSelection) selectSuggestion(selectedSuggestionIndex) else onNavigate(value)
                             true
                         }
                         Key.Escape -> {
@@ -2833,7 +2951,7 @@ private fun AddressBar(
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(
                 onGo = {
-                    if (suggestions.isNotEmpty()) selectSuggestion(selectedSuggestionIndex) else onNavigate(value)
+                    onNavigate(value)
                     keyboardController?.hide()
                 },
             ),
@@ -3419,7 +3537,7 @@ private fun WebAuthnDialog(prompt: WebAuthnPromptState, onResolve: (Boolean) -> 
     AlertDialog(
         onDismissRequest = { onResolve(false) },
         icon = { Icon(Icons.Outlined.Security, contentDescription = null) },
-        title = { Text(if (prompt.isCreate) "Create a passkey?" else "Use a passkey?") },
+        title = { Text("Allow passkey access?") },
         text = {
             Text(
                 "${prompt.origin} requests a passkey for ${prompt.rpId}. Continue only if you trust this site.",
@@ -3448,6 +3566,8 @@ private fun BrowserViewport(
     ) {
         if (tab?.crashed == true) {
             SiteCrashedPage(onReloadCrashedTab)
+        } else if (tab?.loadError != null) {
+            SiteLoadErrorPage(tab.loadError, onReload = { tab.session.reload() })
         } else if (tab == null || !tab.hasPage || tab.url.isBlank() || tab.url == "about:blank") {
             NewTabPage(onNavigate, startPage)
         } else {
@@ -3477,6 +3597,12 @@ private fun BrowserViewport(
                 modifier = Modifier.fillMaxSize(),
                 onRelease = { it.releaseSession() },
             )
+            if (tab.isLoading) {
+                LinearProgressIndicator(
+                    progress = { tab.progress / 100f },
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                )
+            }
         }
     }
 }
@@ -3503,6 +3629,27 @@ private fun SiteCrashedPage(onReload: () -> Unit) {
             Icon(Icons.Outlined.Refresh, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("Reload page")
+        }
+    }
+}
+
+@Composable
+private fun SiteLoadErrorPage(message: String, onReload: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.Outlined.Warning, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.error)
+        Spacer(Modifier.height(16.dp))
+        Text("Page could not load", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3)
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = onReload) {
+            Icon(Icons.Outlined.Refresh, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Try again")
         }
     }
 }
@@ -3819,19 +3966,28 @@ private fun CommandPaletteDialog(
 private fun TabSwitcherDialog(
     state: TabSwitcherState,
     tabs: List<BrowserTabState>,
+    bookmarks: List<Bookmark>,
+    history: List<HistoryEntry>,
     onQueryChange: (String) -> Unit,
     onMoveSelection: (Int) -> Unit,
     onSelect: (String) -> Unit,
+    onOpenUrl: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
     val visibleTabs = tabs.filter {
         state.query.isBlank() || it.title.contains(state.query, true) || it.url.contains(state.query, true)
     }
+    val visibleBookmarks = bookmarks.filter {
+        state.query.isNotBlank() && (it.title.contains(state.query, true) || it.url.contains(state.query, true))
+    }.take(8)
+    val visibleHistory = history.filter {
+        state.query.isNotBlank() && (it.title.contains(state.query, true) || it.url.contains(state.query, true))
+    }.take(8)
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Switch tab") },
+        title = { Text("Search browser") },
         text = {
             Column {
                 BasicTextField(
@@ -3839,7 +3995,7 @@ private fun TabSwitcherDialog(
                     onValueChange = onQueryChange,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
+                        .heightIn(min = 48.dp)
                         .focusRequester(focusRequester)
                         .onPreviewKeyEvent { event ->
                             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
@@ -3847,6 +4003,7 @@ private fun TabSwitcherDialog(
                                 Key.DirectionDown -> onMoveSelection(1)
                                 Key.DirectionUp -> onMoveSelection(-1)
                                 Key.Enter -> visibleTabs.getOrNull(state.selectedIndex)?.id?.let(onSelect)
+                                    ?: (visibleBookmarks.firstOrNull()?.url ?: visibleHistory.firstOrNull()?.url)?.let(onOpenUrl)
                                 Key.Escape -> onDismiss()
                                 else -> return@onPreviewKeyEvent false
                             }
@@ -3860,14 +4017,14 @@ private fun TabSwitcherDialog(
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     decorationBox = { innerTextField ->
                         Box(contentAlignment = Alignment.CenterStart) {
-                            if (state.query.isBlank()) Text("Search tabs by title or URL", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (state.query.isBlank()) Text("Search tabs, bookmarks, and history", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             innerTextField()
                         }
                     },
                 )
                 Spacer(Modifier.height(8.dp))
-                if (visibleTabs.isEmpty()) {
-                    Text("No matching tabs", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (visibleTabs.isEmpty() && visibleBookmarks.isEmpty() && visibleHistory.isEmpty()) {
+                    Text("No matching tabs, bookmarks, or history", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
                         items(visibleTabs, key = { it.id }) { tab ->
@@ -3899,13 +4056,38 @@ private fun TabSwitcherDialog(
                         }
                     }
                 }
+                if (visibleBookmarks.isNotEmpty()) {
+                    Text("Bookmarks", modifier = Modifier.padding(top = 10.dp), style = MaterialTheme.typography.labelLarge)
+                    visibleBookmarks.forEach { bookmark ->
+                        ListItem(
+                            modifier = Modifier.clickable { onOpenUrl(bookmark.url) },
+                            headlineContent = { Text(bookmark.title.ifBlank { BrowserUrl.displayValue(bookmark.url) }, maxLines = 1) },
+                            supportingContent = { Text(bookmark.url, maxLines = 1) },
+                            leadingContent = { Icon(Icons.Outlined.Bookmark, contentDescription = null) },
+                        )
+                    }
+                }
+                if (visibleHistory.isNotEmpty()) {
+                    Text("History", modifier = Modifier.padding(top = 10.dp), style = MaterialTheme.typography.labelLarge)
+                    visibleHistory.forEach { entry ->
+                        ListItem(
+                            modifier = Modifier.clickable { onOpenUrl(entry.url) },
+                            headlineContent = { Text(entry.title.ifBlank { BrowserUrl.displayValue(entry.url) }, maxLines = 1) },
+                            supportingContent = { Text(entry.url, maxLines = 1) },
+                            leadingContent = { Icon(Icons.Outlined.History, contentDescription = null) },
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { visibleTabs.getOrNull(state.selectedIndex)?.id?.let(onSelect) },
-                enabled = visibleTabs.isNotEmpty(),
-            ) { Text("Switch") }
+                onClick = {
+                    visibleTabs.getOrNull(state.selectedIndex)?.id?.let(onSelect)
+                        ?: (visibleBookmarks.firstOrNull()?.url ?: visibleHistory.firstOrNull()?.url)?.let(onOpenUrl)
+                },
+                enabled = visibleTabs.isNotEmpty() || visibleBookmarks.isNotEmpty() || visibleHistory.isNotEmpty(),
+            ) { Text(if (visibleTabs.isNotEmpty()) "Open" else "Open result") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
@@ -4072,12 +4254,14 @@ private fun PrivacyDashboardSheet(
     onClearOrigin: (String) -> Unit,
     onForgetSite: (String) -> Unit,
     onClearAll: () -> Unit,
+    onClearWorkspace: () -> Unit,
     onSetPermission: (String, String, String) -> Unit,
 ) {
     var pendingOrigin by remember { mutableStateOf<String?>(null) }
     var pendingForgetOrigin by remember { mutableStateOf<String?>(null) }
     var selectedPermissionOrigin by remember { mutableStateOf<String?>(null) }
     var confirmClearAll by remember { mutableStateOf(false) }
+    var confirmClearWorkspace by remember { mutableStateOf(false) }
     SheetHeader("Privacy dashboard", "Review and clear site data managed by Dextra")
     Text(
         "Site data includes cookies, cache, DOM storage, authentication sessions, permissions, and site overrides. Bookmarks and history are kept separately.",
@@ -4124,6 +4308,14 @@ private fun PrivacyDashboardSheet(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         horizontalArrangement = Arrangement.End,
     ) {
+        TextButton(
+            onClick = { confirmClearWorkspace = true },
+            enabled = origins.isNotEmpty() || currentOrigin != null,
+        ) {
+            Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Clear workspace")
+        }
         TextButton(
             onClick = { confirmClearAll = true },
             enabled = origins.isNotEmpty() || currentOrigin != null,
@@ -4219,6 +4411,23 @@ private fun PrivacyDashboardSheet(
                 ) { Text("Clear all") }
             },
             dismissButton = { TextButton(onClick = { confirmClearAll = false }) { Text("Cancel") } },
+        )
+    }
+    if (confirmClearWorkspace) {
+        AlertDialog(
+            onDismissRequest = { confirmClearWorkspace = false },
+            icon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
+            title = { Text("Clear this workspace?") },
+            text = { Text("Remove saved site permissions, overrides, cookies, storage, and cache for the current workspace?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmClearWorkspace = false
+                        onClearWorkspace()
+                    },
+                ) { Text("Clear workspace") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClearWorkspace = false }) { Text("Cancel") } },
         )
     }
     selectedPermissionOrigin?.let { origin ->
@@ -4618,7 +4827,10 @@ private fun NetworkActivitySheet(
         TextButton(onClick = onClear, enabled = activity.isNotEmpty()) { Text("Clear") }
     }
     if (visible.isEmpty()) {
-        EmptyLibrary("No observable network activity yet.", Icons.Outlined.Security)
+        EmptyLibrary(
+            if (activity.isEmpty()) "No observable network activity yet." else "No activity matches this filter.",
+            Icons.Outlined.Security,
+        )
     } else {
         LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
             items(visible, key = { it.id }) { item ->
@@ -5232,6 +5444,7 @@ private fun HistoryPage(
     onBack: () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    var confirmClear by remember { mutableStateOf(false) }
     val visibleHistory = history.filter {
         query.isBlank() || it.title.contains(query, true) || it.url.contains(query, true)
     }
@@ -5250,7 +5463,7 @@ private fun HistoryPage(
                     leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                     singleLine = true,
                 )
-                TextButton(onClick = onClearHistory, enabled = history.isNotEmpty()) {
+                TextButton(onClick = { confirmClear = true }, enabled = history.isNotEmpty()) {
                     Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Clear all")
@@ -5280,6 +5493,15 @@ private fun HistoryPage(
                         )
                     }
                 }
+            }
+            if (confirmClear) {
+                ConfirmDestructiveDialog(
+                    title = "Clear browsing history?",
+                    message = "This removes all locally stored browsing history.",
+                    confirmLabel = "Clear history",
+                    onConfirm = { confirmClear = false; onClearHistory() },
+                    onDismiss = { confirmClear = false },
+                )
             }
         }
     }
@@ -5391,6 +5613,10 @@ private fun TabsSheet(
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
 ) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val visibleTabs = tabs.filter {
+        query.isBlank() || it.title.contains(query, true) || it.url.contains(query, true)
+    }
     SheetHeader("Your tabs", "${tabs.size} open")
     Row(
         modifier = Modifier
@@ -5402,13 +5628,20 @@ private fun TabsSheet(
         Button(onClick = onNewTab) { Icon(Icons.Outlined.Add, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("New tab") }
         AssistChip(onClick = onNewPrivateTab, label = { Text("Private") }, leadingIcon = { Icon(Icons.Outlined.VisibilityOff, contentDescription = null) })
     }
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        label = { Text("Search open tabs") },
+        singleLine = true,
+    )
     LazyColumn(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(max = 460.dp)
             .padding(top = 12.dp),
     ) {
-        items(tabs.sortedWith(compareByDescending { it.pinned }), key = { it.id }) { tab ->
+        items(visibleTabs.sortedWith(compareByDescending { it.pinned }), key = { it.id }) { tab ->
             ListItem(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -5425,6 +5658,13 @@ private fun TabsSheet(
             )
             if (tab.id != tabs.lastOrNull()?.id) Divider(modifier = Modifier.padding(horizontal = 24.dp))
         }
+    }
+    if (visibleTabs.isEmpty()) {
+        Text(
+            if (tabs.isEmpty()) "No open tabs." else "No tabs match this search.",
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
     Spacer(Modifier.height(24.dp))
 }
@@ -5453,10 +5693,13 @@ private fun LibrarySheet(
      onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
      onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
      onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+     onRestoreSessionTab: (SavedTab) -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    var createSnapshot by remember { mutableStateOf(false) }
-    var snapshotTitle by rememberSaveable { mutableStateOf("") }
+     var createSnapshot by remember { mutableStateOf(false) }
+     var snapshotTitle by rememberSaveable { mutableStateOf("") }
+     var expandedSnapshotId by rememberSaveable { mutableStateOf<String?>(null) }
+     var confirmClearHistory by remember { mutableStateOf(false) }
     SheetHeader("Library", "Keep the useful parts close")
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -5517,7 +5760,10 @@ private fun LibrarySheet(
             }
         }
         if (visibleBookmarks.isEmpty()) {
-            EmptyLibrary("Bookmarks you save will appear here.", Icons.Outlined.BookmarkBorder)
+            EmptyLibrary(
+                if (bookmarks.isEmpty()) "Bookmarks you save will appear here." else "No bookmarks in this folder.",
+                Icons.Outlined.BookmarkBorder,
+            )
         } else {
             LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
                 items(visibleBookmarks, key = { it.id }) { bookmark ->
@@ -5660,7 +5906,7 @@ private fun LibrarySheet(
             singleLine = true,
         )
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onClearHistory, enabled = history.isNotEmpty()) {
+            TextButton(onClick = { confirmClearHistory = true }, enabled = history.isNotEmpty()) {
                 Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text("Clear history")
@@ -5745,15 +5991,27 @@ private fun LibrarySheet(
                         supportingContent = { Text("${snapshot.tabs.size} tabs  •  ${snapshot.tabGroups.size} groups", maxLines = 1) },
                         leadingContent = { Icon(Icons.Outlined.Tab, contentDescription = null) },
                         trailingContent = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(onClick = { onRestoreSessionSnapshot(snapshot) }) { Text("Restore") }
-                                IconButton(onClick = { onDeleteSessionSnapshot(snapshot) }) {
+                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                 TextButton(onClick = { onRestoreSessionSnapshot(snapshot) }) { Text("Restore") }
+                                 TextButton(onClick = { expandedSnapshotId = if (expandedSnapshotId == snapshot.id) null else snapshot.id }) { Text("Choose") }
+                                 IconButton(onClick = { onDeleteSessionSnapshot(snapshot) }) {
                                     Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete ${snapshot.title}")
                                 }
                             }
-                        },
-                    )
-                }
+                         },
+                     )
+                     if (expandedSnapshotId == snapshot.id) {
+                         snapshot.tabs.forEach { tab ->
+                             ListItem(
+                                 modifier = Modifier.padding(start = 28.dp, end = 12.dp),
+                                 headlineContent = { Text(tab.title ?: BrowserUrl.displayValue(tab.url), maxLines = 1) },
+                                 supportingContent = { Text(tab.url, maxLines = 1) },
+                                 leadingContent = { Icon(Icons.Outlined.OpenInNew, contentDescription = null) },
+                                 trailingContent = { TextButton(onClick = { onRestoreSessionTab(tab) }) { Text("Open") } },
+                             )
+                         }
+                     }
+                 }
             }
         }
         createSnapshot.takeIf { it }?.let {
@@ -5811,6 +6069,15 @@ private fun LibrarySheet(
         }
     }
     Spacer(Modifier.height(24.dp))
+    if (confirmClearHistory) {
+        ConfirmDestructiveDialog(
+            title = "Clear browsing history?",
+            message = "This removes all locally stored browsing history.",
+            confirmLabel = "Clear history",
+            onConfirm = { confirmClearHistory = false; onClearHistory() },
+            onDismiss = { confirmClearHistory = false },
+        )
+    }
 }
 
 @Composable
@@ -5904,7 +6171,10 @@ private fun DownloadsSheet(
         )
     }
     if (visibleDownloads.isEmpty()) {
-        EmptyLibrary("Files you download will appear here.", Icons.Outlined.Download)
+        EmptyLibrary(
+            if (downloads.isEmpty()) "Files you download will appear here." else "No downloads match these filters.",
+            Icons.Outlined.Download,
+        )
     } else {
         LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 500.dp)) {
             items(visibleDownloads, key = { it.downloadId }) { download ->
@@ -6408,6 +6678,7 @@ private fun cookieBannerModeLabel(mode: Int): String = when (mode) {
 @Composable
 private fun SettingsScreen(
     onBack: () -> Unit,
+    onExportDiagnostics: () -> Unit,
     themeMode: ThemeMode,
     searchEngine: SearchEngine,
     customSearchEngines: List<CustomSearchEngine>,
@@ -6437,10 +6708,31 @@ private fun SettingsScreen(
     accessibilityTextScale: Float,
     highContrast: Boolean,
     reduceMotion: Boolean,
-    onSetAccessibilityTextScale: (Float) -> Unit,
-    onSetHighContrast: (Boolean) -> Unit,
-    onSetReduceMotion: (Boolean) -> Unit,
-    webDav: WebDavSettingsState,
+     onSetAccessibilityTextScale: (Float) -> Unit,
+     onSetHighContrast: (Boolean) -> Unit,
+     onSetReduceMotion: (Boolean) -> Unit,
+     autoSuspendMinutes: Int,
+     onSetAutoSuspendMinutes: (Int) -> Unit,
+     permissionExpiryDays: Int,
+     onSetPermissionExpiryDays: (Int) -> Unit,
+     fingerprintingProtectionEnabled: Boolean,
+     onSetFingerprintingProtectionEnabled: (Boolean) -> Unit,
+     dexLayoutPreset: DexLayoutPreset,
+     onSetDexLayoutPreset: (DexLayoutPreset) -> Unit,
+     backupEnabled: Boolean,
+     backupIntervalHours: Int,
+     backupRetentionCount: Int,
+     backupDirectoryUri: String?,
+     lastBackupAt: Long?,
+     backupLastError: String?,
+     backupFiles: List<ScheduledBackupInfo>,
+     onSetBackupSettings: (Boolean, Int, Int) -> Unit,
+     onPickBackupDirectory: () -> Unit,
+     onResetBackupDirectory: () -> Unit,
+     onRunScheduledBackup: () -> Unit,
+     onRefreshScheduledBackups: () -> Unit,
+     onRestoreScheduledBackup: (ScheduledBackupInfo) -> Unit,
+     webDav: WebDavSettingsState,
     onSaveWebDavSettings: (String, String, String, String, String, Int) -> Unit,
      onDisableWebDav: () -> Unit,
      onRunWebDavSync: () -> Unit,
@@ -6515,6 +6807,11 @@ private fun SettingsScreen(
 ) {
     var pendingExtensionRemoval by remember { mutableStateOf<InstalledExtension?>(null) }
     var permissionExtension by remember { mutableStateOf<InstalledExtension?>(null) }
+    var confirmClearCredentials by remember { mutableStateOf(false) }
+    var confirmClearAddresses by remember { mutableStateOf(false) }
+    var confirmClearWebPush by remember { mutableStateOf(false) }
+    var confirmClearPermissions by remember { mutableStateOf(false) }
+    var pendingBackupRestore by remember { mutableStateOf<ScheduledBackupInfo?>(null) }
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.surface,
@@ -6541,7 +6838,7 @@ private fun SettingsScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
             ) {
-     SettingSection("Appearance") {
+      SettingSection("Appearance") {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeMode.values().forEach { mode ->
                 FilterChip(
@@ -6562,8 +6859,34 @@ private fun SettingsScreen(
                 )
             }
         }
-     }
-     SettingSection("Accessibility") {
+      }
+      SettingSection("DeX layout") {
+          Text(
+              "Choose how Dextra uses wide windows. AUTO follows the available window size.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          Spacer(Modifier.height(8.dp))
+          Row(
+              modifier = Modifier.horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+              DexLayoutPreset.values().forEach { preset ->
+                  FilterChip(
+                      selected = dexLayoutPreset == preset,
+                      onClick = { onSetDexLayoutPreset(preset) },
+                      label = { Text(preset.name.lowercase().replaceFirstChar { it.uppercase() }) },
+                  )
+              }
+          }
+          Text(
+              "FOCUS maximizes the page, SPLIT favors side-by-side tabs, and PANELS keeps navigation controls visible.",
+              modifier = Modifier.padding(top = 6.dp),
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+      }
+      SettingSection("Accessibility") {
          Text(
              "Increase browser text size, improve contrast, and reduce motion without changing website content.",
              style = MaterialTheme.typography.bodySmall,
@@ -6654,16 +6977,14 @@ private fun SettingsScreen(
                  singleLine = true,
              )
              Button(
-                 onClick = {
-                     onAddCustomSearchEngine(customEngineName, customEngineUrl)
-                     customEngineName = ""
-                     customEngineUrl = ""
+                  onClick = {
+                      onAddCustomSearchEngine(customEngineName, customEngineUrl)
                  },
                  enabled = customEngineName.isNotBlank() && customEngineUrl.isNotBlank(),
              ) { Text("Add") }
          }
       }
-      SettingSection("Browsing") {
+       SettingSection("Browsing") {
         var homepageDraft by rememberSaveable { mutableStateOf(homepage) }
         LaunchedEffect(homepage) { homepageDraft = homepage }
         Text("Homepage", style = MaterialTheme.typography.titleSmall)
@@ -6734,7 +7055,7 @@ private fun SettingsScreen(
             onCheckedChange = onSetVerticalTabs,
         )
         Spacer(Modifier.height(14.dp))
-         TextButton(onClick = onClearSitePermissions) {
+          TextButton(onClick = { confirmClearPermissions = true }) {
              Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
              Spacer(Modifier.width(6.dp))
              Text("Clear site permissions")
@@ -6744,6 +7065,33 @@ private fun SettingsScreen(
              Spacer(Modifier.width(6.dp))
               Text("Open privacy dashboard")
           }
+       }
+       SettingSection("Tabs and performance") {
+           Text(
+               "Automatically suspend inactive normal tabs to reduce memory and battery use. Playing media is never suspended.",
+               style = MaterialTheme.typography.bodySmall,
+               color = MaterialTheme.colorScheme.onSurfaceVariant,
+           )
+           Spacer(Modifier.height(8.dp))
+           Row(
+               modifier = Modifier.horizontalScroll(rememberScrollState()),
+               horizontalArrangement = Arrangement.spacedBy(6.dp),
+           ) {
+               listOf(0 to "Off", 5 to "5 min", 15 to "15 min", 30 to "30 min", 60 to "1 hour").forEach { (minutes, label) ->
+                   FilterChip(
+                       selected = autoSuspendMinutes == minutes,
+                       onClick = { onSetAutoSuspendMinutes(minutes) },
+                       label = { Text(label) },
+                   )
+               }
+           }
+           Spacer(Modifier.height(12.dp))
+           SettingToggle(
+               title = "Fingerprinting protection",
+               summary = "Enable GeckoView's documented anti-fingerprinting protection",
+               checked = fingerprintingProtectionEnabled,
+               onCheckedChange = onSetFingerprintingProtectionEnabled,
+           )
        }
         SettingSection("Privacy automation") {
             Text(
@@ -6755,6 +7103,8 @@ private fun SettingsScreen(
             RetentionChooser("History retention", historyRetentionDays, onSetHistoryRetentionDays)
             RetentionChooser("Download retention", downloadRetentionDays, onSetDownloadRetentionDays)
             RetentionChooser("Recovery retention", recoveryRetentionDays, onSetRecoveryRetentionDays, includeNever = false)
+            Spacer(Modifier.height(8.dp))
+            RetentionChooser("Permission expiry", permissionExpiryDays, onSetPermissionExpiryDays, includeNever = true)
             Spacer(Modifier.height(8.dp))
             SettingToggle(
                 title = "Clear site data on exit",
@@ -6800,6 +7150,95 @@ private fun SettingsScreen(
                 Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text("Run cleanup now")
+            }
+        }
+        SettingSection("Scheduled backups") {
+            Text(
+                "Keep encrypted-at-rest local snapshots of browser data. Backups are rotated automatically and can be restored without replacing the active tab session.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            SettingToggle(
+                title = "Automatic backups",
+                summary = "Create a local snapshot on a repeating schedule",
+                checked = backupEnabled,
+                onCheckedChange = { onSetBackupSettings(it, backupIntervalHours, backupRetentionCount) },
+            )
+            var backupIntervalDraft by rememberSaveable { mutableStateOf(backupIntervalHours.toString()) }
+            var backupRetentionDraft by rememberSaveable { mutableStateOf(backupRetentionCount.toString()) }
+            LaunchedEffect(backupIntervalHours, backupRetentionCount) {
+                backupIntervalDraft = backupIntervalHours.toString()
+                backupRetentionDraft = backupRetentionCount.toString()
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = backupIntervalDraft,
+                    onValueChange = { backupIntervalDraft = it.filter(Char::isDigit) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Interval (hours)") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = backupRetentionDraft,
+                    onValueChange = { backupRetentionDraft = it.filter(Char::isDigit) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Keep (1-30)") },
+                    singleLine = true,
+                )
+                Button(
+                    onClick = {
+                        onSetBackupSettings(
+                            backupEnabled,
+                            backupIntervalDraft.toIntOrNull() ?: backupIntervalHours,
+                            backupRetentionDraft.toIntOrNull() ?: backupRetentionCount,
+                        )
+                    },
+                ) { Text("Apply") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (backupDirectoryUri.isNullOrBlank()) "Location: app-private storage" else "Location: selected folder",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onPickBackupDirectory) { Text("Choose folder") }
+                if (!backupDirectoryUri.isNullOrBlank()) {
+                    TextButton(onClick = onResetBackupDirectory) { Text("Use private storage") }
+                }
+                OutlinedButton(onClick = onRunScheduledBackup) { Text("Back up now") }
+                TextButton(onClick = onRefreshScheduledBackups) { Text("Refresh") }
+            }
+            lastBackupAt?.let {
+                Text(
+                    "Last backup: ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it))}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            backupLastError?.let {
+                Text("Backup error: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (backupFiles.isEmpty()) {
+                Text("No scheduled backups yet.", modifier = Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                backupFiles.forEach { backup ->
+                    ListItem(
+                        headlineContent = { Text(backup.name, maxLines = 1) },
+                        supportingContent = {
+                            Text(
+                                "${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(backup.modifiedAt))}  •  ${backup.size / 1024} KB",
+                                maxLines = 1,
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                        trailingContent = {
+                            TextButton(onClick = { pendingBackupRestore = backup }) { Text("Restore") }
+                        },
+                    )
+                }
             }
         }
         SettingSection("Start page") {
@@ -6860,10 +7299,8 @@ private fun SettingsScreen(
                    singleLine = true,
                )
                Button(
-                   onClick = {
-                       onAddStartPageLink(startLinkLabel, startLinkUrl)
-                       startLinkLabel = ""
-                       startLinkUrl = ""
+                    onClick = {
+                        onAddStartPageLink(startLinkLabel, startLinkUrl)
                    },
                    enabled = startLinkLabel.isNotBlank() && startLinkUrl.isNotBlank(),
                ) { Text("Add") }
@@ -7001,10 +7438,17 @@ private fun SettingsScreen(
                      ) {
                          Column(Modifier.padding(12.dp)) {
                              Text("Sync conflict detected", style = MaterialTheme.typography.titleSmall)
-                             Text(
-                                 "Another device changed this bundle while Dextra was uploading. Choose how to continue.",
-                                 style = MaterialTheme.typography.bodySmall,
-                             )
+                              Text(
+                                  "Another device changed this bundle while Dextra was uploading. Choose how to continue.",
+                                  style = MaterialTheme.typography.bodySmall,
+                              )
+                              if (webDav.conflictTabIds.isNotEmpty()) {
+                                  Text(
+                                      "${webDav.conflictTabIds.size} tab${if (webDav.conflictTabIds.size == 1) "" else "s"} changed on both devices. Merge keeps both tab entries when possible.",
+                                      modifier = Modifier.padding(top = 4.dp),
+                                      style = MaterialTheme.typography.bodySmall,
+                                  )
+                              }
                              Row(
                                  modifier = Modifier.horizontalScroll(rememberScrollState()),
                                  horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -7080,7 +7524,7 @@ private fun SettingsScreen(
                       },
                   )
               }
-              TextButton(onClick = onClearCredentials) {
+               TextButton(onClick = { confirmClearCredentials = true }) {
                   Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
                   Spacer(Modifier.width(6.dp))
                   Text("Delete all saved logins")
@@ -7196,7 +7640,7 @@ private fun SettingsScreen(
                        },
                    )
                }
-               TextButton(onClick = onClearAddresses) {
+                TextButton(onClick = { confirmClearAddresses = true }) {
                    Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
                    Spacer(Modifier.width(6.dp))
                    Text("Delete all addresses")
@@ -7222,7 +7666,7 @@ private fun SettingsScreen(
                       },
                   )
               }
-              TextButton(onClick = onClearWebPushSubscriptions) {
+               TextButton(onClick = { confirmClearWebPush = true }) {
                   Icon(Icons.Outlined.DeleteOutline, contentDescription = null)
                   Spacer(Modifier.width(6.dp))
                   Text("Revoke all subscriptions")
@@ -7409,6 +7853,18 @@ private fun SettingsScreen(
             }
         }
     }
+    SettingSection("Diagnostics") {
+        Text(
+            "Export performance, observable network, and compatibility data for troubleshooting. Private-tab events are excluded.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(onClick = onExportDiagnostics, modifier = Modifier.padding(top = 8.dp)) {
+            Icon(Icons.Outlined.BugReport, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Export diagnostics")
+        }
+    }
     SettingSection("Firefox extensions") {
         var extensionUrl by rememberSaveable { mutableStateOf("") }
         Text(
@@ -7542,10 +7998,75 @@ private fun SettingsScreen(
             onDismiss = { permissionExtension = null },
         )
     }
+    if (confirmClearCredentials) {
+        ConfirmDestructiveDialog(
+            title = "Delete saved logins?",
+            message = "This permanently removes every saved username and password.",
+            confirmLabel = "Delete logins",
+            onConfirm = { confirmClearCredentials = false; onClearCredentials() },
+            onDismiss = { confirmClearCredentials = false },
+        )
+    }
+    if (confirmClearAddresses) {
+        ConfirmDestructiveDialog(
+            title = "Delete saved addresses?",
+            message = "This permanently removes every saved address from the encrypted vault.",
+            confirmLabel = "Delete addresses",
+            onConfirm = { confirmClearAddresses = false; onClearAddresses() },
+            onDismiss = { confirmClearAddresses = false },
+        )
+    }
+    if (confirmClearWebPush) {
+        ConfirmDestructiveDialog(
+            title = "Revoke Web Push subscriptions?",
+            message = "Websites will no longer be able to deliver notifications through these subscriptions.",
+            confirmLabel = "Revoke all",
+            onConfirm = { confirmClearWebPush = false; onClearWebPushSubscriptions() },
+            onDismiss = { confirmClearWebPush = false },
+        )
+    }
+    if (confirmClearPermissions) {
+        ConfirmDestructiveDialog(
+            title = "Clear site permissions?",
+            message = "Remove remembered permission decisions for every site and workspace.",
+            confirmLabel = "Clear permissions",
+            onConfirm = { confirmClearPermissions = false; onClearSitePermissions() },
+            onDismiss = { confirmClearPermissions = false },
+        )
+    }
+    pendingBackupRestore?.let { backup ->
+        AlertDialog(
+            onDismissRequest = { pendingBackupRestore = null },
+            title = { Text("Restore this backup?") },
+            text = { Text("Restore ${backup.name}? Library data will be merged; open tabs and the current session will not be changed.") },
+            confirmButton = {
+                TextButton(onClick = { pendingBackupRestore = null; onRestoreScheduledBackup(backup) }) { Text("Restore") }
+            },
+            dismissButton = { TextButton(onClick = { pendingBackupRestore = null }) { Text("Cancel") } },
+        )
+    }
     Spacer(Modifier.height(28.dp))
             }
         }
     }
+}
+
+@Composable
+private fun ConfirmDestructiveDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null) },
+        title = { Text(title) },
+        text = { Text(message) },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(confirmLabel) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -7621,7 +8142,11 @@ private fun SettingToggle(
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {
+                contentDescription = "$title. $summary"
+            },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {

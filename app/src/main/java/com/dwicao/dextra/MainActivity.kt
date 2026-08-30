@@ -9,6 +9,7 @@ import android.view.KeyEvent
 import android.app.PictureInPictureParams
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
@@ -22,6 +23,9 @@ import org.mozilla.geckoview.WebNotification
 
 class MainActivity : FragmentActivity() {
     private val browserViewModel: BrowserViewModel by viewModels()
+    private val geckoActivityResultLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result -> GeckoActivityResultRouter.complete(result.resultCode, result.data) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -136,12 +140,19 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        GeckoActivityResultRouter.register(this) { request -> geckoActivityResultLauncher.launch(request) }
         browserViewModel.onAppForeground()
     }
 
     override fun onStop() {
+        GeckoActivityResultRouter.unregister(this)
         browserViewModel.onAppBackground()
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        GeckoActivityResultRouter.onHostDestroyed(this, isChangingConfigurations)
+        super.onDestroy()
     }
 
     @Suppress("RestrictedApi")

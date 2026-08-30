@@ -15,6 +15,7 @@
 -keep class com.dwicao.dextra.WebPushReceiver { *; }
 -keep class com.dwicao.dextra.browser.BrowserViewModel { *; }
 -keep class com.dwicao.dextra.browser.DownloadWorker { *; }
+-keep class com.dwicao.dextra.browser.ScheduledBackupWorker { *; }
 -keep class com.dwicao.dextra.data.BrowserDatabase { *; }
 -keep class com.dwicao.dextra.data.BrowserDatabase_Impl { *; }
 -keepclassmembers class org.mozilla.geckoview.Autocomplete$LoginEntry {
