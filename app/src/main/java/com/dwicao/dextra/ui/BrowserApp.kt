@@ -229,6 +229,7 @@ import com.dwicao.dextra.data.InstalledWebApp
 import com.dwicao.dextra.data.SiteSetting
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.TabWorkspace
+import com.dwicao.dextra.data.TabCollection
 import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.StoredAddress
 import com.dwicao.dextra.data.StoredWebPushSubscription
@@ -422,9 +423,15 @@ fun DextraApp(viewModel: BrowserViewModel) {
                         onResetBackupDirectory = { viewModel.setBackupDirectory(null) },
                         onRunScheduledBackup = viewModel::runScheduledBackupNow,
                         onRefreshScheduledBackups = viewModel::refreshScheduledBackups,
-                        onRestoreScheduledBackup = viewModel::restoreScheduledBackup,
-                        onClearWorkspaceSiteData = viewModel::clearCurrentWorkspaceSiteData,
-                    ),
+                         onRestoreScheduledBackup = viewModel::restoreScheduledBackup,
+                         onClearWorkspaceSiteData = viewModel::clearCurrentWorkspaceSiteData,
+                         tabCollections = state.settings.tabCollections,
+                         onSaveCurrentTabCollection = viewModel::saveCurrentTabCollection,
+                         onRestoreTabCollection = viewModel::restoreTabCollection,
+                         onDeleteTabCollection = viewModel::deleteTabCollection,
+                         onSetReadingListAnnotation = viewModel::setReadingListAnnotation,
+                         onSetDownloadExpectedChecksum = viewModel::setDownloadExpectedChecksum,
+                     ),
                    onOpenNetworkInspector = viewModel::openNetworkInspector,
                   onClearNetworkActivity = viewModel::clearNetworkActivity,
                   onShareCurrentWorkspaceTabs = viewModel::shareCurrentWorkspaceTabs,
@@ -732,8 +739,14 @@ private data class BrowserScreenExtras(
     val onRunScheduledBackup: () -> Unit,
     val onRefreshScheduledBackups: () -> Unit,
     val onRestoreScheduledBackup: (ScheduledBackupInfo) -> Unit,
-    val onClearWorkspaceSiteData: () -> Unit,
-)
+     val onClearWorkspaceSiteData: () -> Unit,
+     val tabCollections: List<TabCollection>,
+     val onSaveCurrentTabCollection: (String, String, String) -> Unit,
+     val onRestoreTabCollection: (TabCollection) -> Unit,
+     val onDeleteTabCollection: (TabCollection) -> Unit,
+     val onSetReadingListAnnotation: (com.dwicao.dextra.data.ReadingListEntry, String) -> Unit,
+     val onSetDownloadExpectedChecksum: (DownloadEntry, String?) -> Unit,
+ )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1066,9 +1079,10 @@ private fun BrowserScreen(
                 onOpen = onOpenDownload,
                 onShare = onShareDownload,
                 onToggle = onToggleDownload,
-                onSetPriority = onSetDownloadPriority,
-                onSetWifiOnly = onSetDownloadWifiOnly,
-                onSchedule = onScheduleDownload,
+                 onSetPriority = onSetDownloadPriority,
+                 onSetWifiOnly = onSetDownloadWifiOnly,
+                 onSetExpectedChecksum = extras.onSetDownloadExpectedChecksum,
+                 onSchedule = onScheduleDownload,
                 onPauseAll = onPauseAllDownloads,
                 onResumeAll = onResumeAllDownloads,
                 onCancel = onCancelDownload,
@@ -1319,7 +1333,8 @@ private fun BrowserScreen(
                  onToggleTabSleeping = onToggleTabSleeping,
                      onHibernateInactiveTabs = onHibernateInactiveTabs,
                      onToggleBookmark = onToggleBookmark,
-                     onShowDownloads = { onSetOverlay(BrowserOverlay.DOWNLOADS) },
+                         onShowDownloads = { onSetOverlay(BrowserOverlay.DOWNLOADS) },
+                         onOpenPanel = onSetOverlay,
                           onMenu = { menuExpanded = true },
                           startPage = startPage,
                          addressFocusRequester = addressFocusRequester,
@@ -1523,8 +1538,13 @@ private fun BrowserScreen(
                                onRestoreSessionSnapshot = onRestoreSessionSnapshot,
                                 onDeleteSessionSnapshot = onDeleteSessionSnapshot,
                                 onDeleteSessionTimeline = onDeleteSessionTimeline,
-                                onRestoreSessionTab = onRestoreSessionTab,
-                           )
+                                 onRestoreSessionTab = onRestoreSessionTab,
+                                tabCollections = extras.tabCollections,
+                                onSaveCurrentTabCollection = extras.onSaveCurrentTabCollection,
+                                onRestoreTabCollection = extras.onRestoreTabCollection,
+                                onDeleteTabCollection = extras.onDeleteTabCollection,
+                                onSetReadingListAnnotation = extras.onSetReadingListAnnotation,
+                            )
                         BrowserOverlay.PRIVACY -> PrivacyDashboardSheet(
                                origins = privacyOrigins,
                                permissions = sitePermissions,
@@ -1732,7 +1752,8 @@ private fun DesktopBrowserLayout(
     onToggleTabSleeping: (String) -> Unit,
     onHibernateInactiveTabs: () -> Unit,
     onToggleBookmark: () -> Unit,
-    onShowDownloads: () -> Unit,
+     onShowDownloads: () -> Unit,
+     onOpenPanel: (BrowserOverlay) -> Unit,
     onMenu: () -> Unit,
     addressFocusRequester: FocusRequester,
      showTabBarWithAddressBar: Boolean,
@@ -1774,8 +1795,12 @@ private fun DesktopBrowserLayout(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Spacer(Modifier.height(8.dp))
-                BrowserNavButton(Icons.Outlined.Download, "Open downloads", true, onShowDownloads)
-                BrowserNavButton(Icons.Outlined.MoreVert, "Open browser menu", true, onMenu)
+                 BrowserNavButton(Icons.Outlined.Download, "Open downloads", true, onShowDownloads)
+                 BrowserNavButton(Icons.Outlined.Security, "Open privacy dashboard", true) { onOpenPanel(BrowserOverlay.PRIVACY) }
+                 BrowserNavButton(Icons.Outlined.Speed, "Open performance dashboard", true) { onOpenPanel(BrowserOverlay.PERFORMANCE) }
+                 BrowserNavButton(Icons.Outlined.Language, "Open network inspector", true) { onOpenPanel(BrowserOverlay.NETWORK) }
+                 BrowserNavButton(Icons.Outlined.VolumeUp, "Open media manager", true) { onOpenPanel(BrowserOverlay.MEDIA) }
+                 BrowserNavButton(Icons.Outlined.MoreVert, "Open browser menu", true, onMenu)
             }
         }
         Column(
@@ -4325,6 +4350,32 @@ private fun PrivacyDashboardSheet(
             Text("Clear all site data")
         }
     }
+    if (origins.isNotEmpty()) {
+        Text(
+            "Privacy activity",
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 190.dp)) {
+            items(origins.take(20), key = { "activity-${it.origin}" }) { origin ->
+                val activity = buildList {
+                    if (origin.blockedCount > 0) add("${origin.blockedCount} tracker requests blocked")
+                    if (origin.permissionCount > 0) add("${origin.permissionCount} permission decisions")
+                    if (origin.hasSiteOverrides) add("Site privacy overrides changed")
+                }.ifEmpty { listOf("Site privacy record updated") }
+                ListItem(
+                    headlineContent = { Text(origin.origin, maxLines = 1) },
+                    supportingContent = {
+                        Text(
+                            "${activity.joinToString("  •  ")}  •  ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(origin.updatedAt))}",
+                            maxLines = 2,
+                        )
+                    },
+                    leadingContent = { Icon(Icons.Outlined.Security, contentDescription = null) },
+                )
+            }
+        }
+    }
     if (origins.isEmpty()) {
         EmptyLibrary(
             if (currentOrigin == null) "No saved site permissions or overrides." else "No saved decisions for other sites.",
@@ -4705,8 +4756,9 @@ private fun SyncPreviewDialog(
                 SettingToggle("Browser settings", "${if (preview.hasSettings) "Available" else "Not included"}", includeSettings) { includeSettings = it }
                 SettingToggle("Bookmarks", "${preview.bookmarkCount} entries", includeBookmarks) { includeBookmarks = it }
                 SettingToggle("History", "${preview.historyCount} entries", includeHistory) { includeHistory = it }
-                SettingToggle("Reading list", "${preview.readingListCount} entries", includeReadingList) { includeReadingList = it }
-                SettingToggle("Site permissions", "${preview.permissionCount} decisions", includePermissions) { includePermissions = it }
+                 SettingToggle("Reading list", "${preview.readingListCount} entries", includeReadingList) { includeReadingList = it }
+                 SettingToggle("Tab collections", "${preview.collectionCount} collections (included with settings)", includeSettings) { includeSettings = it }
+                 SettingToggle("Site permissions", "${preview.permissionCount} decisions", includePermissions) { includePermissions = it }
                 SettingToggle("Site overrides", "${preview.siteSettingCount} origins", includeSiteSettings) { includeSiteSettings = it }
                 Text(
                     "Saved logins and private tabs are never part of a sync bundle.",
@@ -5513,9 +5565,10 @@ private fun DownloadsPage(
     onOpen: (DownloadEntry) -> Unit,
     onShare: (DownloadEntry) -> Unit,
     onToggle: (DownloadEntry) -> Unit,
-    onSetPriority: (DownloadEntry, Int) -> Unit,
-    onSetWifiOnly: (DownloadEntry, Boolean) -> Unit,
-    onSchedule: (DownloadEntry, Long?) -> Unit,
+     onSetPriority: (DownloadEntry, Int) -> Unit,
+     onSetWifiOnly: (DownloadEntry, Boolean) -> Unit,
+     onSetExpectedChecksum: (DownloadEntry, String?) -> Unit,
+     onSchedule: (DownloadEntry, Long?) -> Unit,
     onPauseAll: () -> Unit,
     onResumeAll: () -> Unit,
     onCancel: (DownloadEntry) -> Unit,
@@ -5529,9 +5582,10 @@ private fun DownloadsPage(
             onOpen = onOpen,
             onShare = onShare,
             onToggle = onToggle,
-            onSetPriority = onSetPriority,
-            onSetWifiOnly = onSetWifiOnly,
-            onSchedule = onSchedule,
+             onSetPriority = onSetPriority,
+             onSetWifiOnly = onSetWifiOnly,
+             onSetExpectedChecksum = onSetExpectedChecksum,
+             onSchedule = onSchedule,
             onPauseAll = onPauseAll,
             onResumeAll = onResumeAll,
             onCancel = onCancel,
@@ -5692,9 +5746,14 @@ private fun LibrarySheet(
      onCreateSessionSnapshot: (String) -> Unit,
      onRestoreSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
      onDeleteSessionSnapshot: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-     onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
-     onRestoreSessionTab: (SavedTab) -> Unit,
-) {
+      onDeleteSessionTimeline: (com.dwicao.dextra.data.SessionSnapshot) -> Unit,
+      onRestoreSessionTab: (SavedTab) -> Unit,
+      tabCollections: List<TabCollection>,
+      onSaveCurrentTabCollection: (String, String, String) -> Unit,
+      onRestoreTabCollection: (TabCollection) -> Unit,
+      onDeleteTabCollection: (TabCollection) -> Unit,
+      onSetReadingListAnnotation: (com.dwicao.dextra.data.ReadingListEntry, String) -> Unit,
+ ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
      var createSnapshot by remember { mutableStateOf(false) }
      var snapshotTitle by rememberSaveable { mutableStateOf("") }
@@ -5713,7 +5772,8 @@ private fun LibrarySheet(
         Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("History") }, icon = { Icon(Icons.Outlined.History, null) })
         Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("Reading list") }, icon = { Icon(Icons.Outlined.BookmarkBorder, null) })
         Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }, text = { Text("Sessions") }, icon = { Icon(Icons.Outlined.Tab, null) })
-        Tab(selected = selectedTab == 4, onClick = { selectedTab = 4 }, text = { Text("Recovery") }, icon = { Icon(Icons.Outlined.History, null) })
+         Tab(selected = selectedTab == 4, onClick = { selectedTab = 4 }, text = { Text("Recovery") }, icon = { Icon(Icons.Outlined.History, null) })
+         Tab(selected = selectedTab == 5, onClick = { selectedTab = 5 }, text = { Text("Collections") }, icon = { Icon(Icons.Outlined.Tab, null) })
     }
     if (selectedTab == 0) {
         var selectedFolder by rememberSaveable { mutableStateOf("") }
@@ -5936,6 +5996,8 @@ private fun LibrarySheet(
             }
         }
     } else if (selectedTab == 2) {
+        var annotationEntry by remember { mutableStateOf<com.dwicao.dextra.data.ReadingListEntry?>(null) }
+        var annotationText by rememberSaveable { mutableStateOf("") }
         if (readingList.isEmpty()) {
             EmptyLibrary("Pages saved for later will appear here.", Icons.Outlined.BookmarkBorder)
         } else {
@@ -5955,12 +6017,16 @@ private fun LibrarySheet(
                                 IconButton(onClick = { onOpen(entry.url) }) {
                                     Icon(Icons.Outlined.OpenInNew, contentDescription = "Open saved page")
                                 }
-                                if (entry.offlinePath != null) {
+                                 if (entry.offlinePath != null) {
                                     IconButton(onClick = { onOpenOffline(entry) }) {
                                         Icon(Icons.Outlined.Download, contentDescription = "Open offline copy")
                                     }
-                                }
-                                IconButton(onClick = { onDeleteReadingListEntry(entry) }) {
+                                 }
+                                 TextButton(onClick = {
+                                     annotationEntry = entry
+                                     annotationText = entry.annotation.orEmpty()
+                                 }) { Text("Note") }
+                                 IconButton(onClick = { onDeleteReadingListEntry(entry) }) {
                                     Icon(Icons.Outlined.DeleteOutline, contentDescription = "Remove from reading list")
                                 }
                             }
@@ -5968,6 +6034,28 @@ private fun LibrarySheet(
                     )
                 }
             }
+        }
+        annotationEntry?.let { entry ->
+            AlertDialog(
+                onDismissRequest = { annotationEntry = null },
+                title = { Text("Reading note") },
+                text = {
+                    OutlinedTextField(
+                        value = annotationText,
+                        onValueChange = { annotationText = it.take(2_000) },
+                        label = { Text("Annotation") },
+                        minLines = 4,
+                        maxLines = 8,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onSetReadingListAnnotation(entry, annotationText)
+                        annotationEntry = null
+                    }) { Text("Save") }
+                },
+                dismissButton = { TextButton(onClick = { annotationEntry = null }) { Text("Cancel") } },
+            )
         }
     } else if (selectedTab == 3) {
         Row(
@@ -6039,7 +6127,7 @@ private fun LibrarySheet(
                 dismissButton = { TextButton(onClick = { createSnapshot = false }) { Text("Cancel") } },
             )
         }
-    } else {
+    } else if (selectedTab == 4) {
         if (sessionTimeline.isEmpty()) {
             EmptyLibrary("Automatic recovery points will appear after the app is backgrounded.", Icons.Outlined.History)
         } else {
@@ -6067,6 +6155,103 @@ private fun LibrarySheet(
                 }
             }
         }
+    } else {
+        var createCollection by remember { mutableStateOf(false) }
+        var collectionTitle by rememberSaveable { mutableStateOf("") }
+        var collectionNote by rememberSaveable { mutableStateOf("") }
+        var collectionTags by rememberSaveable { mutableStateOf("") }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Button(onClick = {
+                collectionTitle = ""
+                collectionNote = ""
+                collectionTags = ""
+                createCollection = true
+            }) {
+                Icon(Icons.Outlined.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Save current tabs")
+            }
+        }
+        if (tabCollections.isEmpty()) {
+            EmptyLibrary("Save a group of tabs with notes and tags for later.", Icons.Outlined.Tab)
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 430.dp)) {
+                items(tabCollections, key = { it.id }) { collection ->
+                    ListItem(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        headlineContent = { Text(collection.title, maxLines = 1) },
+                        supportingContent = {
+                            Text(
+                                listOf("${collection.tabs.size} tabs", collection.tags.joinToString(", ")).filter(String::isNotBlank).joinToString("  •  "),
+                                maxLines = 2,
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Outlined.Tab, contentDescription = null) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { onRestoreTabCollection(collection) }) { Text("Open") }
+                                IconButton(onClick = { onDeleteTabCollection(collection) }) {
+                                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete ${collection.title}")
+                                }
+                            }
+                        },
+                    )
+                    if (collection.note.isNotBlank()) {
+                        Text(
+                            collection.note,
+                            modifier = Modifier.padding(start = 72.dp, end = 20.dp, bottom = 8.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                        )
+                    }
+                }
+            }
+        }
+        if (createCollection) {
+            AlertDialog(
+                onDismissRequest = { createCollection = false },
+                title = { Text("Save tab collection") },
+                text = {
+                    Column {
+                        OutlinedTextField(
+                            value = collectionTitle,
+                            onValueChange = { collectionTitle = it },
+                            label = { Text("Collection name") },
+                            singleLine = true,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = collectionNote,
+                            onValueChange = { collectionNote = it },
+                            label = { Text("Note (optional)") },
+                            minLines = 2,
+                            maxLines = 3,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = collectionTags,
+                            onValueChange = { collectionTags = it },
+                            label = { Text("Tags, comma separated") },
+                            singleLine = true,
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onSaveCurrentTabCollection(collectionTitle, collectionNote, collectionTags)
+                            createCollection = false
+                        },
+                        enabled = collectionTitle.isNotBlank(),
+                    ) { Text("Save") }
+                },
+                dismissButton = { TextButton(onClick = { createCollection = false }) { Text("Cancel") } },
+            )
+        }
     }
     Spacer(Modifier.height(24.dp))
     if (confirmClearHistory) {
@@ -6086,9 +6271,10 @@ private fun DownloadsSheet(
     onOpen: (DownloadEntry) -> Unit,
     onShare: (DownloadEntry) -> Unit,
     onToggle: (DownloadEntry) -> Unit,
-    onSetPriority: (DownloadEntry, Int) -> Unit,
-    onSetWifiOnly: (DownloadEntry, Boolean) -> Unit,
-    onSchedule: (DownloadEntry, Long?) -> Unit,
+     onSetPriority: (DownloadEntry, Int) -> Unit,
+     onSetWifiOnly: (DownloadEntry, Boolean) -> Unit,
+     onSetExpectedChecksum: (DownloadEntry, String?) -> Unit,
+     onSchedule: (DownloadEntry, Long?) -> Unit,
     onPauseAll: () -> Unit,
     onResumeAll: () -> Unit,
     onCancel: (DownloadEntry) -> Unit,
@@ -6097,6 +6283,8 @@ private fun DownloadsSheet(
     showHeader: Boolean = true,
 ) {
     var pendingDelete by remember { mutableStateOf<DownloadEntry?>(null) }
+    var checksumDownload by remember { mutableStateOf<DownloadEntry?>(null) }
+    var checksumText by rememberSaveable { mutableStateOf("") }
     var query by rememberSaveable { mutableStateOf("") }
     var selectedStatus by rememberSaveable { mutableStateOf("All") }
     var selectedType by rememberSaveable { mutableStateOf("All") }
@@ -6234,11 +6422,19 @@ private fun DownloadsSheet(
                                             text = { Text("Low priority") },
                                             onClick = { optionsExpanded = false; onSetPriority(download, 0) },
                                         )
-                                        DropdownMenuItem(
-                                            text = { Text(if (download.wifiOnly) "Allow metered network" else "Wi-Fi only") },
-                                            onClick = { optionsExpanded = false; onSetWifiOnly(download, !download.wifiOnly) },
-                                        )
-                                        DropdownMenuItem(
+                                         DropdownMenuItem(
+                                             text = { Text(if (download.wifiOnly) "Allow metered network" else "Wi-Fi only") },
+                                             onClick = { optionsExpanded = false; onSetWifiOnly(download, !download.wifiOnly) },
+                                         )
+                                         DropdownMenuItem(
+                                             text = { Text("Set SHA-256 checksum") },
+                                             onClick = {
+                                                 optionsExpanded = false
+                                                 checksumDownload = download
+                                                 checksumText = download.expectedChecksumSha256.orEmpty()
+                                             },
+                                         )
+                                         DropdownMenuItem(
                                             text = { Text("Start now") },
                                             enabled = isActive,
                                             onClick = { optionsExpanded = false; onSchedule(download, null) },
@@ -6295,6 +6491,35 @@ private fun DownloadsSheet(
             }
         }
     }
+    checksumDownload?.let { download ->
+        AlertDialog(
+            onDismissRequest = { checksumDownload = null },
+            title = { Text("Verify SHA-256") },
+            text = {
+                Column {
+                    Text(
+                        "Enter the expected 64-character SHA-256 hash. Leave it blank to disable verification.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = checksumText,
+                        onValueChange = { checksumText = it.filter(Char::isLetterOrDigit).take(64) },
+                        label = { Text("Expected SHA-256") },
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onSetExpectedChecksum(download, checksumText.ifBlank { null })
+                    checksumDownload = null
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { checksumDownload = null }) { Text("Cancel") } },
+        )
+    }
     pendingDelete?.let { download ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
@@ -6327,7 +6552,9 @@ private fun buildDownloadSummary(download: DownloadEntry): String {
     val priority = "Priority ${downloadPriorityLabel(download.priority)}"
     val network = if (download.wifiOnly) "Wi-Fi only" else "Any network"
     val schedule = download.scheduledAt?.let { "Starts ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it))}" }.orEmpty()
-    return listOf(status, size, speed, priority, network, schedule, download.reason.orEmpty())
+    val checksum = download.checksumSha256?.let { "SHA-256 ${it.take(16)}..." }.orEmpty()
+    val expectedChecksum = download.expectedChecksumSha256?.let { "Expected SHA-256 ${it.take(16)}..." }.orEmpty()
+    return listOf(status, size, speed, priority, network, schedule, expectedChecksum, checksum, download.reason.orEmpty())
         .filter(String::isNotBlank)
         .joinToString("  •  ")
 }

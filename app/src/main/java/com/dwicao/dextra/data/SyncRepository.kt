@@ -75,6 +75,7 @@ data class SyncPreview(
     val readingListCount: Int,
     val permissionCount: Int,
     val siteSettingCount: Int,
+    val collectionCount: Int,
     val hasSettings: Boolean,
 )
 
@@ -106,7 +107,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
                 put("url", it.url); put("title", it.title); put("createdAt", it.createdAt); put("folder", it.folder)
             } }))
             if (selection.readingList) put("readingList", JSONArray(dao.getReadingList().map { JSONObject().apply {
-                put("url", it.url); put("title", it.title); put("savedAt", it.savedAt); put("isRead", it.isRead)
+                put("url", it.url); put("title", it.title); put("savedAt", it.savedAt); put("isRead", it.isRead); put("annotation", it.annotation)
             } }))
             if (selection.sitePermissions) put("sitePermissions", JSONArray(dao.getSitePermissions().map { JSONObject().apply {
                 put("origin", it.origin); put("permission", it.permission); put("decision", it.decision); put("updatedAt", it.updatedAt); put("profileId", it.profileId)
@@ -163,6 +164,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
             readingListCount = root.optJSONArray("readingList")?.length() ?: 0,
             permissionCount = root.optJSONArray("sitePermissions")?.length() ?: 0,
             siteSettingCount = root.optJSONArray("siteSettings")?.length() ?: 0,
+            collectionCount = root.optJSONObject("settings")?.optJSONArray("tabCollections")?.length() ?: 0,
             hasSettings = root.has("settings"),
         )
     }
@@ -260,6 +262,7 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
                 val entry = ReadingListEntry(
                     url = it.getString("url"), title = it.getString("title"),
                     savedAt = it.optLong("savedAt", System.currentTimeMillis()), isRead = it.optBoolean("isRead"),
+                    annotation = it.optString("annotation").takeIf(String::isNotBlank)?.take(2_000),
                 )
                 if (!mergeRecords || (existingReadingList[entry.url]?.savedAt ?: Long.MIN_VALUE) <= entry.savedAt) {
                     dao.upsertReadingListEntry(entry)
@@ -312,6 +315,10 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         merged.put("tabGroups", mergeObjectArrays(merged.optJSONArray("tabGroups"), remote.optJSONArray("tabGroups"), "id", MAX_SYNC_GROUPS))
         merged.put("workspaces", filterTombstonedWorkspaces(
             mergeWorkspaces(merged.optJSONArray("workspaces"), remote.optJSONArray("workspaces")),
+            tombstoneIds,
+        ))
+        merged.put("tabCollections", filterTombstonedCollections(
+            mergeCollections(merged.optJSONArray("tabCollections"), remote.optJSONArray("tabCollections")),
             tombstoneIds,
         ))
         return merged
@@ -393,6 +400,17 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         put("fingerprintingProtectionEnabled", settings.fingerprintingProtectionEnabled)
         put("dexLayoutPreset", settings.dexLayoutPreset.name)
         put("tabTombstones", JSONObject(settings.tabTombstones))
+        put("tabCollections", JSONArray(settings.tabCollections.map { collection ->
+            JSONObject().apply {
+                put("id", collection.id)
+                put("title", collection.title)
+                put("note", collection.note)
+                put("tags", JSONArray(collection.tags))
+                put("createdAt", collection.createdAt)
+                put("updatedAt", collection.updatedAt)
+                put("tabs", JSONArray(collection.tabs.filterNot { it.isPrivate }.map(::savedTabJson)))
+            }
+        }))
         put("tabBarWithAddressBar", settings.tabBarWithAddressBar)
         put("verticalTabs", settings.verticalTabs)
         put("accessibilityTextScale", settings.accessibilityTextScale)
@@ -427,6 +445,30 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         local?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
         remote?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
         return JSONArray(values.values.take(MAX_SYNC_WORKSPACES))
+    }
+
+    private fun mergeCollections(local: JSONArray?, remote: JSONArray?): JSONArray {
+        val values = linkedMapOf<String, JSONObject>()
+        fun add(value: JSONObject) {
+            val id = value.optString("id").takeIf(String::isNotBlank) ?: return
+            val existing = values[id]
+            values[id] = if (existing == null) {
+                JSONObject(value.toString())
+            } else {
+                val newer = value.optLong("updatedAt") >= existing.optLong("updatedAt")
+                JSONObject((if (newer) value else existing).toString()).apply {
+                    if (newer) {
+                        put("title", value.optString("title").take(60))
+                        put("note", value.optString("note").take(240))
+                    }
+                    put("tags", mergeStringArrays(existing.optJSONArray("tags"), value.optJSONArray("tags"), MAX_COLLECTION_TAGS))
+                    put("tabs", mergeTabArrays(existing.optJSONArray("tabs"), value.optJSONArray("tabs"), MAX_SYNC_COLLECTION_TABS))
+                }
+            }
+        }
+        local?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        remote?.let { array -> for (index in 0 until array.length()) array.optJSONObject(index)?.let(::add) }
+        return JSONArray(values.values.take(MAX_SYNC_COLLECTIONS))
     }
 
     private fun mergeTabArrays(local: JSONArray?, remote: JSONArray?, limit: Int): JSONArray {
@@ -470,6 +512,27 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         }
     }
 
+    private fun filterTombstonedCollections(collections: JSONArray, tombstoneIds: Set<String>): JSONArray = JSONArray().also { output ->
+        for (index in 0 until collections.length()) {
+            val collection = collections.optJSONObject(index) ?: continue
+            collection.put("tabs", filterTombstonedTabs(collection.optJSONArray("tabs") ?: JSONArray(), tombstoneIds))
+            if (collection.optJSONArray("tabs")?.length() != 0) output.put(collection)
+        }
+    }
+
+    private fun mergeStringArrays(local: JSONArray?, remote: JSONArray?, limit: Int): JSONArray = JSONArray().also { output ->
+        val values = linkedSetOf<String>()
+        fun add(array: JSONArray?) {
+            if (array == null) return
+            for (index in 0 until array.length()) {
+                array.optString(index).trim().takeIf(String::isNotBlank)?.let(values::add)
+            }
+        }
+        add(local)
+        add(remote)
+        values.take(limit).forEach(output::put)
+    }
+
     private fun mergeObjectArrays(local: JSONArray?, remote: JSONArray?, keyName: String, limit: Int): JSONArray {
         val values = linkedMapOf<String, JSONObject>()
         fun add(value: JSONObject) {
@@ -508,6 +571,9 @@ class SyncRepository(private val context: Context, private val dao: BrowserDao) 
         const val MAX_SYNC_TABS = 64
         const val MAX_SYNC_GROUPS = 100
         const val MAX_SYNC_WORKSPACES = 12
+        const val MAX_SYNC_COLLECTIONS = 50
+        const val MAX_SYNC_COLLECTION_TABS = 64
+        const val MAX_COLLECTION_TAGS = 12
         const val MAX_SYNC_TOMBSTONES = 512
         const val MIN_PASSPHRASE_LENGTH = 8
     }

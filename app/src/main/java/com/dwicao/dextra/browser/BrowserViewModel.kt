@@ -63,6 +63,7 @@ import com.dwicao.dextra.data.StoredCredential
 import com.dwicao.dextra.data.StoredAddress
 import com.dwicao.dextra.data.SitePermission
 import com.dwicao.dextra.data.TabWorkspace
+import com.dwicao.dextra.data.TabCollection
 import com.dwicao.dextra.data.DEFAULT_WORKSPACE_ID
 import com.dwicao.dextra.data.DexLayoutPreset
 import com.dwicao.dextra.data.SettingsRepository
@@ -405,6 +406,7 @@ data class PerformanceMetrics(
 data class OfflineArticle(
     val title: String,
     val content: String,
+    val annotation: String? = null,
 )
 
 private data class ClosedTabEntry(
@@ -1253,6 +1255,48 @@ class BrowserViewModel private constructor(
         }
         persistOpenTabs(immediate = true)
         showSnackbar("Opened ${validTab.title?.ifBlank { validTab.url } ?: validTab.url}")
+    }
+
+    fun saveCurrentTabCollection(title: String, note: String, tags: String) {
+        val tabs = savedTabsFromState().takeIf { it.isNotEmpty() } ?: run {
+            showSnackbar("There are no normal tabs to collect")
+            return
+        }
+        val normalizedTitle = title.trim().take(60)
+        if (normalizedTitle.isBlank()) return
+        val normalizedTags = tags.split(',').map { it.trim().take(24) }.filter(String::isNotBlank).distinct().take(12)
+        val now = System.currentTimeMillis()
+        val existing = _state.value.settings.tabCollections.firstOrNull { it.title.equals(normalizedTitle, true) }
+        val collection = TabCollection(
+            id = existing?.id ?: UUID.randomUUID().toString(),
+            title = normalizedTitle,
+            note = note.trim().take(240),
+            tags = normalizedTags,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now,
+            tabs = tabs,
+        )
+        viewModelScope.launch { settingsRepository.saveTabCollection(collection); showSnackbar("Tab collection saved") }
+    }
+
+    fun deleteTabCollection(collection: TabCollection) {
+        viewModelScope.launch { settingsRepository.deleteTabCollection(collection.id) }
+    }
+
+    fun restoreTabCollection(collection: TabCollection) {
+        collection.tabs.forEach { tab ->
+            if (_state.value.tabs.size < MAX_OPEN_TABS) {
+                val id = createTab(initialUri = tab.url, savedSessionState = tab.sessionState, tabId = tab.id)
+                if (id.isNotBlank()) {
+                    updateTab(id) { current -> current.copy(title = tab.title?.ifBlank { null } ?: current.title, pinned = tab.pinned, groupId = tab.groupId) }
+                }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            settingsRepository.removeTabTombstones(collection.tabs.mapNotNull { it.id })
+        }
+        persistOpenTabs(immediate = true)
+        showSnackbar("Opened ${collection.tabs.size} tabs from ${collection.title}")
     }
 
     fun deleteSessionSnapshot(snapshot: SessionSnapshot) {
@@ -2744,6 +2788,12 @@ class BrowserViewModel private constructor(
         viewModelScope.launch { dao.setReadingListRead(entry.url, isRead) }
     }
 
+    fun setReadingListAnnotation(entry: ReadingListEntry, annotation: String) {
+        viewModelScope.launch {
+            dao.setReadingListAnnotation(entry.url, annotation.trim().take(2_000).takeIf(String::isNotBlank))
+        }
+    }
+
     @androidx.annotation.OptIn(markerClass = [org.mozilla.geckoview.ExperimentalGeckoViewApi::class])
     fun saveCurrentPageOffline() {
         val tab = activeTab() ?: return
@@ -2752,7 +2802,7 @@ class BrowserViewModel private constructor(
             return
         }
         viewModelScope.launch {
-            tab.session.sessionPageExtractor.getPageContent().accept(
+            tab.session.sessionPageExtractor.getPageContent(PageExtractionController.ContentParams(true)).accept(
                 { html ->
                     val content = html.orEmpty()
                     if (content.toByteArray(Charsets.UTF_8).size > MAX_OFFLINE_ARTICLE_BYTES) {
@@ -2794,6 +2844,7 @@ class BrowserViewModel private constructor(
                 OfflineArticle(
                     title = entry.title,
                     content = Html.fromHtml(file.readText(Charsets.UTF_8), Html.FROM_HTML_MODE_LEGACY).toString().trim(),
+                    annotation = entry.annotation,
                 )
             }.getOrNull()
             withContext(Dispatchers.Main.immediate) {
@@ -3226,6 +3277,7 @@ class BrowserViewModel private constructor(
         }
         val profileId = activeProfileId()
         viewModelScope.launch(Dispatchers.IO) {
+            saveSyncRecoveryPoint(_state.value.settings, "Before encrypted sync import")
             val result = runCatching { syncRepository.import(uri, passphrase, profileId) }
             result.onSuccess { data ->
                 data.importedSettings?.let { settingsRepository.applySyncSettings(it) }
@@ -3266,6 +3318,7 @@ class BrowserViewModel private constructor(
         pendingSyncImport = null
         _state.update { it.copy(syncPreview = null, syncPreviewLoading = false) }
         viewModelScope.launch(Dispatchers.IO) {
+            saveSyncRecoveryPoint(_state.value.settings, "Before encrypted sync import")
             val result = runCatching { syncRepository.import(pending.first, pending.second, profileId, selection) }
             result.onSuccess { data ->
                 data.importedSettings?.let { settingsRepository.applySyncSettings(it) }
@@ -3280,6 +3333,21 @@ class BrowserViewModel private constructor(
         syncPreviewRequestId++
         pendingSyncImport = null
         _state.update { it.copy(syncPreview = null, syncPreviewLoading = false) }
+    }
+
+    private suspend fun saveSyncRecoveryPoint(settings: BrowserSettings, title: String) {
+        val tabs = settings.openTabs.filterNot(SavedTab::isPrivate)
+        if (tabs.isEmpty()) return
+        settingsRepository.saveSessionTimeline(
+            SessionSnapshot(
+                id = UUID.randomUUID().toString(),
+                title = title,
+                createdAt = System.currentTimeMillis(),
+                tabs = tabs,
+                activeTabIndex = settings.activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)),
+                tabGroups = settings.tabGroups,
+            ),
+        )
     }
 
     fun saveWebDavSettings(
@@ -4503,6 +4571,20 @@ class BrowserViewModel private constructor(
         }
     }
 
+    fun setDownloadExpectedChecksum(download: DownloadEntry, checksum: String?) {
+        val normalized = checksum?.trim()?.lowercase()?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+        if (checksum != null && normalized == null) {
+            showSnackbar("SHA-256 must be 64 hexadecimal characters")
+            return
+        }
+        viewModelScope.launch {
+            dao.getDownload(download.downloadId)?.let {
+                dao.upsertDownload(it.copy(expectedChecksumSha256 = normalized, checksumSha256 = null))
+                if (it.status == DownloadStatus.FAILED.label) retryDownload(it.copy(expectedChecksumSha256 = normalized))
+            }
+        }
+    }
+
     fun scheduleDownload(download: DownloadEntry, scheduledAt: Long?) {
         if (download.status == DownloadStatus.COMPLETE.label || download.status == DownloadStatus.CANCELED.label) return
         WorkManager.getInstance(getApplication()).cancelUniqueWork(downloadWorkName(download.downloadId))
@@ -4547,7 +4629,16 @@ class BrowserViewModel private constructor(
         if (download.status != DownloadStatus.FAILED.label) return
         viewModelScope.launch {
             dao.getDownload(download.downloadId)?.let {
-                val retry = it.copy(status = DownloadStatus.QUEUED.label, reason = null, attempts = 0)
+                val requiresFreshFile = it.reason == "SHA-256 checksum mismatch"
+                if (requiresFreshFile) cleanupDownloadFiles(it)
+                val retry = it.copy(
+                    status = DownloadStatus.QUEUED.label,
+                    reason = null,
+                    attempts = 0,
+                    bytesDownloaded = if (requiresFreshFile) 0L else it.bytesDownloaded,
+                    totalBytes = if (requiresFreshFile) -1L else it.totalBytes,
+                    checksumSha256 = null,
+                )
                 dao.upsertDownload(retry)
                 scheduleDownload(retry)
             }

@@ -71,6 +71,7 @@ data class ReadingListEntry(
     val savedAt: Long,
     val isRead: Boolean = false,
     val offlinePath: String? = null,
+    val annotation: String? = null,
 )
 
 @Entity(tableName = "downloads")
@@ -94,6 +95,8 @@ data class DownloadEntry(
     val wifiOnly: Boolean = false,
     val scheduledAt: Long? = null,
     val workspaceId: String = DEFAULT_WORKSPACE_ID,
+    val checksumSha256: String? = null,
+    val expectedChecksumSha256: String? = null,
 )
 
 enum class DownloadStatus(val label: String) {
@@ -256,6 +259,9 @@ interface BrowserDao {
     @Query("UPDATE reading_list SET isRead = :isRead WHERE url = :url")
     suspend fun setReadingListRead(url: String, isRead: Boolean)
 
+    @Query("UPDATE reading_list SET annotation = :annotation WHERE url = :url")
+    suspend fun setReadingListAnnotation(url: String, annotation: String?)
+
     @Query("SELECT * FROM reading_list ORDER BY savedAt DESC")
     suspend fun getReadingList(): List<ReadingListEntry>
 
@@ -276,6 +282,9 @@ interface BrowserDao {
 
     @Query("UPDATE downloads SET localUri = :localUri WHERE downloadId = :downloadId AND status = :completeStatus")
     suspend fun setDownloadUriIfComplete(downloadId: Long, localUri: String, completeStatus: String): Int
+
+    @Query("UPDATE downloads SET checksumSha256 = :checksumSha256 WHERE downloadId = :downloadId")
+    suspend fun updateDownloadChecksum(downloadId: Long, checksumSha256: String?)
 
     @Query("UPDATE downloads SET status = :failedStatus, reason = :reason WHERE downloadId = :downloadId AND status = :completeStatus")
     suspend fun markDownloadFailedIfComplete(
@@ -307,7 +316,7 @@ interface BrowserDao {
     suspend fun getInstalledWebApps(): List<InstalledWebApp>
 }
 
-@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 17, exportSchema = false)
+@Database(entities = [HistoryEntry::class, Bookmark::class, DownloadEntry::class, SitePermission::class, SiteSetting::class, ReadingListEntry::class, InstalledWebApp::class], version = 20, exportSchema = false)
 abstract class BrowserDatabase : androidx.room.RoomDatabase() {
     abstract fun browserDao(): BrowserDao
 
@@ -320,7 +329,7 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
                 context.applicationContext,
                 BrowserDatabase::class.java,
                 "dextra.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -525,6 +534,24 @@ abstract class BrowserDatabase : androidx.room.RoomDatabase() {
         private val MIGRATION_16_17 = object : Migration(16, 17) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE site_settings ADD COLUMN cookieBannerMode INTEGER")
+            }
+        }
+
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE downloads ADD COLUMN checksumSha256 TEXT")
+            }
+        }
+
+        private val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE reading_list ADD COLUMN annotation TEXT")
+            }
+        }
+
+        private val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE downloads ADD COLUMN expectedChecksumSha256 TEXT")
             }
         }
     }

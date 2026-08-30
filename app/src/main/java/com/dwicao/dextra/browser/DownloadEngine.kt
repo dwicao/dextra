@@ -13,6 +13,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
 
@@ -23,6 +24,7 @@ data class DownloadUpdate(
     val speedBytesPerSecond: Long? = null,
     val filePath: String? = null,
     val reason: String? = null,
+    val checksumSha256: String? = null,
 )
 
 class DownloadEngine(
@@ -53,6 +55,20 @@ class DownloadEngine(
             onUpdate(download.downloadId, DownloadUpdate(DownloadStatus.DOWNLOADING.label))
             val totalBytes = downloadFile(download)
             coroutineContext.ensureActive()
+            val checksum = sha256(download.filePath)
+            if (download.expectedChecksumSha256 != null &&
+                !download.expectedChecksumSha256.equals(checksum, ignoreCase = true)
+            ) {
+                onUpdate(
+                    download.downloadId,
+                    DownloadUpdate(
+                        status = DownloadStatus.FAILED.label,
+                        checksumSha256 = checksum,
+                        reason = "SHA-256 checksum mismatch",
+                    ),
+                )
+                return
+            }
             onUpdate(
                 download.downloadId,
                 DownloadUpdate(
@@ -60,6 +76,7 @@ class DownloadEngine(
                     bytesDownloaded = totalBytes,
                     totalBytes = totalBytes,
                     filePath = download.filePath,
+                    checksumSha256 = checksum,
                 ),
             )
         } catch (_: CancellationException) {
@@ -137,13 +154,25 @@ class DownloadEngine(
                 totalBytes = knownTotalBytes ?: -1,
             ),
         )
-        return downloadInOneStream(download, output, knownTotalBytes)
+        val digest = MessageDigest.getInstance("SHA-256")
+        if (existing > 0L) {
+            output.inputStream().use { input ->
+                val buffer = ByteArray(BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count == -1) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+        }
+        return downloadInOneStream(download, output, knownTotalBytes, digest)
     }
 
     private suspend fun downloadInOneStream(
         download: DownloadEntry,
         output: File,
         knownTotalBytes: Long?,
+        digest: MessageDigest,
     ): Long {
         val existing = output.length()
         if (knownTotalBytes != null && existing == knownTotalBytes) return existing
@@ -167,6 +196,7 @@ class DownloadEngine(
             }
 
             val startingBytes = if (append) existing else 0L
+            if (!append) digest.reset()
             val responseTotal = connection.contentLengthLong.takeIf { it >= 0 }?.let { length ->
                 length + startingBytes
             }
@@ -195,6 +225,7 @@ class DownloadEngine(
                         val read = input.read(buffer)
                         if (read == -1) break
                         outputStream.write(buffer, 0, read)
+                        digest.update(buffer, 0, read)
                         position += read
                         if (position - lastReport >= REPORT_STEP) {
                             val now = System.nanoTime()
@@ -231,6 +262,20 @@ class DownloadEngine(
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun sha256(path: String?): String? {
+        val file = path?.let(::File)?.takeIf(File::isFile) ?: return null
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (true) {
+                val count = input.read(buffer)
+                if (count == -1) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun openConnection(url: String): HttpURLConnection =

@@ -11,6 +11,8 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.dwicao.dextra.data.BrowserDatabase
 import com.dwicao.dextra.data.SettingsRepository
+import com.dwicao.dextra.data.SavedTab
+import com.dwicao.dextra.data.SessionSnapshot
 import com.dwicao.dextra.data.SyncRepository
 import com.dwicao.dextra.data.SyncSelection
 import com.dwicao.dextra.data.WebDavConfig
@@ -67,6 +69,7 @@ class WebDavSyncWorker(
                 when (resolution) {
                     "remote" -> {
                         val remoteDocument = remote ?: throw WebDavConflictException()
+                        saveRecoveryPoint(settingsRepository, settingsRepository.settings.first(), "Before WebDAV remote restore")
                         val imported = syncRepository.importBytes(remoteDocument.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                         imported.root.optJSONObject("settings")?.let { settingsRepository.applySyncSettings(it) }
                         if (!saveIfCurrent(store, config, config.copy(
@@ -89,6 +92,7 @@ class WebDavSyncWorker(
                         if (resolution == "merge" && remote != null) {
                             val remoteDocument = remote
                             val localSettings = settingsRepository.settings.first()
+                            saveRecoveryPoint(settingsRepository, localSettings, "Before WebDAV merge")
                             val imported = syncRepository.importBytes(
                                 remoteDocument.bytes,
                                 config.passphrase,
@@ -132,6 +136,7 @@ class WebDavSyncWorker(
                 )
             }
             if (remote != null && remoteChanged) {
+                saveRecoveryPoint(settingsRepository, settingsBeforeApply, "Before WebDAV remote restore")
                 val imported = syncRepository.importBytes(remote.bytes, config.passphrase, settingsRepository.settings.first().activeWorkspaceId)
                 imported.root.optJSONObject("settings")?.let { importedSettings ->
                     settingsRepository.applySyncSettings(importedSettings)
@@ -221,6 +226,25 @@ class WebDavSyncWorker(
             store.save(updated)
             true
         }
+    }
+
+    private suspend fun saveRecoveryPoint(
+        settingsRepository: SettingsRepository,
+        settings: com.dwicao.dextra.data.BrowserSettings,
+        title: String,
+    ) {
+        val tabs = settings.openTabs.filterNot(SavedTab::isPrivate)
+        if (tabs.isEmpty()) return
+        settingsRepository.saveSessionTimeline(
+            SessionSnapshot(
+                id = UUID.randomUUID().toString(),
+                title = title,
+                createdAt = System.currentTimeMillis(),
+                tabs = tabs,
+                activeTabIndex = settings.activeTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0)),
+                tabGroups = settings.tabGroups,
+            ),
+        )
     }
 
 }

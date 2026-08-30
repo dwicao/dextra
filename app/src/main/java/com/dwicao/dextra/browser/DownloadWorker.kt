@@ -24,14 +24,14 @@ import com.dwicao.dextra.data.DownloadEntry
 import com.dwicao.dextra.data.DownloadStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.File
 
 private const val DOWNLOAD_CHANNEL_ID = "dextra_downloads"
 
 private object DownloadQueueGate {
-    val mutex = Mutex()
+    val semaphore = Semaphore(2)
 }
 
 fun downloadWorkName(downloadId: Long): String = "dextra-download-$downloadId"
@@ -64,8 +64,9 @@ class DownloadWorker(
                             bytesDownloaded = update.bytesDownloaded ?: current.bytesDownloaded,
                             totalBytes = update.totalBytes ?: current.totalBytes,
                             speedBytesPerSecond = update.speedBytesPerSecond ?: current.speedBytesPerSecond,
-                            filePath = update.filePath ?: current.filePath,
-                            reason = update.reason,
+                        filePath = update.filePath ?: current.filePath,
+                        checksumSha256 = update.checksumSha256 ?: current.checksumSha256,
+                        reason = update.reason,
                         ),
                     )
                 }
@@ -75,10 +76,10 @@ class DownloadWorker(
                 current == null || current.status in setOf(DownloadStatus.PAUSED.label, DownloadStatus.CANCELED.label)
             },
         )
-        return DownloadQueueGate.mutex.withLock {
-            val current = dao.getDownload(downloadId) ?: return@withLock Result.success()
+        return DownloadQueueGate.semaphore.withPermit {
+            val current = dao.getDownload(downloadId) ?: return@withPermit Result.success()
             if (current.status != DownloadStatus.QUEUED.label && current.status != DownloadStatus.DOWNLOADING.label) {
-                return@withLock Result.success()
+                return@withPermit Result.success()
             }
             val higherPriority = dao.getDownloads()
                 .filter {
@@ -87,19 +88,19 @@ class DownloadWorker(
                 }
                 .maxOfOrNull { it.priority }
             if (higherPriority != null && higherPriority > current.priority) {
-                return@withLock Result.retry()
+                return@withPermit Result.retry()
             }
             setForeground(createForegroundInfo(current))
             engine.execute(current)
 
-            val completed = dao.getDownload(downloadId) ?: return@withLock Result.success()
+            val completed = dao.getDownload(downloadId) ?: return@withPermit Result.success()
             var finalDownload = completed
             if (completed.status == DownloadStatus.COMPLETE.label && completed.localUri == null && completed.filePath != null) {
                 val publicUri = publishDownload(completed)
                 if (publicUri != null) {
                     if (dao.setDownloadUriIfComplete(downloadId, publicUri, DownloadStatus.COMPLETE.label) == 0) {
                         runCatching { applicationContext.contentResolver.delete(Uri.parse(publicUri), null, null) }
-                        return@withLock Result.success()
+                        return@withPermit Result.success()
                     }
                     finalDownload = completed.copy(localUri = publicUri)
                 } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q || completed.destinationTreeUri != null) {
@@ -111,17 +112,18 @@ class DownloadWorker(
                             DownloadStatus.COMPLETE.label,
                         ) == 0
                     ) {
-                        completed.filePath?.let { path ->
-                            runCatching { File(path).delete() }
-                        }
-                        return@withLock Result.success()
+                        runCatching { File(completed.filePath).delete() }
+                        return@withPermit Result.success()
                     }
                     finalDownload = completed.copy(status = DownloadStatus.FAILED.label, reason = reason)
                 }
             }
-            if (finalDownload.status == DownloadStatus.FAILED.label && finalDownload.attempts < MAX_RETRY_ATTEMPTS) {
+            if (finalDownload.status == DownloadStatus.FAILED.label &&
+                finalDownload.reason != "SHA-256 checksum mismatch" &&
+                finalDownload.attempts < MAX_RETRY_ATTEMPTS
+            ) {
                 dao.upsertDownload(finalDownload.copy(attempts = finalDownload.attempts + 1, reason = "Retry scheduled"))
-                return@withLock Result.retry()
+                return@withPermit Result.retry()
             }
             if (finalDownload.status in setOf(DownloadStatus.COMPLETE.label, DownloadStatus.FAILED.label)) {
                 notifyDownload(finalDownload)

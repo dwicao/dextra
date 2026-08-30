@@ -7,6 +7,7 @@ import com.dwicao.dextra.data.DownloadStatus
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
@@ -101,6 +102,90 @@ class DownloadEngineTest {
             assertTrue(DownloadStatus.PAUSED.label in updates)
             assertTrue(DownloadStatus.COMPLETE.label !in updates)
             assertTrue(!output.exists() || output.length() == 0L)
+        } finally {
+            output.delete()
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun expectedChecksumRejectsChangedPayload() = runBlocking {
+        val payload = "checksum payload".toByteArray()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/file") { exchange ->
+            exchange.sendResponseHeaders(200, payload.size.toLong())
+            exchange.responseBody.use { it.write(payload) }
+        }
+        server.start()
+
+        val output = Files.createTempFile("dextra-checksum", ".bin").toFile().apply { delete() }
+        try {
+            val updates = mutableListOf<com.dwicao.dextra.browser.DownloadUpdate>()
+            val engine = DownloadEngine(kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined)) { _, update ->
+                updates += update
+            }
+            engine.execute(
+                DownloadEntry(
+                    downloadId = 3,
+                    fileName = "file.bin",
+                    url = "http://127.0.0.1:${server.address.port}/file",
+                    mimeType = "application/octet-stream",
+                    status = DownloadStatus.QUEUED.label,
+                    bytesDownloaded = 0,
+                    totalBytes = -1,
+                    localUri = null,
+                    filePath = output.path,
+                    reason = null,
+                    speedBytesPerSecond = 0,
+                    createdAt = 0,
+                    expectedChecksumSha256 = "0".repeat(64),
+                ),
+            )
+
+            assertTrue(updates.any { it.status == DownloadStatus.FAILED.label && it.reason == "SHA-256 checksum mismatch" })
+            assertTrue(updates.none { it.status == DownloadStatus.COMPLETE.label })
+        } finally {
+            output.delete()
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun expectedChecksumAllowsMatchingPayload() = runBlocking {
+        val payload = "matching checksum".toByteArray()
+        val expected = MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") { "%02x".format(it) }
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/file") { exchange ->
+            exchange.sendResponseHeaders(200, payload.size.toLong())
+            exchange.responseBody.use { it.write(payload) }
+        }
+        server.start()
+
+        val output = Files.createTempFile("dextra-checksum-match", ".bin").toFile().apply { delete() }
+        try {
+            val updates = mutableListOf<com.dwicao.dextra.browser.DownloadUpdate>()
+            val engine = DownloadEngine(kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined)) { _, update ->
+                updates += update
+            }
+            engine.execute(
+                DownloadEntry(
+                    downloadId = 4,
+                    fileName = "file.bin",
+                    url = "http://127.0.0.1:${server.address.port}/file",
+                    mimeType = "application/octet-stream",
+                    status = DownloadStatus.QUEUED.label,
+                    bytesDownloaded = 0,
+                    totalBytes = -1,
+                    localUri = null,
+                    filePath = output.path,
+                    reason = null,
+                    speedBytesPerSecond = 0,
+                    createdAt = 0,
+                    expectedChecksumSha256 = expected,
+                ),
+            )
+
+            assertTrue(updates.any { it.status == DownloadStatus.COMPLETE.label && it.checksumSha256 == expected })
         } finally {
             output.delete()
             server.stop(0)

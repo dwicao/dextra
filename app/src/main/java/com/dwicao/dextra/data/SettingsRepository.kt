@@ -105,6 +105,7 @@ data class BrowserSettings(
     val lastBackupAt: Long? = null,
     val backupLastError: String? = null,
     val tabTombstones: Map<String, Long> = emptyMap(),
+    val tabCollections: List<TabCollection> = emptyList(),
 )
 
 data class ExtensionInstallRecord(
@@ -151,6 +152,16 @@ data class SessionSnapshot(
     val tabs: List<SavedTab>,
     val activeTabIndex: Int,
     val tabGroups: List<SavedTabGroup>,
+)
+
+data class TabCollection(
+    val id: String,
+    val title: String,
+    val note: String = "",
+    val tags: List<String> = emptyList(),
+    val createdAt: Long,
+    val updatedAt: Long,
+    val tabs: List<SavedTab>,
 )
 
 enum class DnsProvider(val label: String, val dohUri: String) {
@@ -227,6 +238,7 @@ class SettingsRepository(private val context: Context) {
         val lastBackupAt = longPreferencesKey("last_backup_at")
         val backupLastError = stringPreferencesKey("backup_last_error")
         val tabTombstones = stringPreferencesKey("tab_tombstones")
+        val tabCollections = stringPreferencesKey("tab_collections")
     }
 
     val settings: Flow<BrowserSettings> = context.settingsDataStore.data
@@ -385,6 +397,23 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { preferences ->
             val values = parseTabTombstones(preferences[Keys.tabTombstones]).filterValues { it >= before }
             preferences[Keys.tabTombstones] = JSONObject(values).toString()
+        }
+    }
+
+    suspend fun saveTabCollection(collection: TabCollection) {
+        context.settingsDataStore.edit { preferences ->
+            val values = parseTabCollections(preferences[Keys.tabCollections]).toMutableList()
+            values.removeAll { it.id == collection.id }
+            values.add(0, collection.copy(tabs = collection.tabs.filterNot(SavedTab::isPrivate).take(MAX_WORKSPACE_TABS)))
+            preferences[Keys.tabCollections] = JSONArray(values.take(MAX_TAB_COLLECTIONS).map(::tabCollectionToJson)).toString()
+        }
+    }
+
+    suspend fun deleteTabCollection(id: String) {
+        context.settingsDataStore.edit { preferences ->
+            preferences[Keys.tabCollections] = JSONArray(
+                parseTabCollections(preferences[Keys.tabCollections]).filterNot { it.id == id }.map(::tabCollectionToJson),
+            ).toString()
         }
     }
 
@@ -776,6 +805,9 @@ class SettingsRepository(private val context: Context) {
                 sessionChanged = preferences[Keys.tabTombstones] != tombstonePayload
                 preferences[Keys.tabTombstones] = tombstonePayload
             }
+            settings.optJSONArray("tabCollections")?.let { array ->
+                preferences[Keys.tabCollections] = syncedCollectionsJson(array, tombstones).toString()
+            }
             settings.optJSONArray("openTabs")?.let { array ->
                 val tabPayload = syncedTabsJson(array, tombstones).toString()
                 sessionChanged = sessionChanged || preferences[Keys.openTabs] != tabPayload
@@ -834,6 +866,26 @@ class SettingsRepository(private val context: Context) {
                     .put("title", value.optString("title").ifBlank { "Tab group" }.take(40))
                     .put("color", value.optLong("color", 0xFF4E4BB5L))
                     .put("collapsed", value.optBoolean("collapsed")),
+            )
+        }
+    }
+
+    private fun syncedCollectionsJson(values: JSONArray, excludedIds: Set<String> = emptySet()): JSONArray = JSONArray().also { output ->
+        for (index in 0 until values.length().coerceAtMost(MAX_TAB_COLLECTIONS)) {
+            val value = values.optJSONObject(index) ?: continue
+            val id = value.optString("id").takeIf(String::isNotBlank) ?: continue
+            val title = value.optString("title").ifBlank { "Tab collection" }.take(60)
+            output.put(
+                JSONObject()
+                    .put("id", id.take(100))
+                    .put("title", title)
+                    .put("note", value.optString("note").take(240))
+                    .put("tags", JSONArray((0 until (value.optJSONArray("tags")?.length() ?: 0))
+                        .mapNotNull { value.optJSONArray("tags")?.optString(it)?.trim()?.takeIf(String::isNotBlank) }
+                        .distinct().take(MAX_COLLECTION_TAGS)))
+                    .put("createdAt", value.optLong("createdAt", System.currentTimeMillis()))
+                    .put("updatedAt", value.optLong("updatedAt", System.currentTimeMillis()))
+                    .put("tabs", syncedTabsJson(value.optJSONArray("tabs") ?: JSONArray(), excludedIds)),
             )
         }
     }
@@ -930,6 +982,7 @@ class SettingsRepository(private val context: Context) {
         lastBackupAt = get(Keys.lastBackupAt),
         backupLastError = get(Keys.backupLastError),
         tabTombstones = parseTabTombstones(get(Keys.tabTombstones)),
+        tabCollections = tabCollections(),
     )
 
     private fun Preferences.filterUrls(): List<String> = get(Keys.adBlockFilters)
@@ -1112,6 +1165,33 @@ class SettingsRepository(private val context: Context) {
 
     private fun Preferences.sessionTimeline(): List<SessionSnapshot> = parseSessionSnapshots(get(Keys.sessionTimeline).orEmpty())
 
+    private fun Preferences.tabCollections(): List<TabCollection> = parseTabCollections(get(Keys.tabCollections))
+
+    private fun parseTabCollections(payload: String?): List<TabCollection> = runCatching {
+        val array = JSONArray(payload.orEmpty())
+        (0 until array.length()).mapNotNull { index ->
+            val value = array.optJSONObject(index) ?: return@mapNotNull null
+            val id = value.optString("id").takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val title = value.optString("title").trim().take(60).takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val tabs = value.optJSONArray("tabs")?.let { tabsArray ->
+                (0 until tabsArray.length()).mapNotNull { tabsArray.optJSONObject(it)?.toSavedTab() }
+            }.orEmpty().filterNot(SavedTab::isPrivate).take(MAX_WORKSPACE_TABS)
+            if (tabs.isEmpty()) return@mapNotNull null
+            val tags = value.optJSONArray("tags")?.let { tagsArray ->
+                (0 until tagsArray.length()).mapNotNull { tagsArray.optString(it).trim().takeIf(String::isNotBlank) }
+            }.orEmpty().distinct().take(MAX_COLLECTION_TAGS)
+            TabCollection(
+                id = id,
+                title = title,
+                note = value.optString("note").take(240),
+                tags = tags,
+                createdAt = value.optLong("createdAt", System.currentTimeMillis()),
+                updatedAt = value.optLong("updatedAt", System.currentTimeMillis()),
+                tabs = tabs,
+            )
+        }.take(MAX_TAB_COLLECTIONS)
+    }.getOrDefault(emptyList())
+
     private fun parseSessionSnapshots(payload: String): List<SessionSnapshot> = runCatching {
         val snapshots = JSONArray(payload)
         (0 until snapshots.length()).mapNotNull { index ->
@@ -1146,6 +1226,16 @@ class SettingsRepository(private val context: Context) {
         put("activeTabIndex", activeTabIndex)
         put("tabs", JSONArray(tabs.map { it.toJson() }))
         put("groups", JSONArray(tabGroups.map { it.toJson() }))
+    }
+
+    private fun tabCollectionToJson(collection: TabCollection): JSONObject = JSONObject().apply {
+        put("id", collection.id)
+        put("title", collection.title)
+        put("note", collection.note)
+        put("tags", JSONArray(collection.tags))
+        put("createdAt", collection.createdAt)
+        put("updatedAt", collection.updatedAt)
+        put("tabs", JSONArray(collection.tabs.map { it.toJson() }))
     }
 
     private fun SavedTab.toJson(): JSONObject = JSONObject().apply {
@@ -1223,5 +1313,7 @@ class SettingsRepository(private val context: Context) {
         const val MAX_START_PAGE_LINKS = 12
         const val MAX_PRIVACY_ALLOWLIST = 100
         const val MAX_TAB_TOMBSTONES = 512
+        const val MAX_TAB_COLLECTIONS = 50
+        const val MAX_COLLECTION_TAGS = 12
     }
 }
